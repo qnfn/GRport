@@ -2,7 +2,7 @@
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import tkinter as tk
 
-from grport import games, patches
+from grport import games, patches, shortcuts
 from grport.settings import FPS_CHOICES, LANGUAGES
 from grport.ui import theme
 
@@ -29,6 +29,9 @@ WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window
 PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
                 "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
+THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
+THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads. It gives more FPS "
+                  "but can crash the game, so Auto keeps it off (as Off does); On turns it on.")
 READBACK_NOTE = ("GPU readbacks: the game gets the GPU's results back exactly when it needs them. "
                  "Precise fixes the rare missing or flickering effect but costs FPS; Off is "
                  "fastest. Off by default.")
@@ -147,14 +150,30 @@ class SetupPage(tk.Frame):
         self.readback_choice = theme.Segmented(row, app, READBACK_CHOICES, self.set_readbacks)
         self.readback_choice.pack(side="left")
         self._note(gfx, READBACK_NOTE)
+        row = self._row(gfx, "Threading")
+        self.threading_choice = theme.Segmented(row, app, THREADING_CHOICES, self.set_threading)
+        self.threading_choice.pack(side="left")
+        self._note(gfx, THREADING_NOTE)
         row = self._row(gfx, "Frame rate")
         self.fps_choice = theme.Segmented(row, app, [(f, f"{f} FPS") for f in FPS_CHOICES[self.key]],
                                           self.set_fps)
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
 
+        links = self.board.add(2, 0, span=2, title="Shortcuts")
+        row = tk.Frame(links)
+        app.paint(row, bg="panel")
+        row.pack(fill="x")
+        for text, where in (("Add to desktop", "desktop"), ("Add to Start menu", "start")):
+            theme.PillButton(row, app, text, lambda w=where: self.add_shortcut(w),
+                             kind="secondary", font=app.fonts["button"], height=app.px(36),
+                             padx=app.px(18), bg_role="panel").pack(side="left",
+                                                                    padx=(0, app.px(10)))
+        self._note(links, "A GRport shortcut on your desktop, or in the Start menu so Windows "
+                          "search finds it.")
+
         self.patch_choices = {}
-        extra = self.board.add(2, 0, span=2, title="Patches")
+        extra = self.board.add(3, 0, span=2, title="Patches")
         for i, (prefix, label, _, note) in enumerate(patches.OPTIONAL.get(self.key, ())):
             row = tk.Frame(extra)
             app.paint(row, bg="panel")
@@ -206,6 +225,7 @@ class SetupPage(tk.Frame):
         self.size_box.set(s.window_size, enabled=s.window_mode == "window")
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
+        self.threading_choice.set(g.threading)
         chosen = patches.extras(s, self.key)
         for prefix, choice in self.patch_choices.items():
             choice.set(prefix in chosen)
@@ -230,6 +250,17 @@ class SetupPage(tk.Frame):
             self.app.save_settings()
             self.build()
 
+    def add_shortcut(self, where: str) -> None:
+        folder = shortcuts.desktop_dir() if where == "desktop" else shortcuts.start_menu_dir()
+        place = "desktop" if where == "desktop" else "Start menu"
+
+        def done(_lnk, error):
+            if error is not None:
+                self.flash(f"Could not add the shortcut: {error}", "bad")
+            else:
+                self.flash(f"GRport is now in your {place}.", "muted")
+        self.app.run_task(lambda: shortcuts.create(self.app.paths, folder), done)
+
     def set_window_mode(self, mode: str) -> None:
         self.app.settings.window_mode = mode
         self._saved()
@@ -249,6 +280,10 @@ class SetupPage(tk.Frame):
 
     def set_fps(self, fps: int) -> None:
         self.g.fps = fps
+        self._saved()
+
+    def set_threading(self, value: str) -> None:
+        self.g.threading = value
         self._saved()
 
     def set_readbacks(self, value: str) -> None:

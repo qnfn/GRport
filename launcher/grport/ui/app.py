@@ -116,7 +116,10 @@ class App(tk.Tk):
             if error is not None:
                 self.pages["play"].flash(f"The update failed: {error}", "bad")
                 return
-            subprocess.Popen([str(root / "GRport.exe")], cwd=str(root))
+            # A fresh environment: inheriting this launcher's PyInstaller variables, the new one
+            # would use our unpacked files, which are deleted when we close.
+            env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1", GRPORT_FRESH="1")
+            subprocess.Popen([str(root / "GRport.exe")], cwd=str(root), env=env)
             self.destroy()
         self.run_task(work, done)
 

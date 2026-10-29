@@ -220,6 +220,7 @@ class LogPage(tk.Frame):
             f"Frame rate: {g.fps} FPS",
             f"Patches: {', '.join(patches.extras(s, key)) or 'none'}",
             f"GPU readbacks: {g.readbacks}",
+            f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",
         ]
         lines.append(f"Windows: {platform.version()}")
         try:
