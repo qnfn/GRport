@@ -13,6 +13,9 @@ from .games import GAMES
 from .paths import AppPaths
 
 READBACKS = ("off", "relaxed", "precise")
+# Threaded recording (the runtime's BB_THREADED_RECORDING): auto (the runtime's choice: off), on
+# ("1") or off ("0").
+THREADING = ("auto", "1", "0")
 # fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
 # window: a real window with a title bar, kept inside the desktop.
 WINDOW_MODES = ("fullscreen", "borderless", "window")
@@ -31,6 +34,7 @@ LANGUAGES = (("en", "English", 1), ("ja", "Japanese", 0), ("fr", "French", 2),
 class GameSettings:
     folder: str = ""
     readbacks: str = "off"      # READBACKS
+    threading: str = "auto"     # THREADING
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
 
@@ -75,6 +79,8 @@ def _load_game(key: str, raw) -> GameSettings:
         g.extras = extras
     if g.readbacks not in READBACKS:
         g.readbacks = "off"
+    if g.threading not in THREADING:
+        g.threading = "auto"
     if g.fps not in FPS_CHOICES[key]:
         g.fps = FPS_CHOICES[key][0]
     return g

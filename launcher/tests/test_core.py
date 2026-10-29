@@ -175,3 +175,19 @@ def test_old_fullscreen_setting_becomes_a_window_mode(paths):
     s = load_settings(paths)
     assert s.window_mode == "borderless" and s.games["gr1"].fps == 60
     assert s.games["gr1"].extras == ["Skip intro"]
+
+
+def test_shortcut_points_at_the_launcher(paths, tmp_path):
+    from grport import shortcuts
+    (paths.root).mkdir(parents=True, exist_ok=True)
+    lnk = shortcuts.create(paths, tmp_path / "Desktop")
+    assert lnk.name == "GRport.lnk" and lnk.stat().st_size > 0
+    assert shortcuts.start_menu_dir().name == "Programs"
+
+
+def test_threading_choice_reaches_the_runtime(paths, tmp_path):
+    info = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    s = LauncherSettings()
+    assert "BB_THREADED_RECORDING" not in runtime.env(paths, s, info, base={"BB_THREADED_RECORDING": "1"})
+    s.games["gr2"].threading = "1"
+    assert runtime.env(paths, s, info, base={})["BB_THREADED_RECORDING"] == "1"

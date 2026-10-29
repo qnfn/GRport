@@ -53,6 +53,8 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   Gravity Rush Remastered skip intro.
 - **Window**: Fullscreen (exclusive), Borderless (best for streaming / screen sharing) or
   Window.
+- **Threading** (Auto, On, Off per game) and **desktop / Start menu shortcuts** (launcher
+  SETUP).
 - **Saves**, Continue and Gallery; **language** of menus and subtitles; keyboard, mouse and
   controllers; FPS counter.
 
