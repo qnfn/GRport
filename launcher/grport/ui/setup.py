@@ -2,23 +2,33 @@
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import tkinter as tk
 
-from grport import games
-from grport.patches import FPS_CHOICES
-from grport.settings import LANGUAGES
+from grport import games, patches
+from grport.settings import FPS_CHOICES, LANGUAGES
 from grport.ui import theme
 
 WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160")
 READBACK_CHOICES = (("off", "Off"), ("relaxed", "Relaxed"), ("precise", "Precise"))
-IN_GAME_NOTE = ("Graphics, upscaler and frame rate are set in the game: open GRport's in-game "
+IN_GAME_NOTE = ("Graphics and the upscaler are set in the game: open GRport's in-game "
                 "menu with Insert (or L3+R3 on a controller).")
 RUNTIME_NOTE = ("The first PLAY prepares the game for GRport's runtime (about a minute). "
                 "Experimental: both games play their openings; some starts still crash in the "
                 "first seconds (press PLAY again).")
-FPS_NOTE = ("Gravity Rush 2 (version 1.11) above 30 FPS: Junmin Lee's frame rate patches, "
+FPS_NOTES = {
+    "gr2": ("Gravity Rush 2 (version 1.11) above 30 FPS: Junmin Lee's frame rate patches, "
             "downloaded from his GitHub repository at the first PLAY. The "
             "game runs at a fixed step, so it slows down if your PC cannot hold the rate; a "
             "display with that refresh rate shows all frames. The next PLAY prepares the game "
-            "again (about a minute).")
+            "again (about a minute)."),
+    "gr1": ("Gravity Rush Remastered runs at 60 FPS on the PS4. Above 60 the game keeps its "
+            "speed; Junmin Lee's gravity kick camera fix is added (downloaded at the first "
+            "PLAY). A display with that refresh rate shows all frames."),
+}
+WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
+WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window covering it; "
+               "Window has a title bar and the size below.")
+PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
+                "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
+                "1.11. A change prepares the game again at the next PLAY (about a minute).")
 READBACK_NOTE = ("GPU readbacks: the game gets the GPU's results back exactly when it needs them. "
                  "Precise fixes the rare missing or flickering effect but costs FPS; Off is "
                  "fastest. Off by default.")
@@ -116,9 +126,9 @@ class SetupPage(tk.Frame):
 
         display = self.board.add(0, 0, title="Display")
         row = self._row(display, "Window", first=True)
-        self.window_choice = theme.Segmented(row, app, ((True, "Fullscreen"), (False, "Window")),
-                                             self.set_fullscreen)
+        self.window_choice = theme.Segmented(row, app, WINDOW_CHOICES, self.set_window_mode)
         self.window_choice.pack(side="left")
+        self._note(display, WINDOW_NOTE)
         row = self._row(display, "Window size")
         self.size_box = theme.Dropdown(row, app, lambda: self._popup(
             self.size_box, WINDOW_SIZES, self.app.settings.window_size, self.set_window_size))
@@ -137,13 +147,27 @@ class SetupPage(tk.Frame):
         self.readback_choice = theme.Segmented(row, app, READBACK_CHOICES, self.set_readbacks)
         self.readback_choice.pack(side="left")
         self._note(gfx, READBACK_NOTE)
-        self.fps_choice = None
-        if self.key == "gr2":
-            row = self._row(gfx, "Frame rate")
-            self.fps_choice = theme.Segmented(row, app, [(f, f"{f} FPS") for f in FPS_CHOICES],
-                                              self.set_fps)
-            self.fps_choice.pack(side="left")
-            self._note(gfx, FPS_NOTE)
+        row = self._row(gfx, "Frame rate")
+        self.fps_choice = theme.Segmented(row, app, [(f, f"{f} FPS") for f in FPS_CHOICES[self.key]],
+                                          self.set_fps)
+        self.fps_choice.pack(side="left")
+        self._note(gfx, FPS_NOTES[self.key])
+
+        self.patch_choices = {}
+        extra = self.board.add(2, 0, span=2, title="Patches")
+        for i, (prefix, label, _, note) in enumerate(patches.OPTIONAL.get(self.key, ())):
+            row = tk.Frame(extra)
+            app.paint(row, bg="panel")
+            row.pack(fill="x", pady=(0 if i == 0 else app.px(8), 0))
+            choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")),
+                                     lambda on, p=prefix: self.set_patch(p, on))
+            choice.pack(side="left")
+            theme.text_label(row, app, label, font="body_bold").pack(side="left", padx=(app.px(12), 0))
+            if note:
+                theme.text_label(row, app, note, font="small", fg="muted").pack(
+                    side="left", padx=(app.px(10), 0))
+            self.patch_choices[prefix] = choice
+        self._note(extra, PATCHES_NOTE)
 
         about = self.board.add(1, 0, span=2, title="In the game")
         self.in_game_note = theme.text_label(about, app, IN_GAME_NOTE, font="body_bold")
@@ -178,11 +202,13 @@ class SetupPage(tk.Frame):
 
     def refresh(self) -> None:
         g, s = self.g, self.app.settings
-        self.window_choice.set(s.fullscreen)
-        self.size_box.set(s.window_size, enabled=not s.fullscreen)
+        self.window_choice.set(s.window_mode)
+        self.size_box.set(s.window_size, enabled=s.window_mode == "window")
         self.readback_choice.set(g.readbacks)
-        if self.fps_choice is not None:
-            self.fps_choice.set(g.fps)
+        self.fps_choice.set(g.fps)
+        chosen = patches.extras(s, self.key)
+        for prefix, choice in self.patch_choices.items():
+            choice.set(prefix in chosen)
         self.language_box.set(dict((k, n) for k, n, _ in LANGUAGES)[s.language])
         self.board.schedule()
 
@@ -204,8 +230,13 @@ class SetupPage(tk.Frame):
             self.app.save_settings()
             self.build()
 
-    def set_fullscreen(self, on: bool) -> None:
-        self.app.settings.fullscreen = on
+    def set_window_mode(self, mode: str) -> None:
+        self.app.settings.window_mode = mode
+        self._saved()
+
+    def set_patch(self, prefix: str, on: bool) -> None:
+        chosen = [p for p in patches.extras(self.app.settings, self.key) if p != prefix]
+        self.g.extras = chosen + [prefix] if on else chosen
         self._saved()
 
     def set_window_size(self, size: str) -> None:

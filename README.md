@@ -3,7 +3,8 @@
 Gravity Rush Remastered and Gravity Rush 2 on Windows, from one launcher.
 
 GRport runs your own PS4 copies of the games natively on Windows: its own runtime, its own
-audio, FSR 4 / DLSS anti-aliasing, and Gravity Rush 2 at up to 120 FPS.
+audio, FSR 4 / DLSS anti-aliasing, Gravity Rush Remastered at up to 144 FPS and Gravity Rush 2
+at up to 120 FPS.
 
 ![GRport launcher](screenshots/launcher.png)
 
@@ -25,8 +26,8 @@ Get the latest release from the [Releases](../../releases) page:
 
 Unzip it anywhere (not inside Program Files), start `GRport.exe`, choose each game's dumped
 folder (the one with `eboot.bin`) and press **PLAY**. The first PLAY prepares the game for
-GRport (about a minute). Later versions install from the launcher: the PLAY page shows
-**Update to …** when one is out, and your saves and settings stay.
+GRport (about a minute). Later versions install from the launcher: **CHECK FOR UPDATES** (next
+to LOG) finds them, and your saves and settings stay.
 
 ## Supported games
 
@@ -44,8 +45,14 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 - **Sound**: GRport's own audio engine for the games' music, voices and effects.
 - **Anti-aliasing**: FSR 3.1, FSR 4 (FSR edition), DLSS (NVIDIA RTX) or TAA, with sharpening;
   FSR 1 for screens above 1080p. Open GRport's menu in the game with **Insert** or **L3+R3**.
-- **Gravity Rush 2 at 60, 90 or 120 FPS** (launcher SETUP), with Junmin Lee's frame rate
-  patches, which the launcher downloads from his repository at the first PLAY.
+- **Gravity Rush Remastered at 60, 90, 120 or 144 FPS** and **Gravity Rush 2 at 60, 90 or
+  120 FPS** (launcher SETUP), with Junmin Lee's frame rate patches and gravity kick camera fix,
+  which the launcher downloads from his repository at the first PLAY.
+- **Patches** (launcher SETUP), also by Junmin Lee: Gravity Rush 2 motion blur off, ambient
+  occlusion trail fix, auto-exposure fix, skip intro, Cross confirms, cheats and unlocks;
+  Gravity Rush Remastered skip intro.
+- **Window**: Fullscreen (exclusive), Borderless (best for streaming / screen sharing) or
+  Window.
 - **Saves**, Continue and Gallery; **language** of menus and subtitles; keyboard, mouse and
   controllers; FPS counter.
 

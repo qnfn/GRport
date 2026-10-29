@@ -13,6 +13,12 @@ from .games import GAMES
 from .paths import AppPaths
 
 READBACKS = ("off", "relaxed", "precise")
+# fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
+# window: a real window with a title bar, kept inside the desktop.
+WINDOW_MODES = ("fullscreen", "borderless", "window")
+# Frame rates: Gravity Rush 2 runs at 30 (60/90/120 with the FPS patches); Gravity Rush
+# Remastered at 60, and faster with a faster vblank (its game speed follows the clock).
+FPS_CHOICES = {"gr1": (60, 90, 120, 144), "gr2": (30, 60, 90, 120)}
 # The console language the games see (menus, subtitles; the voices are the games' own
 # invented language): key, name, PS4 language code.
 LANGUAGES = (("en", "English", 1), ("ja", "Japanese", 0), ("fr", "French", 2),
@@ -25,17 +31,19 @@ LANGUAGES = (("en", "English", 1), ("ja", "Japanese", 0), ("fr", "French", 2),
 class GameSettings:
     folder: str = ""
     readbacks: str = "off"      # READBACKS
-    fps: int = 30               # Gravity Rush 2: 30, or 60/90/120 with the FPS patches
+    fps: int = 30               # FPS_CHOICES; the lowest when not one of them
+    extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
 
 
 @dataclass
 class LauncherSettings:
     theme: str = "dark"
-    fullscreen: bool = True
+    window_mode: str = "borderless"  # WINDOW_MODES
     window_size: str = "1920x1080"
     language: str = "en"        # LANGUAGES
     selected: str = "gr2"
-    games: dict = field(default_factory=lambda: {key: GameSettings() for key in GAMES})
+    games: dict = field(default_factory=lambda: {key: GameSettings(fps=FPS_CHOICES[key][0])
+                                                 for key in GAMES})
 
 
 def window(s: LauncherSettings) -> tuple:
@@ -55,17 +63,20 @@ def _valid(value, default) -> bool:
     return isinstance(value, type(default))
 
 
-def _load_game(raw) -> GameSettings:
-    g = GameSettings()
+def _load_game(key: str, raw) -> GameSettings:
+    g = GameSettings(fps=FPS_CHOICES[key][0])
     if not isinstance(raw, dict):
         return g
     for f in fields(GameSettings):
         if f.name in raw and _valid(raw[f.name], getattr(g, f.name)):
             setattr(g, f.name, raw[f.name])
+    extras = raw.get("extras")
+    if isinstance(extras, list) and all(isinstance(e, str) for e in extras):
+        g.extras = extras
     if g.readbacks not in READBACKS:
         g.readbacks = "off"
-    if g.fps not in (30, 60, 90, 120):
-        g.fps = 30
+    if g.fps not in FPS_CHOICES[key]:
+        g.fps = FPS_CHOICES[key][0]
     return g
 
 
@@ -83,7 +94,12 @@ def load_settings(paths: AppPaths) -> LauncherSettings:
         if _valid(raw[f.name], getattr(s, f.name)):
             setattr(s, f.name, raw[f.name])
     games = raw.get("games") if isinstance(raw.get("games"), dict) else {}
-    s.games = {key: _load_game(games.get(key)) for key in GAMES}
+    s.games = {key: _load_game(key, games.get(key)) for key in GAMES}
+    # Launchers up to 0.1.1 saved fullscreen=true/false; their fullscreen was borderless.
+    if "window_mode" not in raw and isinstance(raw.get("fullscreen"), bool):
+        s.window_mode = "borderless" if raw["fullscreen"] else "window"
+    if s.window_mode not in WINDOW_MODES:
+        s.window_mode = "borderless"
     if s.selected not in GAMES:
         s.selected = "gr2"
     if s.language not in (key for key, _, _ in LANGUAGES):

@@ -85,7 +85,8 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         "BB_READBACKS": READBACKS.get(g.readbacks, "0"),
         "BB_DRAW_PIPE": "1",
         "BB_PREP_WORKERS": "0",
-        "BB_FULLSCREEN": "1" if s.fullscreen else "0",
+        "BB_WINDOW_MODE": s.window_mode,
+        "BB_FULLSCREEN": "0" if s.window_mode == "window" else "1",
         "BB_WINDOW_SIZE": "{}x{}".format(*window(s)),
         "BB_DMEM_MB": "5056",
         "BB_USER_NAME": "Kat",
@@ -95,7 +96,8 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     # FSR / DLSS anti-aliasing on the scene before the tonemap (the in-game menu); Gravity
     # Rush 2's motion comes from its own velocity target.
     out["BB_GR_UPSCALE"] = "1"
-    # The FPS patches pace the game by the vblank: it runs at the patch's rate.
-    if info.game.key == "gr2" and g.fps != 30:
+    # Both games pace themselves by the vblank: Gravity Rush 2 at its FPS patch's rate,
+    # Gravity Rush Remastered (60 on the PS4) at any rate, its game speed following the clock.
+    if (info.game.key == "gr2" and g.fps != 30) or (info.game.key == "gr1" and g.fps != 60):
         out["BB_VBLANK_HZ"] = str(g.fps)
     return out
