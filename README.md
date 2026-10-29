@@ -30,10 +30,13 @@ GRport (about a minute). Later versions install from the launcher: the PLAY page
 
 ## Supported games
 
-| Game | Version |
-|---|---|
-| Gravity Rush Remastered | CUSA01113 (USA) |
-| Gravity Rush 2 | CUSA03694 (USA), version 1.11 |
+| Game | Tested | Also expected to work |
+|---|---|---|
+| Gravity Rush Remastered | Europe (CUSA01113), version 1.00 | USA (CUSA01130) |
+| Gravity Rush 2 | USA (CUSA03694), version 1.11 | Europe, version 1.11 |
+
+The launcher reads each copy's region from the game itself. Gravity Rush 2's frame rate patches
+are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 
 ## Features
 
