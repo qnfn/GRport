@@ -19,7 +19,7 @@ GR1 = Game(
     title="Gravity Rush Remastered",
     short="Gravity Rush",
     badge="game_gr1.png",
-    regions={"CUSA01113": "USA", "CUSA01130": "Europe", "CUSA01112": "Asia",
+    regions={"CUSA01113": "Europe", "CUSA01130": "USA", "CUSA01112": "Asia",
              "CUSA02318": "Asia", "CUSA00546": "Asia", "CUSA02443": "Asia", "CUSA04246": "Asia",
              "PCJS50004": "Japan", "PCJS50008": "Japan", "PCJS66015": "Japan",
              "PCJS66029": "Japan"},
@@ -39,11 +39,29 @@ GAMES = {GR1.key: GR1, GR2.key: GR2}
 SUPPORTED_REGIONS = ("USA", "Europe")  # the builds GRport is tested on
 
 
+# The region from the content ID's first letters (UP9000-CUSA03694_00-...): reliable for every
+# release, where the serial table above may miss one.
+CONTENT_REGIONS = {"UP": "USA", "EP": "Europe", "JP": "Japan", "HP": "Asia", "KP": "Asia"}
+
+
 def game_for_serial(serial: str) -> "Game | None":
     for game in GAMES.values():
         if serial in game.regions:
             return game
     return None
+
+
+def game_for_title(title: str) -> "Game | None":
+    """A Gravity Rush release the serial table does not list, by its title."""
+    t = title.lower()
+    if "gravity rush" not in t and "gravity daze" not in t:
+        return None
+    return GR2 if "2" in t else GR1
+
+
+def region_of(sfo: dict, game: Game, serial: str) -> str:
+    content = str(sfo.get("CONTENT_ID", "")).strip().upper()
+    return CONTENT_REGIONS.get(content[:2]) or game.regions.get(serial, "Unknown region")
 
 
 # ---------------------------------------------------------------- param.sfo
@@ -121,12 +139,12 @@ def inspect(folder: "Path | str") -> GameFolder:
         return GameFolder(folder, None, "", "", "", f"param.sfo could not be read: {e}")
     serial = str(sfo.get("TITLE_ID", "")).strip()
     version = str(sfo.get("APP_VER") or sfo.get("VERSION") or "").strip()
-    game = game_for_serial(serial)
+    game = game_for_serial(serial) or game_for_title(str(sfo.get("TITLE", "")))
     if game is None:
         title = sfo.get("TITLE", "an unknown game")
         return GameFolder(folder, None, serial, "", version,
                           f"This is {title} ({serial}), not a Gravity Rush game.")
-    region = game.regions[serial]
+    region = region_of(sfo, game, serial)
     problem = ""
     if not (folder / "eboot.bin").is_file():
         problem = "eboot.bin is missing. Extract the whole game into this folder."
