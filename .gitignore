@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+launcher/build/
+launcher/dist/
+prepare/build/
+prepare/dist/
