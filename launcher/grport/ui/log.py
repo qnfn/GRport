@@ -6,7 +6,7 @@ import platform
 import tkinter as tk
 from pathlib import Path
 
-from grport import __version__
+from grport import __version__, patches
 from grport.ui import theme
 
 TAIL_LINES = 6000
@@ -216,7 +216,9 @@ class LogPage(tk.Frame):
             f"Game: {info.game.title if info and info.game else key}"
             + (f" ({info.serial}, {info.region}, v{info.version})" if info else ""),
             f"GPU: {app.gpu or 'unknown'}",
-            f"Window: {'Fullscreen' if s.fullscreen else 'Windowed ' + s.window_size}",
+            f"Window: {s.window_mode}" + (f" {s.window_size}" if s.window_mode == "window" else ""),
+            f"Frame rate: {g.fps} FPS",
+            f"Patches: {', '.join(patches.extras(s, key)) or 'none'}",
             f"GPU readbacks: {g.readbacks}",
         ]
         lines.append(f"Windows: {platform.version()}")

@@ -631,6 +631,8 @@ class CardBoard(tk.Canvas):
 
     def _layout(self) -> None:
         self._job = None
+        if not self.winfo_exists():  # rebuilt (another game chosen) before the layout ran
+            return
         app, pal = self.app, self.app.palette
         width, height = self.winfo_width(), self.winfo_height()
         if width < 40 or not self._cards:

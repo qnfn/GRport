@@ -15754,7 +15754,7 @@ index 3a73ecf..5185966 100644
      g_window_thread = std::thread([title, width, height] {
          Common::SetCurrentThreadName("bb:window");
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..075301d 100644
+index 651b74e..60403a7 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
 @@ -9,10 +9,12 @@
@@ -15770,7 +15770,7 @@ index 651b74e..075301d 100644
  #include "imgui.h"
  #include "imgui_impl_vulkan.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
-@@ -187,279 +189,84 @@ void Menu() {
+@@ -187,279 +189,82 @@ void Menu() {
          ImVec2(0.0f, 0.0f),
          ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
      bool keep_open = true;
@@ -16027,8 +16027,6 @@ index 651b74e..075301d 100644
 +        ImGui::EndDisabled();
 +        Hint("Sharpens the anti-aliased picture (and FSR 1's, when the anti-aliasing is off). 0 is soft, 1 the sharpest. Ctrl+click to type a value.");
 +        ImGui::BeginDisabled(s.upscaler == BbSettings::UpscalerOff);
-+        Checkbox("Subpixel jitter", s.jitter);
-+        Hint("Shifts the camera by a fraction of a pixel each frame so the anti-aliasing can rebuild fine detail. Off: it only smooths.");
 +        bool show_motion = s.debug_view == BbSettings::DebugMotion;
 +        if (ImGui::Checkbox("Show motion vectors (debug)", &show_motion)) {
 +            s.debug_view = show_motion ? BbSettings::DebugMotion : BbSettings::DebugNone;
@@ -16109,7 +16107,7 @@ index 651b74e..075301d 100644
      if (ImGui::Button("Close")) {
          keep_open = false;
      }
-@@ -481,8 +288,9 @@ void Menu() {
+@@ -481,8 +286,9 @@ void Menu() {
      if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
          quit_armed = false;
      }
@@ -16120,7 +16118,7 @@ index 651b74e..075301d 100644
      ImGui::End();
      if (!keep_open) {
          SetOpen(false);
-@@ -524,14 +332,14 @@ void FpsCounter() {
+@@ -524,14 +330,14 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -16143,7 +16141,7 @@ index 651b74e..075301d 100644
      ImGui::End();
  }
  
-@@ -548,14 +356,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +354,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -16730,7 +16728,7 @@ index 3d44504..cab3bca 100644
              std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
          }
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
-index 5b985a4..9d9d455 100644
+index 5b985a4..419121c 100644
 --- a/gpu/shim/bbport_settings.cpp
 +++ b/gpu/shim/bbport_settings.cpp
 @@ -14,7 +14,7 @@ namespace {
@@ -16751,7 +16749,17 @@ index 5b985a4..9d9d455 100644
          for (int g = 0; g < FrameGenCount; ++g) {
              if (value == FrameGenName(g)) {
                  v.frame_gen = g;
-@@ -62,6 +64,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
+@@ -47,7 +49,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
+     } else if (key == "sharpness") {
+         v.sharpness = Clamp(f, 0.0f, 2.0f);
+     } else if (key == "jitter") {
+-        v.jitter = i != 0;
++        // GRport: older grport.ini files saved jitter=1; it stays off (BB_JITTER for tests).
++        v.jitter = v.jitter && i != 0;
+     } else if (key == "reactive") {
+         v.reactive = i != 0;
+     } else if (key == "object_motion") {
+@@ -62,6 +65,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
          v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
      } else if (key == "show_fps") {
          v.show_fps = i != 0;
@@ -16764,7 +16772,7 @@ index 5b985a4..9d9d455 100644
      } else if (key == "mute_unfocused") {
          v.mute_unfocused = i != 0;
      } else if (key == "button_prompts") {
-@@ -70,6 +78,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
+@@ -70,6 +79,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                           : value == "xbox"        ? PromptsXbox
                           : value == "switch"      ? PromptsSwitch
                                                    : PromptsAuto;
@@ -16775,7 +16783,26 @@ index 5b985a4..9d9d455 100644
      } else if (key == "fsr4_auto_exposure") {
          v.fsr4_auto_exposure = i != 0;
      } else if (key == "fsr4_invert_jitter") {
-@@ -178,7 +190,7 @@ void ConfigureDlssSupport(bool available, const char* problem) {
+@@ -131,7 +144,7 @@ void Load() {
+         }
+     }
+     const std::pair<const char*, const char*> env_keys[] = {
+-        {"BB_FSR_SHARPNESS", "sharpness"},        {"BB_JITTER", "jitter"},
++        {"BB_FSR_SHARPNESS", "sharpness"},
+         {"BB_REACTIVE", "reactive"},              {"BB_REACTIVE_SCALE", "reactive_scale"},
+         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
+         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
+@@ -143,6 +156,9 @@ void Load() {
+             Set(v, key, value);
+         }
+     }
++    if (const char* value = std::getenv("BB_JITTER")) {
++        v.jitter = std::atoi(value) != 0;
++    }
+     v.startup_preset = v.preset;
+     v.startup_upscaler = v.upscaler;
+     v.startup_object_motion = v.object_motion;
+@@ -178,7 +194,7 @@ void ConfigureDlssSupport(bool available, const char* problem) {
      v.dlss_problem = available || kept.empty() ? nullptr : kept.c_str();
      if (v.upscaler == UpscalerDlss && !available) {
          std::printf("Upscaler: DLSS unavailable (%s); falling back to FSR 3.1\n",
@@ -16784,7 +16811,7 @@ index 5b985a4..9d9d455 100644
          v.upscaler = UpscalerFsr3;
      }
  }
-@@ -206,36 +218,71 @@ bool ResolutionNeedsRestart() {
+@@ -206,36 +222,71 @@ bool ResolutionNeedsRestart() {
           (v.upscaler == UpscalerTaa) != (v.startup_upscaler == UpscalerTaa));
  }
  
@@ -16829,13 +16856,15 @@ index 5b985a4..9d9d455 100644
      }
      std::fprintf(file,
 -                 "# bbport settings (in-game menu: Insert / L3+R3)\n"
+-                 "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\njitter=%d\n"
 +                 "# GRport settings (in-game menu: Insert / L3+R3)\n"
-                  "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\njitter=%d\n"
++                 "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\n"
                   "reactive=%d\nobject_motion=%d\nreactive_scale=%.2f\nreactive_threshold=%.2f\nreactive_max=%.2f\n"
 -                 "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n",
 +                 "debug_view=%d\nshow_fps=%d\nmotion_blur=%.2f\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n",
                   UpscalerName(v.upscaler), v.preset.load(), int(v.sharpen.load()),
-                  v.sharpness.load(), int(v.jitter.load()), int(v.reactive.load()),
+-                 v.sharpness.load(), int(v.jitter.load()), int(v.reactive.load()),
++                 v.sharpness.load(), int(v.reactive.load()),
                   int(v.object_motion.load()),
                   v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
 -                 v.debug_view.load(), int(v.show_fps.load()),
@@ -16862,7 +16891,7 @@ index 5b985a4..9d9d455 100644
      // Read by run.py at start (hud_layout.py).
      std::fprintf(file, "hud_position=%d\n", v.hud_position.load());
      // Read by run.py at start (fov.py).
-@@ -243,6 +290,7 @@ void Save() {
+@@ -243,6 +294,7 @@ void Save() {
      // Read by run.sh at start.
      std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                    : v.live_resolution ? "1" : "0");
@@ -16871,10 +16900,19 @@ index 5b985a4..9d9d455 100644
  }
  
 diff --git a/gpu/shim/bbport_settings.h b/gpu/shim/bbport_settings.h
-index c0e7334..4b4b80e 100644
+index c0e7334..c750a20 100644
 --- a/gpu/shim/bbport_settings.h
 +++ b/gpu/shim/bbport_settings.h
-@@ -83,11 +83,22 @@ struct Values {
+@@ -76,18 +76,30 @@ struct Values {
+     std::atomic<int> preset{NativeAA};
+     std::atomic<bool> sharpen{true};
+     std::atomic<float> sharpness{0.3f};
+-    std::atomic<bool> jitter{true};
++    // GRport: off (it broke Gravity Rush's picture); BB_JITTER=1 only, for tests.
++    std::atomic<bool> jitter{false};
+     std::atomic<bool> reactive{false};
+     std::atomic<bool> object_motion{true};
+     std::atomic<float> reactive_scale{1.0f};
      std::atomic<float> reactive_threshold{0.2f};
      std::atomic<float> reactive_max{0.9f};
      std::atomic<int> debug_view{DebugNone};
@@ -16962,6 +17000,82 @@ index 2e19d49..d234bb3 100644
          user.player_index = 1;
          user.logged_in = true;
          user.shadnet_npid = text("BB_SHADNET_NPID", "");
+diff --git a/gpu/shim/window.cpp b/gpu/shim/window.cpp
+index 550e79e..7e9090e 100644
+--- a/gpu/shim/window.cpp
++++ b/gpu/shim/window.cpp
+@@ -1,4 +1,5 @@
+ // bbport: SDL3 window for the Vulkan swapchain (X11 or Wayland).
++#include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -47,18 +48,58 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
+     }
+     SDL_PropertiesID props = SDL_CreateProperties();
+     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
+-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED);
+-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED);
+-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width_);
+-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height_);
+-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
++    // GRport: BB_WINDOW_MODE=fullscreen (exclusive, the monitor's own mode), borderless (a
++    // window covering the monitor) or window (title bar and frame, kept inside the desktop's
++    // usable area). Without it BB_FULLSCREEN=1 is borderless, as before.
++    const char* mode_env = std::getenv("BB_WINDOW_MODE");
+     const char* fullscreen = std::getenv("BB_FULLSCREEN");
+-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
++    const std::string mode = mode_env && mode_env[0] ? mode_env
++                             : fullscreen && fullscreen[0] == '1' ? "borderless" : "window";
++    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
++    if (mode == "window") {
++        // A window as large as the screen hides its title bar above the top edge: shrink it
++        // (same aspect) to fit the usable area with room for the frame.
++        SDL_Rect usable{};
++        if (display && SDL_GetDisplayUsableBounds(display, &usable)) {
++            const float fit = std::min({1.0f, float(usable.w - 16) / float(width_),
++                                        float(usable.h - 48) / float(height_)});
++            if (fit < 1.0f) {
++                width_ = std::max(640, int(float(width_) * fit));
++                height_ = std::max(360, int(float(height_) * fit));
++            }
++        }
++    }
++    // Borderless is a plain window without a frame over the whole monitor, not SDL's
++    // fullscreen: screen sharing (Discord and the like) froze on SDL's fullscreen window.
++    SDL_Rect bounds{};
++    const bool borderless = mode == "borderless" && display && SDL_GetDisplayBounds(display, &bounds);
++    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, borderless ? bounds.x : SDL_WINDOWPOS_CENTERED);
++    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, borderless ? bounds.y : SDL_WINDOWPOS_CENTERED);
++    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, borderless ? bounds.w : width_);
++    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, borderless ? bounds.h : height_);
++    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, !borderless);
++    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_BORDERLESS_BOOLEAN, borderless);
++    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
++    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
++                           mode == "fullscreen" || (mode == "borderless" && !borderless));
+     base_title = title;
+     window = SDL_CreateWindowWithProperties(props);
+     SDL_DestroyProperties(props);
+     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
++    if (mode == "fullscreen" && display) {
++        // Exclusive: the desktop's own size and refresh rate; borderless when it is refused.
++        if (const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(display)) {
++            SDL_DisplayMode exclusive{};
++            if (SDL_GetClosestFullscreenDisplayMode(display, desktop->w, desktop->h,
++                                                    desktop->refresh_rate, true, &exclusive) &&
++                SDL_SetWindowFullscreenMode(window, &exclusive)) {
++                SDL_SyncWindow(window);
++            } else {
++                LOG_WARNING(Frontend, "Exclusive fullscreen refused ({}): borderless", SDL_GetError());
++            }
++        }
++    }
++    LOG_INFO(Frontend, "Window mode: {}", mode);
+ 
+     const char* driver = SDL_GetCurrentVideoDriver();
+     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
 diff --git a/packaging/windows/bb-probe.rc b/packaging/windows/bb-probe.rc
 index 46d615e..87446fa 100644
 --- a/packaging/windows/bb-probe.rc

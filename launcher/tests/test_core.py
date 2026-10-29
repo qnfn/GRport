@@ -98,12 +98,13 @@ def test_the_launchers_own_folders_are_not_searched(tmp_path):
 def test_runtime_command_and_env(paths, tmp_path):
     info = games.inspect(make_game(tmp_path / "CUSA04934", "CUSA04934", "01.11"))
     s = LauncherSettings()
-    s.fullscreen, s.window_size = False, "2560x1440"
+    s.window_mode, s.window_size = "window", "2560x1440"
     s.games["gr2"].readbacks = "precise"
     cmd = runtime.command(paths, info)
     assert cmd[0] == str(runtime.exe(paths)) and str(info.folder) in cmd
     env = runtime.env(paths, s, info, base={})
-    assert env["BB_FULLSCREEN"] == "0" and env["BB_WINDOW_SIZE"] == "2560x1440"
+    assert env["BB_WINDOW_MODE"] == "window" and env["BB_FULLSCREEN"] == "0"
+    assert env["BB_WINDOW_SIZE"] == "2560x1440" and "BB_VBLANK_HZ" not in env
     assert env["BB_READBACKS"] == "2"
     assert env["BB_GPU_USER_DIR"] == str(runtime.user_dir(paths, "gr2"))
     assert "runtime is missing" in runtime.missing(paths)
@@ -143,8 +144,34 @@ def test_old_settings_files_still_load(paths):
                           "fps": 144, "motion_blur": False, "readbacks": "precise",
                           "patches": ["a"], "patches_off": ["b"], "costume": "c"}}}))
     s = load_settings(paths)
-    assert s.theme == "light" and not s.fullscreen and s.window_size == "1600x900"
+    assert s.theme == "light" and s.window_mode == "window" and s.window_size == "1600x900"
     assert s.games["gr1"].folder == "X:/GR1" and s.games["gr1"].readbacks == "precise"
     assert not hasattr(s.games["gr1"], "engine")
     save_settings(paths, s)
     assert "engine" not in json.loads(paths.settings_json.read_text())["games"]["gr1"]
+
+
+# --- frame rate and optional patches --------------------------------------------
+
+def test_frame_rates_and_patches_per_game(paths, tmp_path):
+    from grport import patches
+    s = LauncherSettings()
+    assert s.games["gr1"].fps == 60 and s.games["gr2"].fps == 30
+    assert s.window_mode == "borderless"
+    assert patches.wanted(60, "gr1", []) == []
+    assert patches.wanted(120, "gr1", ["Skip intro"]) == [patches.GR1_KICK_FIX, "Skip intro"]
+    assert patches.wanted(30, "gr2", patches.default_extras("gr2"))[:2] == [
+        patches.CRASH_FIX, "Disable motion blur"]
+    assert patches.wanted(30, "gr2", ["unknown"]) == [patches.CRASH_FIX]
+    info = games.inspect(make_game(tmp_path / "CUSA01113", "CUSA01113", "01.00"))
+    s.games["gr1"].fps = 120
+    assert runtime.env(paths, s, info, base={})["BB_VBLANK_HZ"] == "120"
+
+
+def test_old_fullscreen_setting_becomes_a_window_mode(paths):
+    paths.root.mkdir(parents=True)
+    paths.settings_json.write_text(json.dumps({"fullscreen": True,
+                                               "games": {"gr1": {"fps": 30, "extras": ["Skip intro"]}}}))
+    s = load_settings(paths)
+    assert s.window_mode == "borderless" and s.games["gr1"].fps == 60
+    assert s.games["gr1"].extras == ["Skip intro"]

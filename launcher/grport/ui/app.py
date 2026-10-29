@@ -95,6 +95,10 @@ class App(tk.Tk):
         release = self.update_release
         if release is None or self.phase != "idle":
             return
+        if not getattr(sys, "frozen", False):
+            self.pages["play"].flash(f"GRport {release.version} is out: updates install into the "
+                                     "built GRport.exe, not a source run.", "warn")
+            return
         if not dialogs.confirm(self, f"Update to GRport {release.version}",
                                "GRport downloads the new version from GitHub and restarts. "
                                "Your saves, settings and games stay.", "Update"):
@@ -188,8 +192,7 @@ class App(tk.Tk):
             if item[0] == "gpu":
                 self.gpu = item[1]
             elif item[0] == "update":
-                self.update_release = item[1]
-                self.pages["play"].show_update(item[1].version)
+                self._show_release(item[1])
             elif item[0] == "task":
                 _, on_done, result, error = item
                 on_done(result, error)
@@ -253,6 +256,21 @@ class App(tk.Tk):
             self._tabs[name] = (label, bar)
         self.on_theme(lambda pal: self._paint_tabs())
 
+        # Check for updates, right of LOG: checks GitHub on a click; with a newer release it
+        # becomes "UPDATE TO vX" and installs it.
+        cell = tk.Frame(top)
+        self.paint(cell, bg="bg")
+        cell.pack(side="left", anchor="n", pady=(max(0, drop) + self.px(4), 0))
+        self._update_button = tk.Label(cell, text="CHECK FOR UPDATES", font=self.fonts["tab"],
+                                       cursor="hand2", padx=self.px(10), pady=0, bd=0)
+        self.paint(self._update_button, bg="bg")
+        self._update_button.pack(side="top")
+        self._update_button.bind("<Button-1>", lambda e: self.update_clicked())
+        self._update_button.bind("<Enter>", lambda e: self._update_button.configure(
+            fg=self.palette["text"]))
+        self._update_button.bind("<Leave>", lambda e: self._paint_update_button())
+        self.on_theme(lambda pal: self._paint_update_button())
+
         switch = tk.Label(top, text="◐", font=self.fonts["symbol"], cursor="hand2",
                           padx=self.px(4))
         self.paint(switch, bg="bg", fg="text")
@@ -263,6 +281,38 @@ class App(tk.Tk):
         version = theme.text_label(top, self, f"v{__version__}", font="small", fg="muted",
                                    bg="bg")
         version.pack(side="right", padx=(0, self.px(14)))
+
+    def _paint_update_button(self) -> None:
+        self._update_button.configure(fg=self.palette["accent"])
+
+    def update_clicked(self) -> None:
+        if self.update_release is not None:
+            self.install_update()
+            return
+        if self._update_button.cget("text") == "CHECKING...":
+            return
+        self._update_button.configure(text="CHECKING...")
+
+        def work():
+            return updater.check(__version__, updater.installed_fsr(self.paths.root))
+
+        def done(release, error):
+            if error is not None:
+                self._update_button.configure(text="CHECK FAILED")
+                self.pages["play"].flash(f"Could not check for updates: {error}", "bad")
+            elif release is None:
+                self._update_button.configure(text=f"UP TO DATE (v{__version__})")
+            else:
+                self._show_release(release)
+                return
+            self.after(4000, lambda: self.update_release is None and
+                       self._update_button.configure(text="CHECK FOR UPDATES"))
+        self.run_task(work, done)
+
+    def _show_release(self, release) -> None:
+        self.update_release = release
+        self._update_button.configure(text=f"UPDATE TO v{release.version}")
+        self.pages["play"].show_update(release.version)
 
     def _draw_logo(self, pal: dict) -> None:
         c, font = self._logo, self.fonts["logo"]
@@ -433,7 +483,7 @@ class App(tk.Tk):
         try:
             patch = patches.write(self.paths, self.settings, info)
         except (OSError, ValueError) as e:
-            return (f"Could not get Gravity Rush 2's frame rate patches (they download from their "
+            return (f"Could not get {info.game.title}'s patches (they download from their "
                     f"author's GitHub on first use): {e}")
         if not runtime.is_prepared(self.paths, info, patch):
             runtime.data_dir(self.paths, key).mkdir(parents=True, exist_ok=True)
@@ -450,16 +500,16 @@ class App(tk.Tk):
         code = self.runner.exit_code()
         self.phase, self.playing = "idle", None
         info = self.infos.get(key) if key else None
-        if code == 3 and info is not None and key == "gr2":
-            # The frame rate patches do not fit this build of the game: it plays unpatched.
+        if code == 3 and info is not None:
+            # The patches do not fit this build of the game: it plays unpatched.
             patches.mark_mismatch(self.paths, info)
             error = self._play_runtime(key, info)
-            self.pages["play"].flash(error or "The frame rate patches are made for another build "
-                                     "of Gravity Rush 2: it runs at 30 FPS.", "bad" if error else "warn")
+            self.pages["play"].flash(error or "The patches are made for another build of "
+                                     f"{info.game.title}: it runs unpatched.", "bad" if error else "warn")
             if error:
                 self._phase_changed()
             return
-        patch = patches.patch_file(self.paths, key) if key == "gr2" else None
+        patch = patches.patch_file(self.paths, key) if key else None
         if code == 0 and info is not None and runtime.is_prepared(
                 self.paths, info, patch if patch and patch.is_file() else None):
             error = self._play_runtime(key, info)

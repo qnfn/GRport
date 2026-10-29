@@ -41,11 +41,13 @@ def test_setup_choices_are_saved(app):
     app.show("setup")
     page = app.pages["setup"]
     assert "Insert" in page.in_game_note.cget("text")
-    page.set_fullscreen(False)
+    page.set_window_mode("window")
+    page.set_patch("Disable motion blur", False)
     page.set_window_size("2560x1440")
     page.set_readbacks("relaxed")
     saved = load_settings(app.paths)
-    assert not saved.fullscreen and saved.window_size == "2560x1440"
+    assert saved.window_mode == "window" and saved.window_size == "2560x1440"
+    assert "Disable motion blur" not in saved.games["gr2"].extras
     assert saved.games["gr2"].readbacks == "relaxed" and saved.games["gr1"].readbacks == "off"
 
 
