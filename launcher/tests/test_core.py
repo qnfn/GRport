@@ -30,9 +30,12 @@ def make_sfo(path: Path, values: dict) -> None:
     path.write_bytes(out + keys + data)
 
 
-def make_game(folder: Path, serial: str, version: str, eboot: bool = True) -> Path:
-    make_sfo(folder / "sce_sys" / "param.sfo",
-             {"TITLE_ID": serial, "APP_VER": version, "TITLE": "Test"})
+def make_game(folder: Path, serial: str, version: str, eboot: bool = True,
+              content_id: str = "", title: str = "Test") -> Path:
+    values = {"TITLE_ID": serial, "APP_VER": version, "TITLE": title}
+    if content_id:
+        values["CONTENT_ID"] = content_id
+    make_sfo(folder / "sce_sys" / "param.sfo", values)
     if eboot:
         (folder / "eboot.bin").write_bytes(b"\x7fELF")
     return folder
@@ -46,12 +49,21 @@ def paths(tmp_path) -> AppPaths:
 # --- games -------------------------------------------------------------------
 
 @pytest.mark.parametrize("serial,key,region", [
-    ("CUSA01113", "gr1", "USA"), ("CUSA01130", "gr1", "Europe"),
+    ("CUSA01130", "gr1", "USA"), ("CUSA01113", "gr1", "Europe"),
     ("CUSA03694", "gr2", "USA"), ("CUSA04934", "gr2", "Europe"),
 ])
 def test_both_regions_of_both_games_are_recognised(tmp_path, serial, key, region):
     info = games.inspect(make_game(tmp_path / serial, serial, "01.00"))
     assert info.game.key == key and info.region == region and info.ok
+
+
+def test_the_content_id_gives_the_region_and_the_title_an_unlisted_release(tmp_path):
+    eu = games.inspect(make_game(tmp_path / "a", "CUSA01113", "01.00",
+                                 content_id="EP9000-CUSA01113_00-GRAVITYRUSHHDEU1"))
+    assert eu.game.key == "gr1" and eu.region == "Europe"
+    other = games.inspect(make_game(tmp_path / "b", "CUSA99999", "01.11", title="GRAVITY RUSH 2",
+                                    content_id="EP9000-CUSA99999_00-GRAVITYRUSH20000"))
+    assert other.game.key == "gr2" and other.region == "Europe" and other.ok
 
 
 def test_a_folder_holding_the_game_folder_is_accepted(tmp_path):
@@ -69,7 +81,7 @@ def test_missing_eboot_and_other_games_are_explained(tmp_path):
 
 
 def test_find_games_finds_one_folder_per_game(tmp_path):
-    make_game(tmp_path / "GR1" / "CUSA01130", "CUSA01130", "01.00")
+    make_game(tmp_path / "GR1" / "CUSA01113", "CUSA01113", "01.00")
     make_game(tmp_path / "GR2" / "CUSA04934", "CUSA04934", "01.11")
     found = games.find_games(tmp_path)
     assert found["gr1"].region == "Europe" and found["gr2"].region == "Europe"

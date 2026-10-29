@@ -450,6 +450,15 @@ class App(tk.Tk):
         code = self.runner.exit_code()
         self.phase, self.playing = "idle", None
         info = self.infos.get(key) if key else None
+        if code == 3 and info is not None and key == "gr2":
+            # The frame rate patches do not fit this build of the game: it plays unpatched.
+            patches.mark_mismatch(self.paths, info)
+            error = self._play_runtime(key, info)
+            self.pages["play"].flash(error or "The frame rate patches are made for another build "
+                                     "of Gravity Rush 2: it runs at 30 FPS.", "bad" if error else "warn")
+            if error:
+                self._phase_changed()
+            return
         patch = patches.patch_file(self.paths, key) if key == "gr2" else None
         if code == 0 and info is not None and runtime.is_prepared(
                 self.paths, info, patch if patch and patch.is_file() else None):

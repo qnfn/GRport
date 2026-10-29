@@ -75,11 +75,36 @@ def patch_file(paths: AppPaths, key: str) -> Path:
     return paths.root / "user" / key / "patches.bin"
 
 
+def _mismatch_file(paths: AppPaths, key: str) -> Path:
+    return paths.root / "user" / key / "patches-mismatch.txt"
+
+
+def _eboot_stamp(info: GameFolder) -> str:
+    st = info.eboot.stat()
+    return f"{info.eboot} {st.st_size} {st.st_mtime_ns}"
+
+
+def mark_mismatch(paths: AppPaths, info: GameFolder) -> None:
+    """The prepare step found the patches made for another build of this game: it runs
+    unpatched (30 FPS) until its eboot changes."""
+    path = _mismatch_file(paths, info.game.key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_eboot_stamp(info), encoding="utf-8")
+    patch_file(paths, info.game.key).unlink(missing_ok=True)
+
+
+def mismatched(paths: AppPaths, info: GameFolder) -> bool:
+    try:
+        return _mismatch_file(paths, info.game.key).read_text(encoding="utf-8") == _eboot_stamp(info)
+    except OSError:
+        return False
+
+
 def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | None":
     """Gravity Rush 2 (version 01.11): writes user/gr2/patches.bin for the chosen frame rate
     and returns it; None for other games and versions. At 30 FPS without the patch file (no
     download yet, no connection) the game runs unpatched."""
-    if info.game.key != "gr2" or info.version != APP_VERSION:
+    if info.game.key != "gr2" or info.version != APP_VERSION or mismatched(paths, info):
         return None
     fps = s.games[info.game.key].fps
     if fps == 30 and not source(paths).is_file():
