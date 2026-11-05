@@ -3,7 +3,7 @@
 import tkinter as tk
 
 from grport import games, patches, shortcuts
-from grport.settings import FPS_CHOICES, LANGUAGES
+from grport.settings import DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES
 from grport.ui import theme
 
 WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160")
@@ -32,6 +32,10 @@ PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloade
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
 THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
                   "Auto turns it on (as On does); choose Off if the game crashes.")
+DEADZONE_NOTE = ("Stick dead zone: how far a controller stick moves before the game sees it, "
+                 "for sticks that drift or wobble (the character walks on its own). Raise it "
+                 "until the drift stops; 0% turns it off. Both sticks, keyboard and mouse "
+                 "unaffected.")
 READBACK_NOTE = ("GPU readbacks: the game gets the GPU's results back exactly when it needs them. "
                  "Precise fixes the rare missing or flickering effect but costs FPS; Off is "
                  "fastest. Off by default.")
@@ -160,7 +164,15 @@ class SetupPage(tk.Frame):
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
 
-        links = self.board.add(2, 0, span=2, title="Shortcuts")
+        controls = self.board.add(2, 0, span=2, title="Controller")
+        row = self._row(controls, "Stick dead zone", first=True)
+        self.deadzone_box = theme.Dropdown(row, app, lambda: self._popup(
+            self.deadzone_box, [(v, f"{v}%") for v in DEADZONE_CHOICES], self.g.stick_deadzone,
+            self.set_deadzone))
+        self.deadzone_box.pack(side="left")
+        self._note(controls, DEADZONE_NOTE)
+
+        links = self.board.add(4, 0, span=2, title="Shortcuts")
         row = tk.Frame(links)
         app.paint(row, bg="panel")
         row.pack(fill="x")
@@ -226,6 +238,7 @@ class SetupPage(tk.Frame):
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
         self.threading_choice.set(g.threading)
+        self.deadzone_box.set(f"{g.stick_deadzone}%")
         chosen = patches.extras(s, self.key)
         for prefix, choice in self.patch_choices.items():
             choice.set(prefix in chosen)
@@ -284,6 +297,10 @@ class SetupPage(tk.Frame):
 
     def set_threading(self, value: str) -> None:
         self.g.threading = value
+        self._saved()
+
+    def set_deadzone(self, percent: int) -> None:
+        self.g.stick_deadzone = int(percent)
         self._saved()
 
     def set_readbacks(self, value: str) -> None:

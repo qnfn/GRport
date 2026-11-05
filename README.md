@@ -55,12 +55,15 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   Window.
 - **Threading** (Auto, On, Off per game) and **desktop / Start menu shortcuts** (launcher
   SETUP).
+- **Stick dead zone** (launcher SETUP, 0-40% per game, 10% by default) for controller sticks
+  that drift.
 - **Saves**, Continue and Gallery; **language** of menus and subtitles; keyboard, mouse and
   controllers; FPS counter.
 
 ## Known problems
 
 - Sound can stop after Alt+Tab.
+- On some PCs sound effects and voices sound distorted ([#3](../../issues/3), being looked into).
 - Tested so far: the openings and the early game of both games.
 - DLSS has not been tested on an NVIDIA card yet.
 

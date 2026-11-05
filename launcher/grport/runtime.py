@@ -95,6 +95,8 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     })
     # SETUP > Threading: Auto is on (much faster in both games); Off for a PC it crashes on.
     out["BB_THREADED_RECORDING"] = "0" if g.threading == "0" else "1"
+    # SETUP > Stick dead zone: radial, on both controller sticks; 0 is off.
+    out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
     # FSR / DLSS anti-aliasing on the scene before the tonemap (the in-game menu); Gravity
     # Rush 2's motion comes from its own velocity target.
     out["BB_GR_UPSCALE"] = "1"

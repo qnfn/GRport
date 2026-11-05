@@ -221,6 +221,7 @@ class LogPage(tk.Frame):
             f"Patches: {', '.join(patches.extras(s, key)) or 'none'}",
             f"GPU readbacks: {g.readbacks}",
             f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",
+            f"Stick dead zone: {g.stick_deadzone}%",
         ]
         lines.append(f"Windows: {platform.version()}")
         try:

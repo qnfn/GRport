@@ -45,7 +45,11 @@ def test_setup_choices_are_saved(app):
     page.set_patch("Disable motion blur", False)
     page.set_window_size("2560x1440")
     page.set_readbacks("relaxed")
+    assert page.deadzone_box.text == "10%"  # the default
+    page.set_deadzone(24)
+    assert page.deadzone_box.text == "24%"
     saved = load_settings(app.paths)
+    assert saved.games["gr2"].stick_deadzone == 24 and saved.games["gr1"].stick_deadzone == 10
     assert saved.window_mode == "window" and saved.window_size == "2560x1440"
     assert "Disable motion blur" not in saved.games["gr2"].extras
     assert saved.games["gr2"].readbacks == "relaxed" and saved.games["gr1"].readbacks == "off"
@@ -58,3 +62,4 @@ def test_play_refuses_without_the_runtime(app):
 def test_bug_report_names_the_runtime(app):
     text = app.pages["log"].report_text()
     assert text.startswith("GRport ") and "runtime" in text.splitlines()[0]
+    assert "Stick dead zone: 10%" in text
