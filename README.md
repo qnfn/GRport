@@ -63,7 +63,6 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 ## Known problems
 
 - Sound can stop after Alt+Tab.
-- On some PCs sound effects and voices sound distorted ([#3](../../issues/3), being looked into).
 - Tested so far: the openings and the early game of both games.
 - DLSS has not been tested on an NVIDIA card yet.
 
