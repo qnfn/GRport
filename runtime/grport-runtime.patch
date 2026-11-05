@@ -24,6 +24,57 @@ index 529ef05..e04e771 100644
      # The PS4 range (64 GiB - 1 TiB) must stay free: no high-entropy ASLR for heaps and stacks.
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp
+index 055b494..85c270d 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp
+@@ -354,6 +354,30 @@ void NpHandler::SetAppearOffline(bool enable) {
+     }
+ }
+ 
++template <typename Pending, typename Ctx>
++static bool CancelPending(std::mutex& mutex, std::map<u64, Pending>& pending,
++                          const std::shared_ptr<Ctx>& req, s32 error_code) {
++    std::lock_guard lock(mutex);
++    const auto it =
++        std::ranges::find_if(pending, [&](const auto& p) { return p.second.req == req; });
++    if (it == pending.end()) {
++        return false;
++    }
++    pending.erase(it);
++    req->SetResult(error_code);
++    return true;
++}
++
++bool NpHandler::CancelPendingRequest(const std::shared_ptr<NpScore::ScoreRequestCtx>& req,
++                                     s32 error_code) {
++    return CancelPending(m_mutex_pending_score, m_pending_score, req, error_code);
++}
++
++bool NpHandler::CancelPendingRequest(const std::shared_ptr<NpTus::TusRequestCtx>& req,
++                                     s32 error_code) {
++    return CancelPending(m_mutex_pending_tus, m_pending_tus, req, error_code);
++}
++
+ void NpHandler::FailPendingRequests(s32 user_id, s32 error_code) {
+     size_t failed = 0;
+     {
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.h b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.h
+index 19da8dd..1add20a 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.h
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.h
+@@ -265,6 +265,11 @@ public:
+                            Libraries::Rtc::OrbisRtcTick* lastSortDate, u32* totalRecord,
+                            std::shared_ptr<NpScore::ScoreRequestCtx> req);
+ 
++    // Complete a request that is still awaiting a server reply and drop its pending entry, so a
++    // late reply cannot write into the caller's buffers. Returns false if no reply is pending.
++    bool CancelPendingRequest(const std::shared_ptr<NpScore::ScoreRequestCtx>& req, s32 error_code);
++    bool CancelPendingRequest(const std::shared_ptr<NpTus::TusRequestCtx>& req, s32 error_code);
++
+     // Title User Storage (TUS)
+     s32 TusGetMultiSlotVariable(s32 user_id, s32 service_label, const std::string& ownerNpId,
+                                 const std::string& virtualUser, const std::vector<s32>& slotIds,
 diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_party.cpp b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_party.cpp
 index 0fcf416..78758a4 100644
 --- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_party.cpp
@@ -42,6 +93,1157 @@ index 0fcf416..78758a4 100644
      return ORBIS_OK;
  }
  
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score.cpp b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score.cpp
+index 9476c48..f8ad7e8 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score.cpp
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score.cpp
+@@ -11,6 +11,7 @@
+ #include "core/libraries/error_codes.h"
+ #include "core/libraries/kernel/process.h"
+ #include "core/libraries/libs.h"
++#include "core/libraries/network/http_error.h"
+ #include "core/libraries/np/np_error.h"
+ #include "core/libraries/np/np_handler/np_handler.h"
+ #include "core/libraries/np/np_score/np_score.h"
+@@ -25,6 +26,7 @@ struct ScoreTitleCtx {
+     OrbisNpServiceLabel serviceLabel = 0;
+     s32 userId = -1;
+     OrbisNpScorePcId pcId = 0;
++    std::chrono::microseconds timeout = DefaultTimeout;
+ };
+ 
+ static std::mutex g_mutex;
+@@ -45,11 +47,6 @@ static std::shared_ptr<ScoreRequestCtx> LookupRequestUnlocked(OrbisNpScoreReques
+     return it == g_requests.end() ? nullptr : it->second;
+ }
+ 
+-static bool IsRequestAborted(const std::shared_ptr<ScoreRequestCtx>& req) {
+-    std::lock_guard lock(req->mutex);
+-    return req->result.has_value() && *req->result == ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+-}
+-
+ static s32 ServiceLabelForRequest(const std::shared_ptr<ScoreRequestCtx>& req) {
+     if (!req)
+         return 0;
+@@ -58,6 +55,36 @@ static s32 ServiceLabelForRequest(const std::shared_ptr<ScoreRequestCtx>& req) {
+     return tc != nullptr ? tc->serviceLabel : 0;
+ }
+ 
++static void ExpireIfTimedOut(const std::shared_ptr<ScoreRequestCtx>& req) {
++    {
++        std::lock_guard lock(req->mutex);
++        if (req->result.has_value() || std::chrono::steady_clock::now() < req->Deadline()) {
++            return;
++        }
++    }
++    if (NpHandler::GetInstance().CancelPendingRequest(req, ORBIS_HTTP_ERROR_TIMEOUT)) {
++        LOG_WARNING(Lib_NpScore, "request timed out after {} ms",
++                    std::chrono::duration_cast<std::chrono::milliseconds>(req->timeout).count());
++    }
++}
++
++static s32 WaitForResult(const std::shared_ptr<ScoreRequestCtx>& req) {
++    {
++        std::unique_lock lock(req->mutex);
++        if (req->cv.wait_until(lock, req->Deadline(), [&] { return req->result.has_value(); })) {
++            return *req->result;
++        }
++    }
++    ExpireIfTimedOut(req);
++    return req->Wait();
++}
++
++static void AbortRequest(const std::shared_ptr<ScoreRequestCtx>& req) {
++    if (!NpHandler::GetInstance().CancelPendingRequest(req, ORBIS_NP_COMMUNITY_ERROR_ABORTED)) {
++        req->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++    }
++}
++
+ //***********************************
+ // Title context management functions
+ //***********************************
+@@ -147,6 +174,7 @@ s32 PS4_SYSV_ABI sceNpScoreCreateRequest(s32 titleCtxId) {
+     req->titleCtxId = titleCtxId;
+     req->userId = tc->userId;
+     req->pcId = tc->pcId;
++    req->timeout = tc->timeout;
+     g_requests[id] = std::move(req);
+     LOG_INFO(Lib_NpScore, "CreateRequest id={} titleCtxId={}", id, titleCtxId);
+     return id;
+@@ -154,14 +182,17 @@ s32 PS4_SYSV_ABI sceNpScoreCreateRequest(s32 titleCtxId) {
+ 
+ s32 PS4_SYSV_ABI sceNpScoreDeleteRequest(s32 reqId) {
+     LOG_INFO(Lib_NpScore, "DeleteRequest reqId={}", reqId);
+-    std::lock_guard lock(g_mutex);
+-    auto req = LookupRequestUnlocked(reqId);
+-    if (!req) {
+-        LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+-        return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
++    std::shared_ptr<ScoreRequestCtx> req;
++    {
++        std::lock_guard lock(g_mutex);
++        req = LookupRequestUnlocked(reqId);
++        if (!req) {
++            LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
++            return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
++        }
++        g_requests.erase(reqId);
+     }
+-    req->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
+-    g_requests.erase(reqId);
++    AbortRequest(req);
+     return ORBIS_OK;
+ }
+ 
+@@ -176,7 +207,7 @@ s32 PS4_SYSV_ABI sceNpScoreAbortRequest(s32 reqId) {
+         LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+         return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+     }
+-    req->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++    AbortRequest(req);
+     return ORBIS_OK;
+ }
+ 
+@@ -196,6 +227,7 @@ s32 PS4_SYSV_ABI sceNpScorePollAsync(s32 reqId, s32* result) {
+         LOG_ERROR(Lib_NpScore, "PollAsync invalid reqId {}", reqId);
+         return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+     }
++    ExpireIfTimedOut(req);
+     std::lock_guard rlock(req->mutex);
+     if (!req->result.has_value()) {
+         return 1; // still running
+@@ -219,12 +251,11 @@ s32 PS4_SYSV_ABI sceNpScoreWaitAsync(s32 reqId, s32* result) {
+         LOG_ERROR(Lib_NpScore, "WaitAsync invalid reqId {}", reqId);
+         return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+     }
+-    std::unique_lock rlock(req->mutex);
+-    req->cv.wait(rlock, [&] { return req->result.has_value(); });
++    const s32 res = WaitForResult(req);
+     if (result != nullptr) {
+-        *result = *req->result;
++        *result = res;
+     }
+-    LOG_INFO(Lib_NpScore, "WaitAsync reqId={} completed (result={:#x})", reqId, *req->result);
++    LOG_INFO(Lib_NpScore, "WaitAsync reqId={} completed (result={:#x})", reqId, res);
+     return 0;
+ }
+ 
+@@ -260,7 +291,7 @@ s32 PS4_SYSV_ABI sceNpScoreRecordScore(s32 reqId, OrbisNpScoreBoardId boardId,
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -282,7 +313,7 @@ s32 PS4_SYSV_ABI sceNpScoreRecordScore(s32 reqId, OrbisNpScoreBoardId boardId,
+         req->SetResult(dispatch_err);
+         return dispatch_err;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreRecordScoreAsync(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -313,7 +344,7 @@ s32 PS4_SYSV_ABI sceNpScoreRecordScoreAsync(s32 reqId, OrbisNpScoreBoardId board
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -416,7 +447,7 @@ static int GetRankingByRangeImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -440,7 +471,7 @@ static int GetRankingByRangeImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ s32 PS4_SYSV_ABI sceNpScoreGetRankingByRange(
+     s32 reqId, OrbisNpScoreBoardId boardId, OrbisNpScoreRankNumber startSerialRank,
+@@ -559,7 +590,7 @@ static int GetRankingByNpIdImpl(s32 reqId, OrbisNpScoreBoardId boardId, const Or
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -582,7 +613,7 @@ static int GetRankingByNpIdImpl(s32 reqId, OrbisNpScoreBoardId boardId, const Or
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetRankingByNpId(
+@@ -677,7 +708,7 @@ static int GetRankingByAccountIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+         req = LookupRequestUnlocked(reqId);
+         if (!req)
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+-        if (IsRequestAborted(req))
++        if (!req->BeginOp())
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+     }
+ 
+@@ -696,7 +727,7 @@ static int GetRankingByAccountIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     }
+     if (is_async)
+         return ORBIS_OK;
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetRankingByAccountId(
+@@ -825,7 +856,7 @@ static int GetFriendsRankingImpl(s32 reqId, OrbisNpScoreBoardId boardId, s32 inc
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -851,7 +882,7 @@ static int GetFriendsRankingImpl(s32 reqId, OrbisNpScoreBoardId boardId, s32 inc
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetFriendsRanking(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -983,7 +1014,7 @@ static int GetRankingByNpIdPcIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1009,7 +1040,7 @@ static int GetRankingByNpIdPcIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetRankingByNpIdPcId(
+@@ -1098,7 +1129,7 @@ static int GetRankingByAccountIdPcIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+         req = LookupRequestUnlocked(reqId);
+         if (!req)
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+-        if (IsRequestAborted(req))
++        if (!req->BeginOp())
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+     }
+ 
+@@ -1120,7 +1151,7 @@ static int GetRankingByAccountIdPcIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     }
+     if (is_async)
+         return ORBIS_OK;
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetRankingByAccountIdPcId(
+@@ -1185,13 +1216,14 @@ static int GetBoardInfoImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+ 
+     if (boardInfo == nullptr) {
+         LOG_INFO(Lib_NpScore, "GetBoardInfo: legacy SDK with null boardInfo — no-op success");
++        req->SetResult(ORBIS_OK);
+         return ORBIS_OK;
+     }
+ 
+@@ -1206,7 +1238,7 @@ static int GetBoardInfoImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetBoardInfo(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -1245,7 +1277,7 @@ static int GetGameDataImpl(s32 reqId, OrbisNpScoreBoardId boardId, const OrbisNp
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1269,7 +1301,7 @@ static int GetGameDataImpl(s32 reqId, OrbisNpScoreBoardId boardId, const OrbisNp
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ static int GetGameDataByAccountIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -1292,7 +1324,7 @@ static int GetGameDataByAccountIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1309,7 +1341,7 @@ static int GetGameDataByAccountIdImpl(s32 reqId, OrbisNpScoreBoardId boardId,
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreGetGameData(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -1388,7 +1420,7 @@ static int RecordGameDataImpl(s32 reqId, OrbisNpScoreBoardId boardId, OrbisNpSco
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1405,7 +1437,7 @@ static int RecordGameDataImpl(s32 reqId, OrbisNpScoreBoardId boardId, OrbisNpSco
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreRecordGameData(s32 reqId, OrbisNpScoreBoardId boardId,
+@@ -1446,7 +1478,7 @@ static int CensorCommentImpl(s32 reqId, const char* comment, void* option, bool
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1465,7 +1497,7 @@ static int CensorCommentImpl(s32 reqId, const char* comment, void* option, bool
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreCensorComment(s32 reqId, const char* comment, void* option) {
+@@ -1507,7 +1539,7 @@ static int SanitizeCommentImpl(s32 reqId, const char* comment, char* sanitizedCo
+             LOG_ERROR(Lib_NpScore, "invalid reqId {}", reqId);
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+-        if (IsRequestAborted(req)) {
++        if (!req->BeginOp()) {
+             return ORBIS_NP_COMMUNITY_ERROR_ABORTED;
+         }
+     }
+@@ -1529,7 +1561,7 @@ static int SanitizeCommentImpl(s32 reqId, const char* comment, char* sanitizedCo
+     if (is_async) {
+         return ORBIS_OK;
+     }
+-    return req->Wait();
++    return WaitForResult(req);
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpScoreSanitizeComment(s32 reqId, const char* comment, char* sanitizedComment,
+@@ -1733,10 +1765,30 @@ int PS4_SYSV_ABI sceNpScoreSetThreadParam(s32 threadPriority, u64 cpuAffinityMas
+ 
+ int PS4_SYSV_ABI sceNpScoreSetTimeout(s32 id, s32 resolveRetry, s32 resolveTimeout, s32 connTimeout,
+                                       s32 sendTimeout, s32 recvTimeout) {
+-    LOG_ERROR(Lib_NpScore,
+-              "(STUBBED) called id={}, resolveRetry={}, resolveTimeout={}, "
+-              "connTimeout={}, sendTimeout={}, recvTimeout={}",
+-              id, resolveRetry, resolveTimeout, connTimeout, sendTimeout, recvTimeout);
++    LOG_INFO(Lib_NpScore,
++             "called id={}, resolveRetry={}, resolveTimeout={}, "
++             "connTimeout={}, sendTimeout={}, recvTimeout={}",
++             id, resolveRetry, resolveTimeout, connTimeout, sendTimeout, recvTimeout);
++    if (resolveRetry < 0 || resolveTimeout < 0 || connTimeout < 0 || sendTimeout < 0 ||
++        recvTimeout < 0) {
++        return ORBIS_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    }
++    const auto timeout = recvTimeout > 0 ? std::chrono::microseconds{recvTimeout} : DefaultTimeout;
++
++    std::lock_guard lock(g_mutex);
++    auto* tc = LookupTitleCtxUnlocked(id);
++    auto req = LookupRequestUnlocked(id);
++    if (!tc && !req) {
++        LOG_ERROR(Lib_NpScore, "invalid id {}", id);
++        return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
++    }
++    if (tc) {
++        tc->timeout = timeout;
++    }
++    if (req) {
++        std::lock_guard rlock(req->mutex);
++        req->timeout = timeout;
++    }
+     return ORBIS_OK;
+ }
+ 
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score_ctx.h b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score_ctx.h
+index 6214ae6..b756e90 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score_ctx.h
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_score/np_score_ctx.h
+@@ -2,25 +2,45 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #pragma once
+ 
++#include <chrono>
+ #include <condition_variable>
+ #include <mutex>
+ #include <optional>
+ #include "common/types.h"
++#include "core/libraries/np/np_error.h"
+ 
+ namespace Libraries::Np::NpScore {
+ 
++constexpr std::chrono::microseconds DefaultTimeout{20'000'000};
++
+ // Per-request state shared between np_score.cpp (creator/waiter) and the
+ // handler that fulfils the request (np_handler.cpp)
+ struct ScoreRequestCtx {
+     std::mutex mutex;
+     std::condition_variable cv;
+     std::optional<s32> result; // nullopt = still pending
++    std::chrono::microseconds timeout = DefaultTimeout;
++    std::chrono::steady_clock::time_point opStart = std::chrono::steady_clock::now();
+ 
+     s32 titleCtxId = 0;
+     s32 userId = -1;
+     s32 pcId = 0;
+     u32* tmpRankOut = nullptr;
+ 
++    // Start a new operation on this request ID. Request IDs are reused.
++    bool BeginOp() {
++        std::lock_guard lock(mutex);
++        if (result.has_value() && *result == ORBIS_NP_COMMUNITY_ERROR_ABORTED) {
++            return false;
++        }
++        result.reset();
++        opStart = std::chrono::steady_clock::now();
++        return true;
++    }
++
++    std::chrono::steady_clock::time_point Deadline() const {
++        return opStart + timeout;
++    }
+     void SetResult(s32 r) {
+         {
+             std::lock_guard lock(mutex);
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus.cpp b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus.cpp
+index bf64c04..0caef98 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus.cpp
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus.cpp
+@@ -8,6 +8,7 @@
+ #include "common/logging/log.h"
+ #include "core/libraries/error_codes.h"
+ #include "core/libraries/libs.h"
++#include "core/libraries/network/http_error.h"
+ #include "core/libraries/np/np_error.h"
+ #include "core/libraries/np/np_handler/np_handler.h"
+ #include "core/libraries/np/np_manager.h"
+@@ -43,6 +44,7 @@ struct NpTusDataXfer {
+ 
+ struct NpTusRequest {
+     int titleCtxId = 0;
++    std::chrono::microseconds timeout = DefaultTimeout;
+     std::shared_ptr<TusRequestCtx> ctx;
+     NpTusDataXfer xfer;
+ };
+@@ -50,6 +52,7 @@ struct NpTusRequest {
+ struct NpTusTitleContext {
+     u32 serviceLabel = 0;
+     OrbisNpId npId{};
++    std::chrono::microseconds timeout = DefaultTimeout;
+ };
+ 
+ constexpr size_t TusMaxTitleCtx = 32;
+@@ -76,6 +79,25 @@ static s32 FakeAsyncComplete(int reqId,
+     it->second.ctx = std::move(ctx);
+     return ORBIS_OK;
+ }
++
++static void ExpireIfTimedOut(const std::shared_ptr<TusRequestCtx>& ctx,
++                             std::chrono::microseconds timeout) {
++    if (ctx->HasResult() || std::chrono::steady_clock::now() < ctx->start + timeout) {
++        return;
++    }
++    if (Libraries::Np::NpHandler::GetInstance().CancelPendingRequest(ctx,
++                                                                     ORBIS_HTTP_ERROR_TIMEOUT)) {
++        LOG_WARNING(Lib_NpTus, "request timed out after {} ms",
++                    std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
++    }
++}
++
++static void AbortRequest(const std::shared_ptr<TusRequestCtx>& ctx) {
++    if (!Libraries::Np::NpHandler::GetInstance().CancelPendingRequest(
++            ctx, ORBIS_NP_COMMUNITY_ERROR_ABORTED)) {
++        ctx->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++    }
++}
+ static int g_next_ctx_id = 1; // 0 stays invalid
+ static int g_next_req_id = 1;
+ 
+@@ -182,7 +204,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteNpTitleCtx(int ctxId) {
+             if (rit->second.ctx) {
+                 LOG_ERROR(Lib_NpTus, "Cannot delete title context {}: request {} is still active",
+                           ctxId, rit->first);
+-                rit->second.ctx->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++                AbortRequest(rit->second.ctx);
+             }
+             rit = g_requests.erase(rit);
+         } else {
+@@ -211,6 +233,7 @@ s32 PS4_SYSV_ABI sceNpTusCreateRequest(int libCtxId) {
+     const int id = g_next_req_id++;
+     NpTusRequest r;
+     r.titleCtxId = libCtxId;
++    r.timeout = g_title_ctxs[libCtxId].timeout;
+     g_requests.emplace(id, std::move(r));
+     return id;
+ }
+@@ -228,7 +251,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteRequest(int requestId) {
+         if (!it->second.ctx->HasResult()) {
+             LOG_INFO(Lib_NpTus, "request {} still in flight, aborting it", requestId);
+         }
+-        it->second.ctx->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++        AbortRequest(it->second.ctx);
+     }
+     g_requests.erase(it);
+     return ORBIS_OK;
+@@ -248,7 +271,7 @@ s32 PS4_SYSV_ABI sceNpTusAbortRequest(int reqId) {
+         ctx = it->second.ctx;
+     }
+     if (ctx) {
+-        ctx->SetResult(ORBIS_NP_COMMUNITY_ERROR_ABORTED);
++        AbortRequest(ctx);
+     }
+     return ORBIS_OK;
+ }
+@@ -260,6 +283,7 @@ s32 PS4_SYSV_ABI sceNpTusPollAsync(int reqId, int* result) {
+     LOG_INFO(Lib_NpTus, "reqId = {:#x}", reqId);
+ 
+     std::shared_ptr<TusRequestCtx> ctx;
++    std::chrono::microseconds timeout{};
+     {
+         std::lock_guard glock(g_mutex);
+         auto it = g_requests.find(reqId);
+@@ -268,6 +292,7 @@ s32 PS4_SYSV_ABI sceNpTusPollAsync(int reqId, int* result) {
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+         ctx = it->second.ctx;
++        timeout = it->second.timeout;
+     }
+ 
+     if (!ctx) {
+@@ -275,6 +300,7 @@ s32 PS4_SYSV_ABI sceNpTusPollAsync(int reqId, int* result) {
+         return 1;
+     }
+ 
++    ExpireIfTimedOut(ctx, timeout);
+     std::lock_guard lock(ctx->mutex);
+     if (!ctx->result.has_value()) {
+         return 1; // still running
+@@ -296,6 +322,7 @@ s32 PS4_SYSV_ABI sceNpTusWaitAsync(int reqId, int* result) {
+     LOG_INFO(Lib_NpTus, "reqId = {:#x}", reqId);
+ 
+     std::shared_ptr<TusRequestCtx> ctx;
++    std::chrono::microseconds timeout{};
+     {
+         std::lock_guard glock(g_mutex);
+         auto it = g_requests.find(reqId);
+@@ -304,6 +331,7 @@ s32 PS4_SYSV_ABI sceNpTusWaitAsync(int reqId, int* result) {
+             return ORBIS_NP_COMMUNITY_ERROR_INVALID_ID;
+         }
+         ctx = it->second.ctx;
++        timeout = it->second.timeout;
+     }
+ 
+     if (!ctx) {
+@@ -311,9 +339,18 @@ s32 PS4_SYSV_ABI sceNpTusWaitAsync(int reqId, int* result) {
+         return ORBIS_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+     }
+ 
+-    std::unique_lock lock(ctx->mutex);
+-    ctx->cv.wait(lock, [&] { return ctx->result.has_value(); });
+-    const s32 res = *ctx->result;
++    s32 res;
++    {
++        std::unique_lock lock(ctx->mutex);
++        if (!ctx->cv.wait_until(lock, ctx->start + timeout,
++                                [&] { return ctx->result.has_value(); })) {
++            lock.unlock();
++            ExpireIfTimedOut(ctx, timeout);
++            lock.lock();
++            ctx->cv.wait(lock, [&] { return ctx->result.has_value(); });
++        }
++        res = *ctx->result;
++    }
+     if (result) {
+         *result = res;
+     }
+@@ -377,6 +414,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableAsync(int reqId, OrbisNpId* npId, s
+         uid, static_cast<s32>(svc), owner, std::string(), slots, variableArray, static_cast<u64>(n),
+         ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -438,6 +476,7 @@ s32 PS4_SYSV_ABI sceNpTusSetMultiSlotVariableAsync(int reqId, OrbisNpId* npId, s
+     s32 submit = Libraries::Np::NpHandler::GetInstance().TusSetMultiSlotVariable(
+         uid, static_cast<s32>(svc), owner, std::string(), slots, vals, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+ 
+@@ -509,6 +548,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableAVUserAsync(
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser, slots,
+         /*variablesOut=*/nullptr, static_cast<u64>(n), ctx, /*variablesAOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -573,6 +613,7 @@ s32 PS4_SYSV_ABI sceNpTusSetMultiSlotVariableVUserAsync(
+     s32 submit = Libraries::Np::NpHandler::GetInstance().TusSetMultiSlotVariable(
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser, slots, values, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -634,6 +675,7 @@ s32 PS4_SYSV_ABI sceNpTusSetMultiSlotVariableAAsync(int reqId, OrbisNpAccountId
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), /*virtualUser=*/std::string(),
+         slots, vals, ctx, static_cast<s64>(targetAccountId));
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -688,6 +730,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableAAsync(int reqId, OrbisNpAccountId
+         slots, /*variablesOut=*/nullptr, static_cast<u64>(n), ctx, /*variablesAOut=*/variableArray,
+         static_cast<s64>(targetAccountId));
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -741,6 +784,7 @@ s32 PS4_SYSV_ABI sceNpTusGetDataAAsync(int reqId, OrbisNpAccountId targetAccount
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), /*virtualUser=*/std::string(),
+         account, slotId, dataStatus, dataStatusSize, data, data ? recvSize : 0, offset, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -821,6 +865,7 @@ s32 PS4_SYSV_ABI sceNpTusSetDataAAsync(int reqId, OrbisNpAccountId targetAccount
+         /*isLastChangedAuthorNpId=*/std::string(), hasDateCheck,
+         hasDateCheck ? isLastChangedDate->tick : 0, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -882,6 +927,7 @@ s32 PS4_SYSV_ABI sceNpTusGetDataAVUserAsync(int reqId,
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser, /*ownerAccountId=*/0,
+         slotId, dataStatus, dataStatusSize, data, data ? recvSize : 0, offset, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -966,6 +1012,7 @@ s32 PS4_SYSV_ABI sceNpTusSetDataAVUserAsync(
+         /*isLastChangedAuthorNpId=*/std::string(), hasDateCheck,
+         hasDateCheck ? isLastChangedDate->tick : 0, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1039,6 +1086,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/outVariable,
+         /*variableAOut=*/nullptr, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1115,6 +1163,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableVUserAsync(
+         authorNpId, hasDateCheck, hasDateCheck ? isLastChangedDate->tick : 0,
+         /*variableOut=*/outVariable, /*variableAOut=*/nullptr, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1170,6 +1219,7 @@ s32 PS4_SYSV_ABI sceNpTusGetDataAsync(int reqId, const OrbisNpId* targetNpId, s3
+         slotId, /*statusAOut=*/nullptr, dataStatusSize, data, data ? recvSize : 0, offset, ctx,
+         /*statusOut=*/dataStatus);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1232,6 +1282,7 @@ s32 PS4_SYSV_ABI sceNpTusGetDataVUserAsync(int reqId,
+         slotId, /*statusAOut=*/nullptr, dataStatusSize, data, data ? recvSize : 0, offset, ctx,
+         /*statusOut=*/dataStatus);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1300,6 +1351,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsDataStatusAsync(int reqId, s32 slotId, s32 in
+         uid, static_cast<s32>(svc), slotId, includeSelf != 0, sortType, static_cast<u32>(arrayLen),
+         /*statusOut=*/statusArray, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1367,6 +1419,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsVariableAsync(int reqId, s32 slotId, s32 incl
+         uid, static_cast<s32>(svc), slotId, includeSelf != 0, sortType, static_cast<u32>(arrayLen),
+         /*variablesOut=*/variableArray, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1437,6 +1490,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusAsync(int reqId, const OrbisNpId*
+         uid, static_cast<s32>(svc), owner, /*virtualUser=*/std::string(), /*ownerAccountId=*/0,
+         slots, /*statusOut=*/statusArray, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1509,6 +1563,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusVUserAsync(
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser, /*ownerAccountId=*/0,
+         slots, /*statusOut=*/statusArray, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1588,6 +1643,7 @@ s32 PS4_SYSV_ABI sceNpTusSetDataAsync(int reqId, const OrbisNpId* targetNpId, s3
+         slotId, blob, infoBytes, hasAuthorCheck, /*isLastChangedAuthor=*/0, authorNpId,
+         hasDateCheck, hasDateCheck ? isLastChangedDate->tick : 0, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1674,6 +1730,7 @@ s32 PS4_SYSV_ABI sceNpTusSetDataVUserAsync(int reqId,
+         slotId, blob, infoBytes, hasAuthorCheck, /*isLastChangedAuthor=*/0, authorNpId,
+         hasDateCheck, hasDateCheck ? isLastChangedDate->tick : 0, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1752,6 +1809,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0,
+         /*variableOut=*/resultVariable, /*variableAOut=*/nullptr, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1833,6 +1891,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableVUserAsync(
+         authorNpId, hasDateCheck, hasDateCheck ? isLastChangedDate->tick : 0,
+         /*variableOut=*/resultVariable, /*variableAOut=*/nullptr, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1901,6 +1960,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableAAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/outVariable, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -1974,6 +2034,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableAVUserAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/outVariable, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2031,6 +2092,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteMultiSlotDataAsync(int reqId, const OrbisNpId* ta
+         uid, static_cast<s32>(svc), owner, /*virtualUser=*/std::string(), /*ownerAccountId=*/0,
+         slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2096,6 +2158,7 @@ sceNpTusDeleteMultiSlotDataVUserAsync(int reqId, const OrbisNpTusVirtualUserId*
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser,
+         /*ownerAccountId=*/0, slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2153,6 +2216,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteMultiSlotVariableAsync(int reqId, const OrbisNpId
+         uid, static_cast<s32>(svc), owner, /*virtualUser=*/std::string(), /*ownerAccountId=*/0,
+         slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2218,6 +2282,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteMultiSlotVariableVUserAsync(
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), virtualUser,
+         /*ownerAccountId=*/0, slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2347,6 +2412,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusAAsync(int reqId, OrbisNpAccountI
+         static_cast<s64>(targetAccountId), slots, /*statusOut=*/nullptr,
+         /*statusAOut=*/statusArray, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2422,6 +2488,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusAVUserAsync(
+         /*ownerAccountId=*/0, slots, /*statusOut=*/nullptr, /*statusAOut=*/statusArray,
+         static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2508,6 +2575,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusAsync(int reqId, const OrbisNpId*
+         uid, static_cast<s32>(svc), slotId, npids, /*virtualUsers=*/{}, /*ownerAccountIds=*/{},
+         /*statusOut=*/statusArray, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2581,6 +2649,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusVUserAsync(
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, vusers, /*ownerAccountIds=*/{},
+         /*statusOut=*/statusArray, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2652,6 +2721,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableAsync(int reqId, const OrbisNpId* t
+         uid, static_cast<s32>(svc), slotId, npids, /*virtualUsers=*/{}, /*ownerAccountIds=*/{},
+         /*variablesOut=*/variableArray, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2725,6 +2795,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableVUserAsync(
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, vusers, /*ownerAccountIds=*/{},
+         /*variablesOut=*/variableArray, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2887,6 +2958,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableAAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/resultVariable, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -2967,6 +3039,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableAVUserAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/resultVariable, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3009,6 +3082,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteMultiSlotDataAAsync(int reqId, OrbisNpAccountId t
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), /*virtualUser=*/std::string(),
+         static_cast<s64>(targetAccountId), slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3078,6 +3152,7 @@ s32 PS4_SYSV_ABI sceNpTusDeleteMultiSlotVariableAAsync(int reqId, OrbisNpAccount
+         uid, static_cast<s32>(svc), /*ownerNpId=*/std::string(), /*virtualUser=*/std::string(),
+         static_cast<s64>(targetAccountId), slots, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3170,6 +3245,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsDataStatusAAsync(
+         /*statusOut=*/nullptr, /*statusAOut=*/statusArray, static_cast<u64>(arrayLen), ctx,
+         startOffset, hitsOut);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3262,6 +3338,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsVariableAAsync(int reqId, s32 slotId, s32 inc
+         /*variablesOut=*/nullptr, /*variablesAOut=*/variableArray, static_cast<u64>(arrayLen), ctx,
+         startOffset, hitsOut);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3337,6 +3414,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableVUserAsync(
+         /*variablesOut=*/variableArray, static_cast<u64>(arrayLen), ctx,
+         /*variablesAOut=*/nullptr, /*ownerAccountId=*/0);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3407,6 +3485,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusAAsync(
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, /*virtualUsers=*/{}, accounts,
+         /*statusOut=*/nullptr, /*statusAOut=*/statusArray, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3480,6 +3559,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusAVUserAsync(
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, vusers, /*ownerAccountIds=*/{},
+         /*statusOut=*/nullptr, /*statusAOut=*/statusArray, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3552,6 +3632,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableAAsync(int reqId,
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, /*virtualUsers=*/{}, accounts,
+         /*variablesOut=*/nullptr, /*variablesAOut=*/variableArray, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3626,6 +3707,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableAVUserAsync(
+         uid, static_cast<s32>(svc), slotId, /*ownerNpIds=*/{}, vusers, /*ownerAccountIds=*/{},
+         /*variablesOut=*/nullptr, /*variablesAOut=*/variableArray, static_cast<u64>(arrayLen), ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3693,6 +3775,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableForCrossSaveAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/nullptr, ctx, /*variableCSOut=*/outVariable);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3767,6 +3850,7 @@ s32 PS4_SYSV_ABI sceNpTusAddAndGetVariableForCrossSaveVUserAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/nullptr, ctx, /*variableCSOut=*/outVariable);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3843,6 +3927,7 @@ s32 PS4_SYSV_ABI sceNpTusGetDataForCrossSaveAsync(int reqId, OrbisNpAccountId ta
+         account, slotId, /*statusAOut=*/nullptr, dataStatusSize, data, data ? recvSize : 0, offset,
+         ctx, /*statusOut=*/nullptr, /*statusCSOut=*/dataStatus);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -3923,6 +4008,7 @@ sceNpTusGetDataForCrossSaveVUserAsync(int reqId, const OrbisNpTusVirtualUserId*
+         slotId, /*statusAOut=*/nullptr, dataStatusSize, data, data ? recvSize : 0, offset, ctx,
+         /*statusOut=*/nullptr, /*statusCSOut=*/dataStatus);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4016,6 +4102,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsDataStatusForCrossSaveAsync(
+         /*statusOut=*/nullptr, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx, startOffset,
+         hitsOut, /*statusCSOut=*/statusArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4108,6 +4195,7 @@ s32 PS4_SYSV_ABI sceNpTusGetFriendsVariableForCrossSaveAsync(
+         /*variablesOut=*/nullptr, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx,
+         startOffset, hitsOut, /*variablesCSOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4178,6 +4266,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSaveAsync(
+         static_cast<s64>(targetAccountId), slots, /*statusOut=*/nullptr,
+         /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx, /*statusCSOut=*/statusArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4255,6 +4344,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSaveVUserAsync(
+         /*ownerAccountId=*/0, slots, /*statusOut=*/nullptr, /*statusAOut=*/nullptr,
+         static_cast<u64>(arrayLen), ctx, /*statusCSOut=*/statusArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4323,6 +4413,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSaveAsync(
+         slots, /*variablesOut=*/nullptr, static_cast<u64>(n), ctx, /*variablesAOut=*/nullptr,
+         static_cast<s64>(targetAccountId), /*variablesCSOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4397,6 +4488,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSaveVUserAsync(
+         /*variablesOut=*/nullptr, static_cast<u64>(n), ctx, /*variablesAOut=*/nullptr,
+         /*ownerAccountId=*/0, /*variablesCSOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4469,6 +4561,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSaveAsync(
+         /*statusOut=*/nullptr, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx,
+         /*statusCSOut=*/statusArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4546,6 +4639,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSaveVUserAsync(
+         /*statusOut=*/nullptr, /*statusAOut=*/nullptr, static_cast<u64>(arrayLen), ctx,
+         /*statusCSOut=*/statusArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4617,6 +4711,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSaveAsync(
+         /*variablesOut=*/nullptr, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx,
+         /*variablesCSOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4694,6 +4789,7 @@ s32 PS4_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSaveVUserAsync(
+         /*variablesOut=*/nullptr, /*variablesAOut=*/nullptr, static_cast<u64>(arrayLen), ctx,
+         /*variablesCSOut=*/variableArray);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4767,6 +4863,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableForCrossSaveAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/nullptr, ctx, /*variableCSOut=*/resultVariable);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4848,6 +4945,7 @@ s32 PS4_SYSV_ABI sceNpTusTryAndSetVariableForCrossSaveVUserAsync(
+         hasDateCheck ? isLastChangedDate->tick : 0, /*variableOut=*/nullptr,
+         /*variableAOut=*/nullptr, ctx, /*variableCSOut=*/resultVariable);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4931,6 +5029,7 @@ s32 PS4_SYSV_ABI sceNpTssGetDataAsync(int reqId, s32 slotId, OrbisNpTssDataStatu
+         uid, static_cast<s32>(svc), slotId, hasOffset, startOffset, hasLastByte, lastByte,
+         hasIfParam, ifType, ifLastModified, dataStatus, data, data ? recvSize : 0, ctx);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+@@ -4979,6 +5078,7 @@ s32 PS4_SYSV_ABI sceNpTssGetSmallStorageAsync(int reqId, void* data, u64 maxSize
+         /*hasIfParam=*/false, 0, 0, /*statusOut=*/nullptr, data, data ? maxSize : 0, ctx,
+         /*contentLengthOut=*/contentLength);
+     if (submit < 0) {
++        ctx->SetResult(submit);
+         return submit;
+     }
+     return ORBIS_OK;
+diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus_ctx.h b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus_ctx.h
+index 39867e8..fc40417 100644
+--- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus_ctx.h
++++ b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_tus/np_tus_ctx.h
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #pragma once
+ 
++#include <chrono>
+ #include <condition_variable>
+ #include <mutex>
+ #include <optional>
+@@ -9,10 +10,13 @@
+ 
+ namespace Libraries::Np::NpTus {
+ 
++constexpr std::chrono::microseconds DefaultTimeout{20'000'000};
++
+ struct TusRequestCtx {
+     std::mutex mutex;
+     std::condition_variable cv;
+     std::optional<s32> result;
++    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+ 
+     void SetResult(s32 r) {
+         {
 diff --git a/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp b/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp
 index 5e27f22..8c8df8f 100644
 --- a/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp
@@ -15672,10 +16874,26 @@ index 45fd566..a8a94e7 100644
      auto [view_result, view] = instance.GetDevice().createImageViewUnique(image_view_ci);
      ASSERT_MSG(view_result == vk::Result::eSuccess, "Failed to create image view: {}",
 diff --git a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-index 6c56743..ea69c29 100644
+index 6c56743..4390f3a 100644
 --- a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 +++ b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-@@ -317,6 +317,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
+@@ -33,6 +33,15 @@ static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
+ static constexpr u32 MAX_IMAGE_VIEWS = std::numeric_limits<u16>::max();
+ static constexpr u32 MAX_SAMPLERS = std::numeric_limits<u16>::max();
+ 
++// GRport: the image and view tables are as finite as VRAM. Gravity Rush 2's City streams tens
++// of thousands of small textures (~26 KB each): 4.5 GB of a 16 GB card stayed under the memory
++// trigger, the collector never ran, and the 65535th image or view stopped the game with "Run out
++// of space" (issue #5). Filling the tables counts as pressure the way memory does.
++static constexpr size_t TRIGGER_GC_IMAGES = MAX_IMAGES * 3 / 4;
++static constexpr size_t PRESSURE_GC_IMAGES = MAX_IMAGES * 7 / 8;
++static constexpr size_t CRITICAL_GC_IMAGES = MAX_IMAGES * 15 / 16;
++static_assert(MAX_IMAGE_VIEWS == MAX_IMAGES);
++
+ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
+                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
+                            BufferCache& buffer_cache_, PageManager& page_manager_)
+@@ -317,6 +326,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
          // Inherit image usage
          auto& new_image = slot_images[new_image_id];
          new_image.usage = old_image.usage;
@@ -15684,7 +16902,7 @@ index 6c56743..ea69c29 100644
          if (new_info.num_samples == 1 &&
              (new_info.resources.layers > old_image.info.resources.layers ||
               new_info.resources.levels > old_image.info.resources.levels)) {
-@@ -555,12 +557,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+@@ -555,12 +566,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                      return {merged_image_id, -1, -1};
                  }
  
@@ -15709,7 +16927,7 @@ index 6c56743..ea69c29 100644
              }
          }
      }
-@@ -575,8 +584,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -575,8 +593,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
      auto& src_image = slot_images[image_id];
      auto& new_image = slot_images[new_image_id];
  
@@ -15729,7 +16947,7 @@ index 6c56743..ea69c29 100644
  
      if (src_image.binding.is_bound || src_image.binding.is_target) {
          src_image.binding.needs_rebind = 1u;
-@@ -584,7 +603,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -584,7 +612,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
  
      TrackImage(new_image_id);
      new_image.flags &= ~ImageFlagBits::Dirty;
@@ -15740,7 +16958,7 @@ index 6c56743..ea69c29 100644
      FreeImage(image_id);
  
      return new_image_id;
-@@ -885,7 +906,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
+@@ -885,7 +915,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
  }
  
  void TextureCache::AssociateStencil(ImageId depth_id, const ImageInfo& depth_info) {
@@ -15750,7 +16968,7 @@ index 6c56743..ea69c29 100644
          return;
      }
      ImageId stencil_id{};
-@@ -1217,13 +1239,22 @@ void TextureCache::GarbageCollectImages() {
+@@ -1217,13 +1248,22 @@ void TextureCache::GarbageCollectImages() {
          // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
          // collector evicted images used two or three frames ago on every submission and wrote
          // GPU-written ones back. Compare with the driver's current budget instead.
@@ -15778,6 +16996,79 @@ index 6c56743..ea69c29 100644
              if (budget != 0) {
                  trigger_gc_memory = budget / 10 * 7;
                  pressure_gc_memory = budget / 100 * 85;
+@@ -1245,7 +1285,11 @@ void TextureCache::GarbageCollectImages() {
+         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
+     }
+     ReportMemory();
+-    if (total_used_memory < trigger_gc_memory) {
++    const auto over = [&](u64 memory_mark, size_t count_mark) {
++        return total_used_memory >= memory_mark ||
++               std::max(slot_images.Size(), slot_image_views.Size()) >= count_mark;
++    };
++    if (!over(trigger_gc_memory, TRIGGER_GC_IMAGES)) {
+         return;
+     }
+     static const u64 idle_seconds = [] {
+@@ -1277,8 +1321,8 @@ void TextureCache::GarbageCollectImages() {
+ 
+     // emergency: still over the critical mark after evicting what was unused for a second.
+     const auto configure = [&](bool allow_aggressive, bool emergency = false) {
+-        pressured = total_used_memory >= pressure_gc_memory;
+-        aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
++        pressured = over(pressure_gc_memory, PRESSURE_GC_IMAGES);
++        aggresive = allow_aggressive && over(critical_gc_memory, CRITICAL_GC_IMAGES);
+         const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
+         below_tick = gc_tick - ticks_to_destroy;
+         if (!pressured && !aggresive) {
+@@ -1353,13 +1397,13 @@ void TextureCache::GarbageCollectImages() {
+         }
+         ++gc_evictions;
+         FreeImage(image_id);
+-        if (total_used_memory < critical_gc_memory) {
++        if (!over(critical_gc_memory, CRITICAL_GC_IMAGES)) {
+             if (aggresive) {
+                 num_deletions >>= 2;
+                 aggresive = false;
+                 return false;
+             }
+-            if (pressured && total_used_memory < pressure_gc_memory) {
++            if (pressured && !over(pressure_gc_memory, PRESSURE_GC_IMAGES)) {
+                 num_deletions >>= 1;
+                 pressured = false;
+             }
+@@ -1372,13 +1416,13 @@ void TextureCache::GarbageCollectImages() {
+     gc_kept = gc_kept_bytes = 0;
+     image_lru_cache.ForEachItemBelow(below_tick, clean_up);
+ 
+-    if (total_used_memory >= critical_gc_memory) {
++    if (over(critical_gc_memory, CRITICAL_GC_IMAGES)) {
+         // If we are still over the critical limit, run an aggressive GC
+         configure(true);
+         gc_kept = gc_kept_bytes = 0;
+         image_lru_cache.ForEachItemBelow(below_tick, clean_up);
+     }
+-    if (total_used_memory >= critical_gc_memory) {
++    if (over(critical_gc_memory, CRITICAL_GC_IMAGES)) {
+         // Still over it: what was used a moment ago goes too (out of memory otherwise).
+         configure(true, true);
+         image_lru_cache.ForEachItemBelow(below_tick, clean_up);
+@@ -1387,12 +1431,14 @@ void TextureCache::GarbageCollectImages() {
+     if (pressured || gc_downloads != 0) {
+         const auto now = std::chrono::steady_clock::now();
+         if (now - gc_report_time >= std::chrono::seconds(5)) {
+-            std::printf("Texture cache: memory pressure, %llu of %llu MiB (critical %llu): "
++            std::printf("Texture cache: pressure, %llu of %llu MiB (critical %llu), %zu images "
++                        "and %zu views of %u: "
+                         "%llu images evicted, %llu written back since the last report; "
+                         "%llu old GPU-written tiled images kept (%llu MiB), %llu dropped\n",
+                         (unsigned long long)(total_used_memory >> 20),
+                         (unsigned long long)(pressure_gc_memory >> 20),
+-                        (unsigned long long)(critical_gc_memory >> 20),
++                        (unsigned long long)(critical_gc_memory >> 20), slot_images.Size(),
++                        slot_image_views.Size(), MAX_IMAGES,
+                         (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
+                         (unsigned long long)gc_kept, (unsigned long long)(gc_kept_bytes >> 20),
+                         (unsigned long long)gc_dropped);
 diff --git a/gpu/shadps4/video_core/texture_cache/tile_manager.cpp b/gpu/shadps4/video_core/texture_cache/tile_manager.cpp
 index 8d41b8c..d34abcf 100644
 --- a/gpu/shadps4/video_core/texture_cache/tile_manager.cpp
