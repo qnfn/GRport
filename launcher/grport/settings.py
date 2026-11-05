@@ -16,6 +16,11 @@ READBACKS = ("off", "relaxed", "precise")
 # Threaded recording (the runtime's BB_THREADED_RECORDING): auto (on: it runs much faster in
 # both games), on ("1") or off ("0").
 THREADING = ("auto", "1", "0")
+# Stick dead zone in percent (the runtime's BB_STICK_DEADZONE): a radial dead zone on both
+# controller sticks against drift; 0 turns it off. SETUP offers these; grport.json takes 0-90.
+DEADZONE_CHOICES = tuple(range(0, 41, 2))
+DEADZONE_DEFAULT = 10
+DEADZONE_MAX = 90
 # fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
 # window: a real window with a title bar, kept inside the desktop.
 WINDOW_MODES = ("fullscreen", "borderless", "window")
@@ -36,6 +41,7 @@ class GameSettings:
     readbacks: str = "off"      # READBACKS
     threading: str = "auto"     # THREADING
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
+    stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
 
 
@@ -83,6 +89,8 @@ def _load_game(key: str, raw) -> GameSettings:
         g.threading = "auto"
     if g.fps not in FPS_CHOICES[key]:
         g.fps = FPS_CHOICES[key][0]
+    if not 0 <= g.stick_deadzone <= DEADZONE_MAX:
+        g.stick_deadzone = DEADZONE_DEFAULT
     return g
 
 

@@ -19839,6 +19839,66 @@ index 773ee79..d68ba1e 100644
 +/* libSceFont on FreeType (runtime_font.c). */
 +uintptr_t runtime_font_resolve(const char *name);
  #endif
+diff --git a/src/runtime_audio.c b/src/runtime_audio.c
+index e9ffa16..4580ade 100644
+--- a/src/runtime_audio.c
++++ b/src/runtime_audio.c
+@@ -3,8 +3,12 @@
+  * reads 256-frame slots out of its mixer's 512-frame ring, and returning in
+  * bursts (whenever the device pulls a quantum) lets it overtake the mixer and
+  * play stale halves - a click every 10.7 ms. The lowest SDL queue level of
+- * each window is steered to two buffers (silence prefill on underrun, ±3%
+- * cadence corrections), which also absorbs device clock drift. Without an audio device (headless runs, BB_AUDIO=none)
++ * each window is steered to a target depth (silence prefill on underrun, ±3%
++ * cadence corrections), which also absorbs device clock drift. The target is
++ * BB_AUDIO_QUEUE_MS (default 32 ms, at least two buffers): a game's audio thread
++ * can pause for tens of milliseconds (Gravity Rush 2: 15-30 ms on a fast PC,
++ * more on a slow one), and a two-buffer queue (10.7 ms) ran dry through each
++ * pause - silence gaps heard as crackling. Without an audio device (headless runs, BB_AUDIO=none)
+  * ports only follow the clock. */
+ #define _GNU_SOURCE
+ #include "runtime.h"
+@@ -32,6 +36,7 @@
+ 
+ typedef struct {
+     int used, type, channels, out_channels, is_float, frames, sample_bytes, std_layout;
++    int queue_buffers; /* target SDL queue depth, in buffers */
+     int32_t volume[8];
+     SDL_AudioStream *stream;
+     uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
+@@ -160,6 +165,13 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+     p->is_float=format>=3 && format!=6;
+     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
+     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
++    {
++        const char *env=getenv("BB_AUDIO_QUEUE_MS");
++        long ms=32;
++        if (env && env[0]) { char *end=NULL; long v=strtol(env,&end,10); if (end!=env && v>0 && v<=500) ms=v; }
++        long n=(ms*48+(long)length-1)/(long)length; /* ceil(ms * 48 frames/ms / buffer frames) */
++        p->queue_buffers=(int)(n<2 ? 2 : n>16 ? 16 : n);
++    }
+     if (sdl_audio()) {
+         audio_levels();
+         int out=p->channels;
+@@ -178,7 +190,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+     }
+     ++ports_opened;
+     pthread_mutex_unlock(&table_lock);
+-    printf("Runtime: audio port %d opened (type %d, %d ch -> %d ch, %s, %u frames)\n",id,type,p->channels,p->out_channels,p->is_float ? "float" : "s16",length);
++    printf("Runtime: audio port %d opened (type %d, %d ch -> %d ch, %s, %u frames, queue %d buffers = %.1f ms)\n",id,type,p->channels,p->out_channels,p->is_float ? "float" : "s16",length,
++           p->queue_buffers,p->queue_buffers*(double)length/48.0);
+     return (type<<16) | id | 0x20000000;
+ }
+ static ABI int32_t audio_close(int32_t handle) {
+@@ -263,7 +276,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+         if (p->stream) {
+             /* The device drains the queue in quanta (21 ms on PipeWire), so the level
+                is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
+-            int low=2*(int)out_bytes, queued=SDL_GetAudioStreamQueued(p->stream);
++            int low=p->queue_buffers*(int)out_bytes, queued=SDL_GetAudioStreamQueued(p->stream);
+             if (queued<(int)out_bytes) {
+                 static const unsigned char silence[2048*8*4];
+                 SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)out_bytes ? low-queued : (int)out_bytes);
 diff --git a/src/runtime_content.c b/src/runtime_content.c
 index 045f3c0..4da5a08 100644
 --- a/src/runtime_content.c
@@ -22213,6 +22273,53 @@ index 0000000..9a1ad99
 +    const char *off = getenv("BB_NGS2");
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
+diff --git a/src/runtime_pad.c b/src/runtime_pad.c
+index 687bfb5..138e671 100644
+--- a/src/runtime_pad.c
++++ b/src/runtime_pad.c
+@@ -369,6 +369,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+     return value<0 ? -(int)scaled : (int)scaled;
+ }
+ 
++/* BB_STICK_DEADZONE (percent, 0-90; the launcher's SETUP > Stick dead zone): a radial dead
++ * zone on each whole stick, for worn or wobbly sticks (drift, TMR jitter) that moved the
++ * character on their own. Inside the circle the stick reads centred; outside it the distance
++ * is rescaled so motion starts from 0 at the edge and full deflection stays full, and the
++ * direction is kept (a per-axis dead zone would snap near-diagonal input onto the axes).
++ * 0 or unset: off. Runs after input.ini's per-axis analog_deadzone, which still applies. */
++static int stick_deadzone_percent(void) {
++    static int value=-1;
++    if (value<0) {
++        const char *env=getenv("BB_STICK_DEADZONE");
++        char *end=NULL;
++        long v=env && env[0] ? strtol(env,&end,10) : 0;
++        value=env && env[0] && end && !*end && v>=0 && v<=90 ? (int)v : 0;
++        if (value) printf("Runtime: stick dead zone %d%% (radial)\n",value);
++    }
++    return value;
++}
++static void apply_radial_deadzone(int *x, int *y, int percent) {
++    if (percent<=0) return;
++    const double radius=127.0*percent/100.0, mag=sqrt((double)*x * *x + (double)*y * *y);
++    if (mag<=radius) { *x=0; *y=0; return; }
++    const double scale=(mag-radius)/(127.0-radius)*127.0/mag;
++    const long nx=lround(*x*scale), ny=lround(*y*scale);
++    *x=nx<-127 ? -127 : nx>127 ? 127 : (int)nx;
++    *y=ny<-127 ? -127 : ny>127 ? 127 : (int)ny;
++}
++
+ /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
+  * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
+  * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
+@@ -617,6 +644,8 @@ static void sample_host(PadData *d) {
+     ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
+     rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
+     ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
++    apply_radial_deadzone(&lx,&ly,stick_deadzone_percent());
++    apply_radial_deadzone(&rx,&ry,stick_deadzone_percent());
+ 
+     /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
+      * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
 diff --git a/src/runtime_rwlock.c b/src/runtime_rwlock.c
 index 418035f..11a12b8 100644
 --- a/src/runtime_rwlock.c
@@ -22483,6 +22590,44 @@ index 6419d19..02f5aad 100644
          {"nsYoNRywwNg#p#J",attr_init}, {"62KCwEMmzcM#p#J",attr_destroy},
          {"x1X76arYMxU#p#J",attr_get}, {"8+s5BzZjxSg#p#J",attr_affinity},
          {"UTXzJbWhhTE#p#J",attr_set_stack}, {"-Wreprtu0Qs#p#J",attr_set_detach},
+diff --git a/tests/test_pad.c b/tests/test_pad.c
+index a477ea9..ccf4071 100644
+--- a/tests/test_pad.c
++++ b/tests/test_pad.c
+@@ -493,7 +493,33 @@ static void test_reload_on_f8(void) {
+     puts("PASS: F8 reloads input.ini live (AC-018)");
+ }
+ 
++/* BB_STICK_DEADZONE's radial dead zone (10% = radius 12.7). */
++static void test_radial_deadzone(void) {
++    int x=10, y=5;
++    apply_radial_deadzone(&x,&y,10);
++    assert(x==0 && y==0);                  /* drift inside the circle: centred */
++    x=0; y=40;
++    apply_radial_deadzone(&x,&y,10);
++    assert(x==0 && y==30);                 /* (40-12.7)/(127-12.7)*127 = 30.3 */
++    x=30; y=40;
++    apply_radial_deadzone(&x,&y,10);
++    assert(x==25 && y==33);                /* distance 50 -> 41.4, direction kept */
++    x=0; y=-127;
++    apply_radial_deadzone(&x,&y,10);
++    assert(x==0 && y==-127);               /* full deflection stays full */
++    x=127; y=127;
++    apply_radial_deadzone(&x,&y,10);
++    assert(x==127 && y==127);              /* keyboard diagonals stay saturated */
++    x=5; y=3;
++    apply_radial_deadzone(&x,&y,0);
++    assert(x==5 && y==3);                  /* 0: off */
++    x=100; y=0;
++    apply_radial_deadzone(&x,&y,90);
++    assert(x==0 && y==0);                  /* inside a 90% circle (114.3) */
++}
++
+ int main(void) {
++    test_radial_deadzone();
+     test_binding_evaluation();
+     test_combos();
+     test_prompt_texts();
 diff --git a/tests/test_prompt_icons.cpp b/tests/test_prompt_icons.cpp
 index a5edf37..37e4026 100644
 --- a/tests/test_prompt_icons.cpp

@@ -191,3 +191,17 @@ def test_threading_choice_reaches_the_runtime(paths, tmp_path):
     assert runtime.env(paths, s, info, base={})["BB_THREADED_RECORDING"] == "1"  # Auto: on
     s.games["gr2"].threading = "0"
     assert runtime.env(paths, s, info, base={"BB_THREADED_RECORDING": "1"})["BB_THREADED_RECORDING"] == "0"
+
+
+def test_stick_deadzone_reaches_the_runtime_and_bad_values_reset(paths, tmp_path):
+    info = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    s = LauncherSettings()
+    assert runtime.env(paths, s, info, base={})["BB_STICK_DEADZONE"] == "10"  # the default
+    s.games["gr2"].stick_deadzone = 0
+    assert runtime.env(paths, s, info, base={})["BB_STICK_DEADZONE"] == "0"   # off
+    s.games["gr2"].stick_deadzone = 33  # any value from grport.json, not only SETUP's steps
+    save_settings(paths, s)
+    assert load_settings(paths).games["gr2"].stick_deadzone == 33
+    for bad in (-5, 91, "12", True):
+        paths.settings_json.write_text(json.dumps({"games": {"gr2": {"stick_deadzone": bad}}}))
+        assert load_settings(paths).games["gr2"].stick_deadzone == 10
