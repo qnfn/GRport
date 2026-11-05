@@ -30,8 +30,8 @@ PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloade
                 "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
-THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads. It gives more FPS "
-                  "but can crash the game, so Auto keeps it off (as Off does); On turns it on.")
+THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
+                  "Auto turns it on (as On does); choose Off if the game crashes.")
 READBACK_NOTE = ("GPU readbacks: the game gets the GPU's results back exactly when it needs them. "
                  "Precise fixes the rare missing or flickering effect but costs FPS; Off is "
                  "fastest. Off by default.")

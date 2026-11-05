@@ -188,6 +188,6 @@ def test_shortcut_points_at_the_launcher(paths, tmp_path):
 def test_threading_choice_reaches_the_runtime(paths, tmp_path):
     info = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
     s = LauncherSettings()
-    assert "BB_THREADED_RECORDING" not in runtime.env(paths, s, info, base={"BB_THREADED_RECORDING": "1"})
-    s.games["gr2"].threading = "1"
-    assert runtime.env(paths, s, info, base={})["BB_THREADED_RECORDING"] == "1"
+    assert runtime.env(paths, s, info, base={})["BB_THREADED_RECORDING"] == "1"  # Auto: on
+    s.games["gr2"].threading = "0"
+    assert runtime.env(paths, s, info, base={"BB_THREADED_RECORDING": "1"})["BB_THREADED_RECORDING"] == "0"
