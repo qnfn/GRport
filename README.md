@@ -26,8 +26,8 @@ Get the latest release from the [Releases](../../releases) page:
 
 Unzip it anywhere (not inside Program Files), start `GRport.exe`, choose each game's dumped
 folder (the one with `eboot.bin`) and press **PLAY**. The first PLAY prepares the game for
-GRport (about a minute). Later versions install from the launcher: **CHECK FOR UPDATES** (next
-to LOG) finds them, and your saves and settings stay.
+GRport (about a minute). Later versions install from the launcher: it checks GitHub when it
+starts and the PLAY page offers a new version; your saves and settings stay.
 
 ## Supported games
 

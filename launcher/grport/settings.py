@@ -13,8 +13,8 @@ from .games import GAMES
 from .paths import AppPaths
 
 READBACKS = ("off", "relaxed", "precise")
-# Threaded recording (the runtime's BB_THREADED_RECORDING): auto (the runtime's choice: off), on
-# ("1") or off ("0").
+# Threaded recording (the runtime's BB_THREADED_RECORDING): auto (on: it runs much faster in
+# both games), on ("1") or off ("0").
 THREADING = ("auto", "1", "0")
 # fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
 # window: a real window with a title bar, kept inside the desktop.

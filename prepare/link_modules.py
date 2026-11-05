@@ -307,7 +307,7 @@ def link(game, out, module_names=DEFAULT_MODULES, patched=(), cave=0):
     image, segments, cpu_compat = patch_image(image, segments, main, table, relocs)
     cpu_compat['libc'] = libc_changes
     main_size = min((t['base'] for t in table), default=len(image))
-    image, segments, cpu_compat['extrq'] = extrq.patch(image, segments, main_size, relocs)
+    image, segments, cpu_compat['extrq'] = extrq.patch(image, segments, main_size, relocs, ph=main['ph'])
     sites, analysis = None, None
     if red_zones_enabled():
         try:
@@ -357,7 +357,8 @@ def link(game, out, module_names=DEFAULT_MODULES, patched=(), cave=0):
                   'can still have incorrect semantics; this is not a complete compatibility profile.')
     if cpu_compat['extrq']['sites']:
         print(f"CPU compatibility: {cpu_compat['extrq']['sites']} SSE4a EXTRQ sites translated "
-              f"for a CPU without SSE4a ({cpu_compat['extrq']['by_form']})")
+              f"for a CPU without SSE4a ({cpu_compat['extrq']['by_form']}; "
+              f"{cpu_compat['extrq']['left_to_runtime']} left to the runtime)")
     if red_zone['enabled']:
         print(f"Red zone: {red_zone['sites']}/{red_zone['available']} guest access sites run red-zone-safe "
               f"({len(red_zone['cpu_overlaps'])} left to CPU translations; BB_RED_ZONE=0 disables)")

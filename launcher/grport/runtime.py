@@ -93,10 +93,8 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         "BB_FPS_LOG": "1",
         "BB_LANGUAGE": str(next(code for key, _, code in LANGUAGES if key == s.language)),
     })
-    # SETUP > Threading: Auto leaves it to the runtime (off).
-    out.pop("BB_THREADED_RECORDING", None)
-    if g.threading in ("0", "1"):
-        out["BB_THREADED_RECORDING"] = g.threading
+    # SETUP > Threading: Auto is on (much faster in both games); Off for a PC it crashes on.
+    out["BB_THREADED_RECORDING"] = "0" if g.threading == "0" else "1"
     # FSR / DLSS anti-aliasing on the scene before the tonemap (the in-game menu); Gravity
     # Rush 2's motion comes from its own velocity target.
     out["BB_GR_UPSCALE"] = "1"

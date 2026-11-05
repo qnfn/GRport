@@ -19224,7 +19224,7 @@ index 0000000..de4c5b7
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
-index 988d694..e9d5357 100644
+index 988d694..6d0379a 100644
 --- a/src/probe.c
 +++ b/src/probe.c
 @@ -5,6 +5,7 @@
@@ -19492,7 +19492,7 @@ index 988d694..e9d5357 100644
          ++shown;
      }
      /* rbp chain (guest and host code keep frame pointers). */
-@@ -200,10 +396,9 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
+@@ -200,16 +396,56 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
          SIZE_T got=0;
          if (!ReadProcessMemory(GetCurrentProcess(),(void *)rbp,frame,sizeof(frame),&got) || got!=sizeof(frame) || frame[0]<=rbp) break;
          describe_address(where,sizeof(where),frame[1]);
@@ -19504,7 +19504,54 @@ index 988d694..e9d5357 100644
      TerminateProcess(GetCurrentProcess(),3);
      return EXCEPTION_CONTINUE_SEARCH;
  }
-@@ -248,6 +443,41 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
++/* SSE4a EXTRQ/INSERTQ (AMD only; the PS4's Jaguar has them) in guest code on a CPU without
++ * them: gr-prepare translates the ones it can prove safe (extrq.py); any other is run here,
++ * like shadPS4's illegal-instruction interpreter. Register operands only. 1 when emulated. */
++static int emulate_sse4a(CONTEXT *c) {
++    const unsigned char *p=(const unsigned char *)(uintptr_t)c->Rip;
++    if (p[0]!=0x66 && p[0]!=0xf2) return 0;
++    unsigned rex=p[1]>=0x40 && p[1]<=0x4f ? p[1] : 0;
++    const unsigned char *op=p+1+(rex!=0);
++    if (rex&8 || op[0]!=0x0f || (op[1]!=0x78 && op[1]!=0x79) || op[2]<0xc0) return 0;
++    const unsigned reg=(op[2]>>3&7)|(rex&4)<<1, rm=(op[2]&7)|(rex&1)<<3;
++    M128A *xmm=&c->Xmm0;
++    unsigned length, index, size=(unsigned)(op-p)+3;
++    if (p[0]==0x66 && op[1]==0x78) {               /* extrq xmm(rm), imm8 length, imm8 index */
++        if (op[2]>>3&7) return 0;
++        length=op[3]; index=op[4]; size+=2;
++    } else if (op[1]==0x78) {                      /* insertq xmm(reg), xmm(rm), imm8, imm8 */
++        length=op[3]; index=op[4]; size+=2;
++    } else if (p[0]==0x66) {                       /* extrq xmm(reg), xmm(rm) */
++        length=(unsigned)xmm[rm].Low; index=(unsigned)(xmm[rm].Low>>8);
++    } else {                                       /* insertq xmm(reg), xmm(rm): fields in rm's high qword */
++        length=(unsigned)xmm[rm].High; index=(unsigned)(xmm[rm].High>>8);
++    }
++    length&=63; index&=63;
++    const ULONGLONG mask=length ? (1ull<<length)-1 : ~0ull;
++    if (p[0]==0x66) {
++        M128A *dst=&xmm[op[1]==0x78 ? rm : reg];
++        dst->Low=(dst->Low>>index)&mask; dst->High=0;
++    } else {
++        M128A *dst=&xmm[reg];
++        dst->Low=(dst->Low&~(mask<<index))|((xmm[rm].Low&mask)<<index);
++    }
++    c->Rip+=size;
++    static volatile LONG reported;
++    if (!InterlockedExchange(&reported,1))
++        raw_err("Runtime: SSE4a %s at guest offset 0x%llx emulated (this CPU lacks SSE4a)\n",
++                p[0]==0x66 ? "EXTRQ" : "INSERTQ",(unsigned long long)((uintptr_t)p-(uintptr_t)image));
++    return 1;
++}
+ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
+     const EXCEPTION_RECORD *record=info->ExceptionRecord;
+     DWORD code=record->ExceptionCode;
++    if (code==EXCEPTION_ILLEGAL_INSTRUCTION && image &&
++        info->ContextRecord->Rip-(uintptr_t)image<0x20000000 && emulate_sse4a(info->ContextRecord))
++        return EXCEPTION_CONTINUE_EXECUTION;
+     if (code==EXCEPTION_ACCESS_VIOLATION && record->NumberParameters>=2) {
+         /* GPU page tracking (write-protected guest pages) is resolved first. */
+         if (gpu_enabled && bbgpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
+@@ -248,6 +484,41 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
      return EXCEPTION_CONTINUE_SEARCH;
  }
  static LONG WINAPI unhandled_fault(EXCEPTION_POINTERS *info) { return fatal_exception(info); }
@@ -19546,7 +19593,7 @@ index 988d694..e9d5357 100644
  /* Guest code reads its TCB with `mov rax, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
   * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
  uint32_t runtime_thread_tcb_offset(void);
-@@ -386,6 +616,12 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t
+@@ -386,6 +657,12 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t
  /* BBPATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
   * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
   * function pointers): the patch holds the address at the patches' base, rebased here. */
@@ -19559,7 +19606,7 @@ index 988d694..e9d5357 100644
  static void apply_patches(const char *path, Segment *segments, uint64_t ns, const Reloc *relocs, uint64_t nr) {
      FILE *f=fopen(path,"rb");
      char magic[8];
-@@ -394,15 +630,22 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
+@@ -394,15 +671,22 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
      unsigned char data[4096];
      for (uint64_t i=0;i<count;++i) {
          uint64_t offset=read64(f), length=read64(f);
@@ -19585,7 +19632,7 @@ index 988d694..e9d5357 100644
              slots[nslots++]=target;
          }
          memcpy(image+offset,data,length);
-@@ -513,6 +756,11 @@ int main(int argc, char **argv) {
+@@ -513,6 +797,11 @@ int main(int argc, char **argv) {
      SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
      AddVectoredExceptionHandler(1, vectored_fault);
      SetUnhandledExceptionFilter(unhandled_fault);
@@ -19597,7 +19644,7 @@ index 988d694..e9d5357 100644
      if (getenv("BB_STRICT_HANDLES")) {
          PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
          strict.RaiseExceptionOnInvalidHandleReference=1;
-@@ -521,6 +769,7 @@ int main(int argc, char **argv) {
+@@ -521,6 +810,7 @@ int main(int argc, char **argv) {
              fprintf(stderr,"BB_STRICT_HANDLES: policy not set (%lu)\n",GetLastError());
      }
      (void)timeout_seconds; /* no watchdog on Windows */
@@ -19605,7 +19652,7 @@ index 988d694..e9d5357 100644
  #else
      page_size = (size_t)sysconf(_SC_PAGESIZE);
      struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
-@@ -581,7 +830,7 @@ int main(int argc, char **argv) {
+@@ -581,7 +871,7 @@ int main(int argc, char **argv) {
              LinkedModule *x=&modules[m];
              if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                  (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
@@ -19614,7 +19661,7 @@ index 988d694..e9d5357 100644
                  fail("invalid linked module metadata");
          }
          if (nb>import_count) fail("invalid binding count");
-@@ -632,11 +881,12 @@ int main(int argc, char **argv) {
+@@ -632,11 +922,12 @@ int main(int argc, char **argv) {
              if (!executable) fail("native function is not executable");
          }
      }
@@ -19629,7 +19676,7 @@ index 988d694..e9d5357 100644
          uint32_t attributes=0;
          snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
          sfo_value(sfo,"TITLE",title,sizeof(title),NULL);
-@@ -644,7 +894,13 @@ int main(int argc, char **argv) {
+@@ -644,7 +935,13 @@ int main(int argc, char **argv) {
          sfo_value(sfo,"ATTRIBUTE",NULL,0,&attributes);
          uint64_t sdk=0;
          if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
@@ -19644,7 +19691,7 @@ index 988d694..e9d5357 100644
          gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
          if (bbgpu_init(&gpu)) fail("GPU initialization failed");
          printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
-@@ -684,13 +940,14 @@ int main(int argc, char **argv) {
+@@ -684,13 +981,14 @@ int main(int argc, char **argv) {
      printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
  #endif
      protect(traps, round_page((import_count + 1) * 32), 5);
@@ -19660,7 +19707,7 @@ index 988d694..e9d5357 100644
      if (!executable_entry) fail("entry is not executable");
      printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
      if (native_libc) {
-@@ -717,7 +974,20 @@ int main(int argc, char **argv) {
+@@ -717,7 +1015,20 @@ int main(int argc, char **argv) {
      bbnet_initialize(); /* the online session starts with the game */
      printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
      entered_game=1;
@@ -21507,10 +21554,10 @@ index 4978ec5..0fd517c 100644
      if (!strcmp(name,"BmMjYxmew1w#p#J")) return (uintptr_t)cond_timedwait;
 diff --git a/src/runtime_ngs2.c b/src/runtime_ngs2.c
 new file mode 100644
-index 0000000..8aa2a76
+index 0000000..9a1ad99
 --- /dev/null
 +++ b/src/runtime_ngs2.c
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,655 @@
 +/* libSceNgs2, GRport's own: systems, racks and voices, mixed into the buffers the game then
 + * gives to sceAudioOut. Sampler voices (rack 0x1000) decode ATRAC9, VAG ADPCM or PCM waveform blocks and
 + * feed submixers (0x2000) through their ports; mastering voices (0x3000) write the render
@@ -21519,6 +21566,7 @@ index 0000000..8aa2a76
 +#define _GNU_SOURCE
 +#include "runtime.h"
 +#include "third_party/LibAtrac9/C/src/libatrac9.h"
++#include "third_party/LibAtrac9/C/src/structures.h"
 +#include <math.h>
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -21741,6 +21789,10 @@ index 0000000..8aa2a76
 +    v->data = v->blocks[v->block].data;
 +    v->offset = 0; v->skip = b->skip_samples; v->block_samples = 0;
 +    v->at9_frames = 0; v->superframe_remain = (uint32_t)v->at9_info.superframeSize;
++    /* A block starts on a superframe, so must the decoder: left mid-superframe (a loop back
++     * after a partial one), it rejects every first frame with SUPERFRAME_FLAG_INVALID, and
++     * never advances past it. */
++    if (v->at9) ((Atrac9Handle *)v->at9)->Frame.IndexInSuperframe = 0;
 +    memset(v->vag_history, 0, sizeof(v->vag_history));
 +}
 +
@@ -21917,6 +21969,7 @@ index 0000000..8aa2a76
 +        const int in_ch = v->at9_info.channels;
 +        if (v->at9_info.frameSamples > 256 || in_ch > CH || Atrac9Decode(v->at9, src, pcm, &used) || used <= 0) {
 +            v->offset = b->data_size; /* broken data: skip the block */
++            ((Atrac9Handle *)v->at9)->Frame.IndexInSuperframe = 0;
 +            return 1;
 +        }
 +        for (int i = 0; i < v->at9_info.frameSamples; ++i)
@@ -21964,11 +22017,35 @@ index 0000000..8aa2a76
 +    return 1;
 +}
 +
++/* A looping block that yields no samples (undecodable ATRAC9, or skip_samples past its data)
++ * restarts forever: decode_some never returns 0, and the game's mixer thread spun inside
++ * sceNgs2SystemRender with all sound gone (Gravity Rush 2 after its first load). Decoding
++ * this many times without a sample ends the voice instead, as if its data had run out. */
++#define DECODE_IDLE_LIMIT 4096
++
++static void end_stuck_voice(Voice *v) {
++    static int reported;
++    if (reported++ < 8) {
++        const WaveformBlock *b = &v->blocks[v->block].b;
++        fprintf(stderr, "Ngs2: voice %u (rack 0x%x) stopped: no samples from its data (type %u, %u ch, "
++                "block %u/%u off %u size %u rep %u skip %u n %u)\n", v->index, v->rack->id,
++                v->format.type, v->channels, v->block, v->block_count, b->data_offset, b->data_size,
++                b->repeats, b->skip_samples, b->samples);
++    }
++    v->block = v->block_count = 0;
++    v->state = (v->state & ~(uint32_t)(STATE_PLAYING | STATE_IN_USE)) | STATE_EMPTY;
++}
++
 +/* One grain of a playing sampler voice into v->out, resampled to the system rate. */
 +static void render_sampler(Voice *v, uint32_t frames, uint32_t rate) {
 +    const double step = (double)v->pitch * (double)(v->format.sample_rate ? v->format.sample_rate : rate) / (double)rate;
 +    for (uint32_t i = 0; i < frames; ++i) {
-+        while (v->fifo_count < 2 && (v->state & STATE_PLAYING)) if (!decode_some(v)) break;
++        for (uint32_t idle = 0; v->fifo_count < 2 && (v->state & STATE_PLAYING); ) {
++            const uint32_t had = v->fifo_count;
++            if (!decode_some(v)) break;
++            if (v->fifo_count != had) idle = 0;
++            else if (++idle >= DECODE_IDLE_LIMIT) { end_stuck_voice(v); break; }
++        }
 +        if (v->fifo_count == 0) { for (uint32_t c = 0; c < CH; ++c) v->out[c][i] = 0.0f; continue; }
 +        const float *a = &v->fifo[v->fifo_read * CH];
 +        const float *b = v->fifo_count > 1 ? &v->fifo[((v->fifo_read + 1) % FIFO) * CH] : a;
