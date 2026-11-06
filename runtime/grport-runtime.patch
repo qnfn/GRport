@@ -24,6 +24,21 @@ index 529ef05..e04e771 100644
      # The PS4 range (64 GiB - 1 TiB) must stay free: no high-entropy ASLR for heaps and stacks.
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
+diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
+index 02b422e..f6f9e48 100644
+--- a/gpu/bbgpu.h
++++ b/gpu/bbgpu.h
+@@ -39,6 +39,10 @@ int bbgpu_overlay_captures_input(void);
+ /* 1 while the game should be silent: bbport.ini mute_unfocused is on and the window does not
+  * have focus. Safe from any thread (the audio ports read it for every buffer). */
+ int bbgpu_audio_muted(void);
++/* Gravity Rush 2's photo mode (video_core/texture_cache/photo_readback.cpp): tracks the linear
++ * colour target of this size, and copies its pixels into `out` (rows of `pitch` bytes). */
++void bbgpu_photo_arm(uint32_t width, uint32_t height);
++int bbgpu_photo_download(void *out, uint32_t pitch, uint32_t height);
+ /* Button prompts (gpu/shim/bbport_prompts.cpp): what each of the game's key-guide icons shows
+  * on keyboard and mouse, one string per icon in bbport_prompt_icons.h's order ("e",
+  * "lshift+leftbutton", "w a s d", "mouse", "" for nothing). Draws them; safe from any thread. */
 diff --git a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp b/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp
 index 055b494..85c270d 100644
 --- a/gpu/bbnet/vendor/shadps4/core/libraries/np/np_handler/np_handler.cpp
@@ -16842,11 +16857,48 @@ index 5855a5c..c577d0d 100644
      std::vector<MsPipeline> ms_image_copy_pl;
  };
  
+diff --git a/gpu/shadps4/video_core/texture_cache/image_info.cpp b/gpu/shadps4/video_core/texture_cache/image_info.cpp
+index 51a9d88..1afff25 100644
+--- a/gpu/shadps4/video_core/texture_cache/image_info.cpp
++++ b/gpu/shadps4/video_core/texture_cache/image_info.cpp
+@@ -10,6 +10,7 @@
+ #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+ #include "video_core/texture_cache/host_compatibility.h"
+ #include "video_core/texture_cache/image_info.h"
++#include "video_core/texture_cache/photo_readback.h"
+ #include "video_core/texture_cache/tile.h"
+ 
+ namespace VideoCore {
+@@ -149,7 +150,7 @@ ImageInfo::ImageInfo(const AmdGpu::Image& sharp, const Shader::ImageResource& de
+     size.depth = props.is_volume ? image.depth + 1 : 1;
+     pitch = image.Pitch();
+     resources.levels = image.NumLevels();
+-    resources.layers = image.NumLayers();
++    resources.layers = PhotoReadback::ClampLayers(image.NumLayers()); // bbport: GR2 album
+     num_samples = image.NumSamples();
+     num_bits = NumBitsPerBlock(data_fmt);
+     guest_address = image.Address();
 diff --git a/gpu/shadps4/video_core/texture_cache/image_view.cpp b/gpu/shadps4/video_core/texture_cache/image_view.cpp
-index 45fd566..a8a94e7 100644
+index 45fd566..d9f216f 100644
 --- a/gpu/shadps4/video_core/texture_cache/image_view.cpp
 +++ b/gpu/shadps4/video_core/texture_cache/image_view.cpp
-@@ -146,6 +146,15 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
+@@ -8,6 +8,7 @@
+ #include "video_core/renderer_vulkan/vk_instance.h"
+ #include "video_core/texture_cache/image.h"
+ #include "video_core/texture_cache/image_view.h"
++#include "video_core/texture_cache/photo_readback.h"
+ #include "vulkan/vulkan.hpp"
+ 
+ #include <magic_enum/magic_enum.hpp>
+@@ -65,6 +66,7 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageReso
+     range.base.layer = std::min<u32>(image.base_array, image.NumLayers() - 1);
+     range.extent.levels = image.NumViewLevels(desc.is_array);
+     range.extent.layers = image.NumViewLayers(desc.is_array);
++    PhotoReadback::ClampView(image.NumLayers(), range); // bbport: GR2 album
+     type = image.GetViewType(desc.is_array);
+     min_lod = static_cast<u32>(image.min_lod);
+     if (!is_storage) {
+@@ -146,6 +148,15 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
                                  ? vk::ComponentMapping{}
                                  : Vulkan::LiverpoolToVK::ComponentMapping(info.mapping);
  
@@ -16862,7 +16914,7 @@ index 45fd566..a8a94e7 100644
      const vk::ImageViewCreateInfo image_view_ci = {
          .pNext = &usage_ci,
          .image = image.GetImage(),
-@@ -160,10 +169,6 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
+@@ -160,10 +171,6 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
              .layerCount = info.range.extent.layers,
          },
      };
@@ -16873,11 +16925,207 @@ index 45fd566..a8a94e7 100644
  
      auto [view_result, view] = instance.GetDevice().createImageViewUnique(image_view_ci);
      ASSERT_MSG(view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+diff --git a/gpu/shadps4/video_core/texture_cache/photo_readback.cpp b/gpu/shadps4/video_core/texture_cache/photo_readback.cpp
+new file mode 100644
+index 0000000..c38b106
+--- /dev/null
++++ b/gpu/shadps4/video_core/texture_cache/photo_readback.cpp
+@@ -0,0 +1,96 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++// bbport: adapted from GR2fork (github.com/junminlee2004/GR2fork, commit 124096c4).
++
++#include <cstring>
++#include <memory>
++#include <span>
++#include <thread>
++#include "video_core/amdgpu/liverpool.h"
++#include "video_core/renderer_vulkan/vk_presenter.h"
++#include "video_core/renderer_vulkan/vk_rasterizer.h"
++#include "video_core/renderer_vulkan/vk_runtime.h"
++#include "video_core/texture_cache/photo_readback.h"
++#include "video_core/texture_cache/texture_cache.h"
++
++extern std::unique_ptr<Vulkan::Presenter> presenter;
++extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
++
++namespace VideoCore {
++
++bool PhotoReadback::Download(void* out, u32 pitch, u32 height) {
++    // SendCommand would wait on itself on the GPU command thread.
++    if (!presenter || !liverpool ||
++        liverpool->GetGpuCommandProcessorThread() == std::this_thread::get_id()) {
++        return false;
++    }
++    bool downloaded = false;
++    liverpool->SendCommand<true>([&] { downloaded = DownloadOnGpuThread(out, pitch, height); });
++    return downloaded;
++}
++
++bool PhotoReadback::DownloadOnGpuThread(void* out, u32 pitch, u32 height) {
++    Vulkan::Rasterizer& rasterizer = presenter->GetRasterizer();
++    TextureCache& texture_cache = rasterizer.GetTextureCache();
++    Vulkan::Runtime& runtime = rasterizer.GetRuntime();
++    // The photo's draws may still be queued; they go before the copy.
++    rasterizer.Finish();
++    const ImageId image_id{tracked_index.load(std::memory_order_relaxed)};
++    if (!image_id || !texture_cache.slot_images.IsAllocated(image_id)) {
++        LOG_WARNING(Render_Vulkan, "Photo: no photo target has been bound");
++        return false;
++    }
++    Image& image = texture_cache.slot_images[image_id];
++    const ImageInfo& info = image.info;
++    const u32 pitch_bytes = info.pitch * (info.num_bits / 8);
++    LOG_INFO(Render_Vulkan, "Photo target {:#x}: {}x{}, pitch {}, {} bits, {} layers", info.guest_address,
++             info.size.width, info.size.height, info.pitch, info.num_bits, info.resources.layers);
++    if (False(image.flags & ImageFlagBits::Registered) || !image.backing ||
++        False(image.flags & ImageFlagBits::GpuModified) ||
++        !IsArmed(info.size.width, info.size.height) || info.num_samples > 1 ||
++        info.props.is_depth || info.props.is_block || info.size.depth != 1 ||
++        info.resources.layers != 1 || info.num_bits != 32) {
++        LOG_WARNING(Render_Vulkan, "Photo: the photo target is not readable");
++        return false;
++    }
++    // Rows of another length hold pixels of another size, which the encoder would misread.
++    if (pitch_bytes != pitch) {
++        LOG_WARNING(Render_Vulkan, "Photo: target rows are {} bytes, the encoder's {}", pitch_bytes,
++                    pitch);
++        return false;
++    }
++    const u32 rows = std::min(info.size.height, height);
++    const u64 size = u64{pitch_bytes} * rows;
++    if (size == 0 || size > 64_MB) {
++        return false;
++    }
++    const auto download = runtime.GetStagingPool().Request(size, MemoryType::HostCached, 16);
++    const vk::BufferImageCopy copy = {
++        .bufferOffset = download.offset,
++        .bufferRowLength = info.pitch,
++        .bufferImageHeight = rows,
++        .imageSubresource{
++            .aspectMask = vk::ImageAspectFlagBits::eColor,
++            .mipLevel = 0,
++            .baseArrayLayer = 0,
++            .layerCount = 1,
++        },
++        .imageOffset = {0, 0, 0},
++        .imageExtent = {info.size.width, rows, 1},
++    };
++    runtime.DownloadImage(&image, download.buffer, std::span{&copy, 1});
++    rasterizer.Finish();
++    download.Invalidate();
++    std::memcpy(out, download.mapped, size);
++    return true;
++}
++
++} // namespace VideoCore
++
++extern "C" void bbgpu_photo_arm(uint32_t width, uint32_t height) {
++    VideoCore::PhotoReadback::Arm(width, height);
++}
++
++extern "C" int bbgpu_photo_download(void* out, uint32_t pitch, uint32_t height) {
++    return VideoCore::PhotoReadback::Download(out, pitch, height) ? 1 : 0;
++}
+diff --git a/gpu/shadps4/video_core/texture_cache/photo_readback.h b/gpu/shadps4/video_core/texture_cache/photo_readback.h
+new file mode 100644
+index 0000000..0e945b5
+--- /dev/null
++++ b/gpu/shadps4/video_core/texture_cache/photo_readback.h
+@@ -0,0 +1,80 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++// bbport: Gravity Rush 2's photo mode, adapted from GR2fork (github.com/junminlee2004/GR2fork,
++// commit 124096c4 "Add Gravity Rush 2 photo mode and album").
++
++#pragma once
++
++#include <atomic>
++#include "common/logging/log.h"
++#include "common/types.h"
++#include "video_core/texture_cache/image.h"
++#include "video_core/texture_cache/types.h"
++
++namespace VideoCore {
++
++/// The game draws a photo into a linear colour target of one size (1024x1024 in Gravity
++/// Rush 2), copies that target's guest memory, which the GPU never wrote back, and hands the
++/// copy to sceJpegEncEncode. This keeps track of the last image of the armed size bound as a
++/// colour target or storage image, and copies its pixels out when the photo is encoded.
++class PhotoReadback {
++public:
++    /// Starts tracking images of exactly this size. Also turns on ClampLayers.
++    static void Arm(u32 width, u32 height) noexcept {
++        armed_extent.store(PackExtent(width, height), std::memory_order_relaxed);
++    }
++    static bool IsArmed(u32 width, u32 height) noexcept {
++        return width != 0 && armed_extent.load(std::memory_order_relaxed) == PackExtent(width, height);
++    }
++
++    /// GPU command thread: an image was bound as a colour target or written as a storage image.
++    static void Track(const Image& image, ImageId image_id) noexcept {
++        const u64 extent = armed_extent.load(std::memory_order_relaxed);
++        if (extent == 0) [[likely]] {
++            return;
++        }
++        if (PackExtent(image.info.size.width, image.info.size.height) == extent &&
++            !image.info.props.is_tiled && image.info.guest_address != 0) {
++            tracked_index.store(image_id.index, std::memory_order_relaxed);
++        }
++    }
++
++    /// The image is being erased.
++    static void Forget(ImageId image_id) noexcept {
++        u32 index = image_id.index;
++        if (tracked_index.load(std::memory_order_relaxed) == index) [[unlikely]] {
++            tracked_index.compare_exchange_strong(index, ImageId::INVALID_INDEX);
++        }
++    }
++
++    /// The album binds a T# of several thousand layers (4609 was seen), which cannot be
++    /// allocated. While armed, a T# with more than 2048 layers is built with one.
++    static u32 ClampLayers(u32 layers) noexcept {
++        if (layers <= 2048 || armed_extent.load(std::memory_order_relaxed) == 0) [[likely]] {
++            return layers;
++        }
++        return 1;
++    }
++    static void ClampView(u32 layers, SubresourceRange& range) noexcept {
++        if (layers <= 2048 || armed_extent.load(std::memory_order_relaxed) == 0) [[likely]] {
++            return;
++        }
++        range.base.layer = 0;
++        range.extent.layers = 1;
++    }
++
++    /// Guest thread: copies the tracked image into `out` (rows of `pitch` bytes, `height` rows)
++    /// when its rows are that long. Blocks until the GPU command thread has run the copy.
++    static bool Download(void* out, u32 pitch, u32 height);
++
++private:
++    static constexpr u64 PackExtent(u32 width, u32 height) noexcept {
++        return u64{width} << 32 | height;
++    }
++    static bool DownloadOnGpuThread(void* out, u32 pitch, u32 height);
++
++    static inline std::atomic<u64> armed_extent{};
++    static inline std::atomic<u32> tracked_index{ImageId::INVALID_INDEX};
++};
++
++} // namespace VideoCore
 diff --git a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-index 6c56743..4390f3a 100644
+index 6c56743..1317b03 100644
 --- a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 +++ b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-@@ -33,6 +33,15 @@ static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
+@@ -24,6 +24,7 @@
+ #include "video_core/renderer_vulkan/vk_runtime.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+ #include "video_core/texture_cache/host_compatibility.h"
++#include "video_core/texture_cache/photo_readback.h"
+ #include "video_core/texture_cache/texture_cache.h"
+ #include "video_core/texture_cache/tile_manager.h"
+ 
+@@ -33,6 +34,15 @@ static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
  static constexpr u32 MAX_IMAGE_VIEWS = std::numeric_limits<u16>::max();
  static constexpr u32 MAX_SAMPLERS = std::numeric_limits<u16>::max();
  
@@ -16893,7 +17141,7 @@ index 6c56743..4390f3a 100644
  TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                             Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                             BufferCache& buffer_cache_, PageManager& page_manager_)
-@@ -317,6 +326,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
+@@ -317,6 +327,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
          // Inherit image usage
          auto& new_image = slot_images[new_image_id];
          new_image.usage = old_image.usage;
@@ -16902,7 +17150,7 @@ index 6c56743..4390f3a 100644
          if (new_info.num_samples == 1 &&
              (new_info.resources.layers > old_image.info.resources.layers ||
               new_info.resources.levels > old_image.info.resources.levels)) {
-@@ -555,12 +566,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+@@ -555,12 +567,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                      return {merged_image_id, -1, -1};
                  }
  
@@ -16927,7 +17175,7 @@ index 6c56743..4390f3a 100644
              }
          }
      }
-@@ -575,8 +593,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -575,8 +594,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
      auto& src_image = slot_images[image_id];
      auto& new_image = slot_images[new_image_id];
  
@@ -16947,7 +17195,7 @@ index 6c56743..4390f3a 100644
  
      if (src_image.binding.is_bound || src_image.binding.is_target) {
          src_image.binding.needs_rebind = 1u;
-@@ -584,7 +612,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -584,7 +613,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
  
      TrackImage(new_image_id);
      new_image.flags &= ~ImageFlagBits::Dirty;
@@ -16958,7 +17206,25 @@ index 6c56743..4390f3a 100644
      FreeImage(image_id);
  
      return new_image_id;
-@@ -885,7 +915,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
+@@ -774,6 +805,9 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
+     if (refresh) {
+         UpdateImage(image_id);
+     }
++    if (desc.type == BindingType::Storage) {
++        PhotoReadback::Track(slot_images[image_id], image_id); // bbport: GR2 photo mode
++    }
+     if (memo && !BbToggle::Disabled(BbToggle::TextureViewMemo)) {
+         if (memo->image_id == image_id && memo->backing == image.backing && memo->view_id) {
+             return slot_image_views[memo->view_id];
+@@ -824,6 +858,7 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
+     }
+     image.usage.render_target = 1u;
+     UpdateImage(image_id);
++    PhotoReadback::Track(slot_images[image_id], image_id); // bbport: GR2 photo mode
+ 
+     // Register meta data for this color buffer
+     const VAddr cmask_addr = desc.info.meta_info.cmask_addr;
+@@ -885,7 +920,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
  }
  
  void TextureCache::AssociateStencil(ImageId depth_id, const ImageInfo& depth_info) {
@@ -16968,7 +17234,7 @@ index 6c56743..4390f3a 100644
          return;
      }
      ImageId stencil_id{};
-@@ -1217,13 +1248,22 @@ void TextureCache::GarbageCollectImages() {
+@@ -1217,13 +1253,22 @@ void TextureCache::GarbageCollectImages() {
          // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
          // collector evicted images used two or three frames ago on every submission and wrote
          // GPU-written ones back. Compare with the driver's current budget instead.
@@ -16996,7 +17262,7 @@ index 6c56743..4390f3a 100644
              if (budget != 0) {
                  trigger_gc_memory = budget / 10 * 7;
                  pressure_gc_memory = budget / 100 * 85;
-@@ -1245,7 +1285,11 @@ void TextureCache::GarbageCollectImages() {
+@@ -1245,7 +1290,11 @@ void TextureCache::GarbageCollectImages() {
          gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
      }
      ReportMemory();
@@ -17009,7 +17275,7 @@ index 6c56743..4390f3a 100644
          return;
      }
      static const u64 idle_seconds = [] {
-@@ -1277,8 +1321,8 @@ void TextureCache::GarbageCollectImages() {
+@@ -1277,8 +1326,8 @@ void TextureCache::GarbageCollectImages() {
  
      // emergency: still over the critical mark after evicting what was unused for a second.
      const auto configure = [&](bool allow_aggressive, bool emergency = false) {
@@ -17020,7 +17286,7 @@ index 6c56743..4390f3a 100644
          const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
          below_tick = gc_tick - ticks_to_destroy;
          if (!pressured && !aggresive) {
-@@ -1353,13 +1397,13 @@ void TextureCache::GarbageCollectImages() {
+@@ -1353,13 +1402,13 @@ void TextureCache::GarbageCollectImages() {
          }
          ++gc_evictions;
          FreeImage(image_id);
@@ -17036,7 +17302,7 @@ index 6c56743..4390f3a 100644
                  num_deletions >>= 1;
                  pressured = false;
              }
-@@ -1372,13 +1416,13 @@ void TextureCache::GarbageCollectImages() {
+@@ -1372,13 +1421,13 @@ void TextureCache::GarbageCollectImages() {
      gc_kept = gc_kept_bytes = 0;
      image_lru_cache.ForEachItemBelow(below_tick, clean_up);
  
@@ -17052,7 +17318,7 @@ index 6c56743..4390f3a 100644
          // Still over it: what was used a moment ago goes too (out of memory otherwise).
          configure(true, true);
          image_lru_cache.ForEachItemBelow(below_tick, clean_up);
-@@ -1387,12 +1431,14 @@ void TextureCache::GarbageCollectImages() {
+@@ -1387,12 +1436,14 @@ void TextureCache::GarbageCollectImages() {
      if (pressured || gc_downloads != 0) {
          const auto now = std::chrono::steady_clock::now();
          if (now - gc_report_time >= std::chrono::seconds(5)) {
@@ -17069,6 +17335,26 @@ index 6c56743..4390f3a 100644
                          (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
                          (unsigned long long)gc_kept, (unsigned long long)(gc_kept_bytes >> 20),
                          (unsigned long long)gc_dropped);
+@@ -1568,6 +1619,7 @@ void TextureCache::DeleteImage(ImageId image_id, bool now) {
+ }
+ 
+ void TextureCache::EraseImage(ImageId image_id) {
++    PhotoReadback::Forget(image_id); // bbport: GR2 photo mode
+     Image& image = slot_images[image_id];
+     for (auto& backing : image.backing_images) {
+         for (const ImageViewId image_view_id : backing.image_view_ids) {
+diff --git a/gpu/shadps4/video_core/texture_cache/texture_cache.h b/gpu/shadps4/video_core/texture_cache/texture_cache.h
+index de6619f..b8eda1f 100644
+--- a/gpu/shadps4/video_core/texture_cache/texture_cache.h
++++ b/gpu/shadps4/video_core/texture_cache/texture_cache.h
+@@ -482,6 +482,7 @@ private:
+     BufferCache& buffer_cache;
+     PageManager& page_manager;
+     PageTable page_table;
++    friend class PhotoReadback; // bbport: GR2 photo mode reads its photo target
+     Common::SlotVector<Image> slot_images;
+     Common::SlotVector<ImageView> slot_image_views;
+     Common::SlotVector<Sampler> slot_samplers;
 diff --git a/gpu/shadps4/video_core/texture_cache/tile_manager.cpp b/gpu/shadps4/video_core/texture_cache/tile_manager.cpp
 index 8d41b8c..d34abcf 100644
 --- a/gpu/shadps4/video_core/texture_cache/tile_manager.cpp
@@ -19606,15 +19892,16 @@ index 0000000..72c73e3
 +#endif
 diff --git a/src/nid_names_all.inc b/src/nid_names_all.inc
 new file mode 100644
-index 0000000..912b42a
+index 0000000..8a96874
 --- /dev/null
 +++ b/src/nid_names_all.inc
-@@ -0,0 +1,1111 @@
+@@ -0,0 +1,1129 @@
 +/* NID -> symbol name for imports of CUSA00003 and its bundled modules, from shadPS4
 + * aerolib.inl (GPL-2.0-or-later); sorted by NID for bsearch (runtime_symbol). */
 +{"+-du9tWgE9s","sceCompanionHttpdTerminate"},
 +{"+8e7wXLmjds","sceNpMatching2SetDefaultRequestOptParam"},
 +{"+BzXYkqYeLE","scePthreadSetspecific"},
++{"+KDWny9Y-6k","sceContentExportTerm"},
 +{"+L98PIbGttk","scePthreadRwlockUnlock"},
 +{"+P6FRGH4LfA","memmove"},
 +{"+RhzSuuXwxo","sceNpTusSetDataVUser"},
@@ -19639,6 +19926,7 @@ index 0000000..912b42a
 +{"-ULUBK21QgE","sceFiosDirectoryCreate"},
 +{"-VVn74ZyhEs","difftime"},
 +{"-Wreprtu0Qs","scePthreadAttrSetdetachstate"},
++{"-YbpaF0XS-I","sceContentSearchCloseMetadata"},
 +{"-ZR+hG7aDHw","sceKernelSleep"},
 +{"-f6M4caNe8k","sceNpMatching2ContextStop"},
 +{"-hn1tcVHq5Q","sceLibcMspaceCreate"},
@@ -19702,6 +19990,7 @@ index 0000000..912b42a
 +{"1tKyG7RlMJo","scePthreadGetprio"},
 +{"1uJgoVq3bQU","_Getptolower"},
 +{"1vo6qqqa9F4","_ZdlPvS_"},
++{"1xSZodB2geA","sceContentSearchTerm"},
 +{"1xxcMiGu2fo","sceUserServiceGetUserName"},
 +{"23CPPI1tyBY","sceKernelGetEventFilter"},
 +{"26PM5Mzl8zc","sceGnmLogicalCuIndexToPhysicalCuIndex"},
@@ -19764,6 +20053,7 @@ index 0000000..912b42a
 +{"5Mn7TYwpl30","sceNpWebApiDeleteHandle"},
 +{"5NE8Sjc7VC8","sceAudioInOpen"},
 +{"5TvttyRuU84","sceGameCustomDataDialogOpen"},
++{"5XLSih32qHA","sceContentDeleteTerminate"},
 +{"5Xa2ACNECdo","strcpy_s"},
 +{"5bBacGLyLOs","gmtime_s"},
 +{"5yYjEdd4t8Y","sceNpSignalingCreateContext"},
@@ -19852,6 +20142,7 @@ index 0000000..912b42a
 +{"AHxyhN96dy4","ferror"},
 +{"AN3h0EBSX7A","sceNpSignalingGetConnectionInfo"},
 +{"ANJssPz3mY0","sceNpScoreRecordScoreAsync"},
++{"AOWqIYsgVHs","sceContentExportFromData"},
 +{"AOujSGqU+ms","sceFiosFHCloseSync"},
 +{"AUVfU6byg3c","sceNpMatching2KickoutRoomMember"},
 +{"AUXVxWeJU-A","sceKernelUnlink"},
@@ -19932,9 +20223,11 @@ index 0000000..912b42a
 +{"F6E4ycq9Dbg","sceNpGetUserIdByOnlineId"},
 +{"F6e0kwo4cnk","sceKernelTriggerUserEvent"},
 +{"F8bUHwAG284","scePthreadMutexattrInit"},
++{"FCygF4Ec4so","sceContentExportStart"},
 +{"FJrT5LuUBAU","pthread_exit"},
 +{"FN4gaPmuFV8","write"},
 +{"FQ9NFbBHb5Y","_ZSt7_BADOFF"},
++{"FRT4EYtZU1Y","sceContentSearchGetMyApplicationIndex"},
 +{"FUHG8sQ3R58","sceGnmSetEsShader"},
 +{"FXP359ygujs","sceFontDestroyLibrary"},
 +{"Fc8qxlKINYQ","sceVideoRecordingSetInfo"},
@@ -19943,6 +20236,7 @@ index 0000000..912b42a
 +{"Fm-dmyywH9Q","fileno"},
 +{"Fq6+0Fm55xU","sceUsbdExit"},
 +{"FxVZqBAA7ks","_write"},
++{"FzEWeYnAFlI","sceContentExportInit"},
 +{"G-39lsdSgXo","sceFiosRenameSync"},
 +{"G0pE+RNCwfk","sceNpScoreDeleteNpTitleCtx"},
 +{"G3AnLNdRBjE","sceNpWebApiInitialize"},
@@ -20169,6 +20463,7 @@ index 0000000..912b42a
 +{"T6tnM1Uti4g","sceNpLookupNpId"},
 +{"T72hz6ffq08","scePthreadYield"},
 +{"T7uyNqP7vQA","tan"},
++{"TEW3IKxYfXc","sceContentSearchSearchContent"},
 +{"TJCAxto9SEU","sceNpTrophyRegisterContext"},
 +{"TLV4mswiZ4A","sceGnmDriverCaptureInProgress"},
 +{"TOhg7P6kTH4","sceUsbdInit"},
@@ -20312,6 +20607,7 @@ index 0000000..912b42a
 +{"beAsSTVWVPQ","sceRudpSetMaxSegmentSize"},
 +{"beRjXBn-z+o","sceNetSend"},
 +{"bhomgbiQgeo","sceUsbdGetDeviceDescriptor"},
++{"bjAlYWwRTJA","sceContentSearchOpenMetadataByContentId"},
 +{"bt3CTBKmGyI","scePthreadSetaffinity"},
 +{"bwFjS+bX9mA","sceUserServiceTerminate"},
 +{"byV+FWlAnB4","_ZTVN10__cxxabiv117__class_type_infoE"},
@@ -20339,6 +20635,7 @@ index 0000000..912b42a
 +{"d88anrgNoKY","sceGnmDriverTriggerCapture"},
 +{"d8FcbzfAdQw","sceAvPlayerGetStreamInfo"},
 +{"dK8-SgYf6r4","sceNpScoreDeleteRequest"},
++{"dPj4ZtRcIWk","sceContentSearchInit"},
 +{"dQHWEsJtoE4","pthread_mutexattr_init"},
 +{"dWM80AX39o4","sceGameLiveStreamingEnableLiveStreaming"},
 +{"dgJBaeJnGpo","sceNetPoolCreate"},
@@ -20532,6 +20829,7 @@ index 0000000..912b42a
 +{"noQgleu+KLE","sceNpWebApiDeleteRequest"},
 +{"npLpPTaSuHg","fscanf"},
 +{"nsYoNRywwNg","scePthreadAttrInit"},
++{"o-RBPV0qr8c","sceContentSearchGetNumOfContent"},
 +{"o3+RWnHViSg","sceAvPlayerGetVideoData"},
 +{"o6ZgXfFdWXQ","sceJpegEncQueryMemorySize"},
 +{"oBr313PppNE","sendto"},
@@ -20558,6 +20856,7 @@ index 0000000..912b42a
 +{"pO96TwzOm5E","sceKernelGetDirectMemorySize"},
 +{"pQGpHYopAIY","sceNetNtohl"},
 +{"pSpDCDyxkaY","_Stoullx"},
++{"pXJh3aVk8Ks","sceContentDeleteById"},
 +{"pXvbDfchu6k","strncasecmp"},
 +{"pZ9WXcClPO8","_ZTVN10__cxxabiv120__si_class_type_infoE"},
 +{"pv9CI5VC+R0","sceVideoOutAdjustColor_"},
@@ -20591,6 +20890,7 @@ index 0000000..912b42a
 +{"rcQCUr0EaRU","_Getptoupper"},
 +{"rcrVFJsQWRY","scePthreadGetaffinity"},
 +{"rdgs5Z1MyFw","sceNpWebApiCreateRequest"},
++{"ruNe-FgCzO8","sceContentSearchGetMetadataValue"},
 +{"rvBSfTimejE","scePlayGoGetInstallSpeed"},
 +{"rxi1nCOKWc8","sceUsbdInterruptTransfer"},
 +{"s1--uE9mBFw","sceAudioOutClose"},
@@ -20610,6 +20910,7 @@ index 0000000..912b42a
 +{"sqWytnhYdEg","_ZNSt8ios_base4InitC1Ev"},
 +{"szEVu+edXV4","sceRudpInitiate"},
 +{"t0P5z5yuFPA","sceNpWordFilterDeleteTitleCtx"},
++{"t2FvHRXzgqk","sceErrorDialogGetStatus"},
 +{"t3J5pXxhJlI","sceUsbdFillInterruptTransfer"},
 +{"t7WE9mb1TB8","sceUsbdGetBusNumber"},
 +{"t7b6dmpQNiI","sceNpTusPollAsync"},
@@ -20619,6 +20920,7 @@ index 0000000..912b42a
 +{"tQIo+GIPklo","_ZSt14_Xlength_errorPKc"},
 +{"tZY4+SZNFhA","msync"},
 +{"taRWhTJFTgE","sceKernelGetdirentries"},
++{"tb3cZTCl8Ps","sceContentExportFinish"},
 +{"tcVi5SivF7Q","sprintf"},
 +{"tdQArULbNQk","sceNpSnsFacebookDialogInitialize"},
 +{"teiItL2boFw","sceKernelReleaseFlexibleMemory"},
@@ -20634,6 +20936,7 @@ index 0000000..912b42a
 +{"uMei1W9uyNo","exit"},
 +{"uNAUmANZMEw","sceJpegDecQueryMemorySize"},
 +{"uWIYLFkkwqk","scePlayGoGetLocus"},
++{"uZTQHI50WpY","sceContentExportFromDataWithThumbnail"},
 +{"ueega6v3GUw","sceRtcSetTick"},
 +{"uj9Cz7Tk0cc","sceNpProfileDialogOpen"},
 +{"ukr6FBSrkJw","sceNpTusAddAndGetVariableVUser"},
@@ -20719,6 +21022,7 @@ index 0000000..912b42a
 +{"zT0XBtgtOSI","sceNpScoreRecordScore"},
 +{"zXCi78bYrEI","_Log"},
 +{"zlfEH8FmyUA","_Stoul"},
++{"zoxb0wEChEM","sceContentDeleteInitialize"},
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
@@ -21228,7 +21532,7 @@ index 988d694..6d0379a 100644
      typedef void (ABI *Entry)(void *, void (ABI *)(void));
      ((Entry)(image + entry))(&params, guest_exit);
 diff --git a/src/runtime.c b/src/runtime.c
-index 25865ae..7885813 100644
+index 25865ae..0929387 100644
 --- a/src/runtime.c
 +++ b/src/runtime.c
 @@ -21,7 +21,7 @@ static _Atomic size_t guards_acquired, guards_released;
@@ -21260,7 +21564,7 @@ index 25865ae..7885813 100644
      uintptr_t rwlock = runtime_rwlock_resolve(name);
      if (rwlock) return rwlock;
      uintptr_t memory = runtime_memory_resolve(name);
-@@ -226,26 +232,41 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
+@@ -226,26 +232,43 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
      if (services) return services;
      uintptr_t ajm = runtime_ajm_resolve(name);
      if (ajm) return ajm;
@@ -21274,6 +21578,8 @@ index 25865ae..7885813 100644
      if (rtc) return rtc;
 +    uintptr_t image = runtime_image_resolve(name);
 +    if (image) return image;
++    uintptr_t photo = runtime_photo_resolve(name);
++    if (photo) return photo;
      uintptr_t save = runtime_savedata_resolve(name);
      if (save) return save;
      uintptr_t file = runtime_file_resolve(name);
@@ -21306,7 +21612,7 @@ index 25865ae..7885813 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..98a1dca 100644
+index 773ee79..f5cd112 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -45,6 +45,10 @@ void runtime_thread_attach_main(void);
@@ -21320,7 +21626,7 @@ index 773ee79..98a1dca 100644
  unsigned runtime_sema_waiters(uint32_t id);
  uintptr_t runtime_time_resolve(const char *name);
  void runtime_content_configure(const uint32_t values[5]);
-@@ -80,13 +84,23 @@ void runtime_memory_reserve(void);
+@@ -80,13 +84,28 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -21331,6 +21637,11 @@ index 773ee79..98a1dca 100644
  uintptr_t runtime_rtc_resolve(const char *name);
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec (runtime_image.c). */
 +uintptr_t runtime_image_resolve(const char *name);
++/* Gravity Rush 2's photo album (runtime_photo.c). */
++uintptr_t runtime_photo_resolve(const char *name);
++int runtime_photo_is_target(uint32_t width, uint32_t height);
++void runtime_photo_save(const uint8_t *jpeg, uint32_t size);
++void runtime_photo_drop(void);
  const char *runtime_file_user_dir(void);
 +const char *runtime_file_app_dir(void);
 +ABI int32_t runtime_addcont_info(uint32_t service, const char *label, void *info);
@@ -22955,10 +23266,10 @@ index 0000000..62bea4f
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_image.c b/src/runtime_image.c
 new file mode 100644
-index 0000000..b24f2f7
+index 0000000..d622e84
 --- /dev/null
 +++ b/src/runtime_image.c
-@@ -0,0 +1,470 @@
+@@ -0,0 +1,481 @@
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec on stb_image / stb_image_write.
 + *
 + * Gravity Rush 2's photo mode encodes each photo with sceJpegEncEncode and shows the
@@ -22966,6 +23277,7 @@ index 0000000..b24f2f7
 + * thumbnail is the game's red "no image" square. Parameter checks follow shadPS4's
 + * (reverse-engineered) libraries: src/core/libraries/jpeg and libpng. */
 +#include "runtime.h"
++#include "gpu/bbgpu.h"
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -23146,6 +23458,11 @@ index 0000000..b24f2f7
 +        printf("JpegEnc: encode rejected (%#x)\n", (unsigned)r);
 +        return r;
 +    }
++    /* Gravity Rush 2 copies its photo target from guest memory, which the GPU never wrote back,
++     * and encodes that copy: the target's own pixels take its place (from GR2fork). */
++    const int is_photo = runtime_photo_is_target(p->image_width, p->image_height);
++    if (is_photo && !bbgpu_photo_download((void *)p->image, p->image_pitch, p->image_height))
++        printf("JpegEnc: photo target not read back; encoding the game's copy\n");
 +    int components;
 +    uint8_t *pixels = jpeg_enc_pixels(p, &components);
 +    if (!pixels) return JPEG_ENC_INVALID_SIZE;
@@ -23168,6 +23485,11 @@ index 0000000..b24f2f7
 +               p->image_width, p->image_height, p->pixel_format, p->compression_ratio, sink.size,
 +               quality, p->jpeg_size);
 +    if (info) { info->size = sink.size; info->height = p->image_height; }
++    /* A photo that small is an empty frame, which is not kept (GR2fork's threshold). */
++    if (is_photo) {
++        if (sink.size < 30000) { printf("JpegEnc: photo of %u bytes looks empty; not saved\n", sink.size); runtime_photo_drop(); }
++        else runtime_photo_save(p->jpeg, sink.size);
++    }
 +    /* The JPEG's size: Gravity Rush 2 treats a result that is not positive as a failed photo
 +     * (as found by GR2fork, github.com/junminlee2004/GR2fork). */
 +    return (int32_t)sink.size;
@@ -24350,6 +24672,281 @@ index 687bfb5..138e671 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
+diff --git a/src/runtime_photo.c b/src/runtime_photo.c
+new file mode 100644
+index 0000000..8f21603
+--- /dev/null
++++ b/src/runtime_photo.c
+@@ -0,0 +1,269 @@
++/* Gravity Rush 2's photo album: libSceContentExport, libSceContentSearch and libSceContentDelete
++ * on a host folder, "Capture Gallery/Gravity Rush 2" in the user folder, one <id>.jpg per photo.
++ * The guest sees it at /screenshot. Adapted from GR2fork (github.com/junminlee2004/GR2fork,
++ * commit 124096c4: photo_gallery.cpp, photo_content.cpp; GPL-2.0-or-later).
++ *
++ * The game encodes a photo (runtime_image.c saves it here), exports it, asks ContentSearch for
++ * the row of what it exported and later for the whole album, and opens the paths in those rows
++ * itself. An id is "YYYYMMDD_HHMMSS_NNN", so name order is the order photos were taken in. */
++#define _GNU_SOURCE
++#include "runtime.h"
++#include "gpu/bbgpu.h"
++#include <dirent.h>
++#include <errno.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <time.h>
++
++#define PHOTO_SIZE 1024        /* the game renders a photo into a target of this size */
++#define MAX_PHOTOS 999         /* the game stops taking photos at 1000 */
++#define ID_LEN 24
++#define GUEST_DIR "/screenshot"
++#define EXPORT_NOTACCEPT ((int32_t)0x809D3002)
++#define SEARCH_FAIL ((int32_t)0x80000000)
++
++typedef struct { char id[ID_LEN]; uint64_t handle; char comment[257]; } Photo;
++static Photo photos[MAX_PHOTOS + 1];  /* sorted by id */
++static unsigned photo_count;
++static char host_dir[600];
++static int mounted;
++static char pending[ID_LEN];
++static char last_comment[257];
++/* The game keeps the handle of every listed photo, so a handle names one photo for the run. */
++static uint64_t next_handle = UINT64_C(0x4752324400000001); /* "GR2D", counting from 1 */
++static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_once_t once = PTHREAD_ONCE_INIT;
++
++static void path_of(const char *id, char *out, size_t size) { snprintf(out, size, "%s/%s.jpg", host_dir, id); }
++static int find_id(const char *id) {
++    for (unsigned i = 0; i < photo_count; ++i) if (!strcmp(photos[i].id, id)) return (int)i;
++    return -1;
++}
++static int find_handle(uint64_t handle) {
++    for (unsigned i = 0; i < photo_count; ++i) if (photos[i].handle == handle) return (int)i;
++    return -1;
++}
++static void insert_id(const char *id) {
++    if (find_id(id) >= 0 || photo_count > MAX_PHOTOS) return;
++    unsigned at = 0;
++    while (at < photo_count && strcmp(photos[at].id, id) < 0) ++at;
++    memmove(photos + at + 1, photos + at, (photo_count - at) * sizeof(*photos));
++    memset(photos + at, 0, sizeof(*photos));
++    snprintf(photos[at].id, ID_LEN, "%s", id);
++    photos[at].handle = next_handle++;
++    ++photo_count;
++}
++
++static void setup(void) {
++    /* Arming also clamps the album's T# of several thousand layers (runtime_image.c reads the
++     * photo target back): it has to happen before the album is drawn. */
++    bbgpu_photo_arm(PHOTO_SIZE, PHOTO_SIZE);
++    const char *user = runtime_file_user_dir();
++    if (!user) return;
++    snprintf(host_dir, sizeof(host_dir), "%s/Capture Gallery", user);
++    mkdir(host_dir, 0755);
++    snprintf(host_dir, sizeof(host_dir), "%s/Capture Gallery/Gravity Rush 2", user);
++    if (mkdir(host_dir, 0755) && errno != EEXIST) { printf("Photo album: cannot create %s\n", host_dir); return; }
++    if (runtime_file_mount(GUEST_DIR, host_dir)) return;
++    mounted = 1;
++    DIR *dir = opendir(host_dir);
++    for (struct dirent *e; dir && (e = readdir(dir));) {
++        size_t n = strlen(e->d_name);
++        if (n < 5 || n - 4 >= ID_LEN || strcmp(e->d_name + n - 4, ".jpg")) continue;
++        int ascii = 1; /* the game opens a photo by a narrow path */
++        for (size_t i = 0; i < n; ++i) if ((unsigned char)e->d_name[i] >= 0x80) ascii = 0;
++        if (!ascii) continue;
++        char id[ID_LEN]; memcpy(id, e->d_name, n - 4); id[n - 4] = 0;
++        insert_id(id);
++    }
++    if (dir) closedir(dir);
++    printf("Photo album: %u photos in %s\n", photo_count, host_dir);
++}
++static void ensure_setup(void) { pthread_once(&once, setup); }
++
++/* ---- Called by the JPEG encoder (runtime_image.c) ---------------------------------------- */
++int runtime_photo_is_target(uint32_t width, uint32_t height) {
++    ensure_setup();
++    return width == PHOTO_SIZE && height == PHOTO_SIZE;
++}
++void runtime_photo_save(const uint8_t *jpeg, uint32_t size) {
++    ensure_setup();
++    pthread_mutex_lock(&lock);
++    pending[0] = 0;
++    if (!mounted) { pthread_mutex_unlock(&lock); return; }
++    char stamp[20], id[ID_LEN], path[700];
++    time_t now = time(NULL);
++    struct tm local;
++#ifdef _WIN32
++    localtime_s(&local, &now);
++#else
++    localtime_r(&now, &local);
++#endif
++    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
++    struct stat st;
++    for (unsigned n = 1; n < 1000; ++n) {
++        snprintf(id, sizeof(id), "%s_%03u", stamp, n);
++        path_of(id, path, sizeof(path));
++        if (find_id(id) < 0 && stat(path, &st)) break;
++    }
++    FILE *f = fopen(path, "wb");
++    int ok = f && fwrite(jpeg, 1, size, f) == size;
++    if (f && fclose(f)) ok = 0;
++    if (!ok) { printf("Photo album: cannot write %s\n", path); remove(path); }
++    else { printf("Photo album: saved %s (%u bytes)\n", path, size); snprintf(pending, ID_LEN, "%s", id); }
++    pthread_mutex_unlock(&lock);
++}
++void runtime_photo_drop(void) { pthread_mutex_lock(&lock); pending[0] = 0; pthread_mutex_unlock(&lock); }
++
++/* ---- libSceContentExport ---------------------------------------------------------------- */
++typedef struct { char title[257]; char comment[257]; char contenttype[65]; } ExportParam;
++
++/* The exported photo is the one the encoder just saved: its id goes back to the game, which
++ * looks it up in the album right away. */
++static int32_t export_pending(const ExportParam *param, char *out, uint64_t out_size) {
++    pthread_mutex_lock(&lock);
++    if (!pending[0]) { pthread_mutex_unlock(&lock); printf("Photo album: no photo to export\n"); return EXPORT_NOTACCEPT; }
++    char id[ID_LEN]; snprintf(id, ID_LEN, "%s", pending); pending[0] = 0;
++    insert_id(id);
++    int i = find_id(id);
++    /* Where the photo was taken, as the game encodes it; read back when it is posted. */
++    if (param && i >= 0 && param->comment[0]) {
++        snprintf(photos[i].comment, sizeof(photos[i].comment), "%.256s", param->comment);
++        snprintf(last_comment, sizeof(last_comment), "%.256s", param->comment);
++    }
++    if (out && out_size) snprintf(out, out_size, "%s", id);
++    pthread_mutex_unlock(&lock);
++    return 0;
++}
++static ABI int32_t export_init(void *param) { (void)param; ensure_setup(); return 0; }
++static ABI int32_t export_ok(void) { return 0; }
++static ABI int32_t export_start(void) { return 0; } /* the export handle */
++static ABI int32_t export_from_data(int32_t handle, const ExportParam *param, uint64_t length, void *func,
++                                    void *userdata, char *out, uint64_t out_size) {
++    (void)handle; (void)length; (void)func; (void)userdata;
++    return export_pending(param, out, out_size);
++}
++static ABI int32_t export_from_data_thumb(int32_t handle, const ExportParam *param, const void *content,
++                                          const char *thumb_type, const void *thumb, char *out, uint64_t out_size) {
++    (void)handle; (void)content; (void)thumb_type; (void)thumb;
++    return export_pending(param, out, out_size);
++}
++
++/* ---- libSceContentSearch ---------------------------------------------------------------- */
++#define ROW_SIZE 0x960
++#define ROW_HANDLE 0x000
++#define ROW_TYPE 0x00C
++#define ROW_PATH 0x018
++#define ROW_TITLE 0x424
++#define ROW_THUMBNAIL 0x52B
++typedef struct { uint32_t size; uint64_t value; } SearchValue;
++typedef struct { uint32_t column, comparison; const SearchValue *value; uint32_t join; } SearchTerm;
++typedef struct { const SearchTerm *terms; int32_t num_terms; uint32_t join; } SearchCondition;
++typedef struct { uint32_t size, type; char *buffer; } MetadataValue;
++
++/* To find one photo the game passes one condition of one term: content id == its handle. */
++static uint64_t handle_asked_for(const SearchCondition *c, uint32_t n) {
++    if (!c || n != 1 || !c->terms || c->num_terms != 1) return 0;
++    const SearchTerm *t = c->terms;
++    if (t->column != 1 || t->comparison != 0 || !t->value || t->value->size != 8) return 0;
++    return t->value->value;
++}
++static ABI int32_t search_init(void *param) { (void)param; ensure_setup(); return 0; }
++static ABI int32_t search_app_index(int32_t *index) { if (index) *index = 0; return 0; }
++static ABI int32_t search_count(const void *conditions, uint32_t n, uint32_t *num, uint64_t *update_counter) {
++    (void)conditions; (void)n; ensure_setup();
++    pthread_mutex_lock(&lock);
++    if (num) *num = photo_count < MAX_PHOTOS ? photo_count : MAX_PHOTOS;
++    pthread_mutex_unlock(&lock);
++    if (update_counter) *update_counter = 0;
++    return 0;
++}
++static void fill_row(uint8_t *row, const Photo *p) {
++    char path[0x401];
++    snprintf(path, sizeof(path), GUEST_DIR "/%s.jpg", p->id); /* absolute, or the game looks in its archive */
++    const uint32_t type = 1;
++    memset(row, 0, ROW_SIZE);
++    memcpy(row + ROW_HANDLE, &p->handle, 8);
++    memcpy(row + ROW_TYPE, &type, 4);
++    snprintf((char *)row + ROW_PATH, 0x401, "%s", path);
++    snprintf((char *)row + ROW_TITLE, 0x101, "%s", p->id);
++    snprintf((char *)row + ROW_THUMBNAIL, 0x401, "%s", path);
++}
++/* A query for one handle gets that photo; any other query gets the album in name order. */
++static ABI int32_t search_content(const SearchCondition *conditions, uint32_t n, const void *sort, uint32_t num_sort,
++                                  uint32_t offset, uint32_t limit, uint64_t *hits, uint8_t *rows, uint64_t *update_counter) {
++    (void)sort; (void)num_sort;
++    if (!hits || !rows) return SEARCH_FAIL;
++    ensure_setup();
++    pthread_mutex_lock(&lock);
++    uint64_t count = 0;
++    int one = find_handle(handle_asked_for(conditions, n));
++    if (one >= 0) {
++        if (offset == 0 && limit) { fill_row(rows, &photos[one]); count = 1; }
++    } else {
++        unsigned total = photo_count < MAX_PHOTOS ? photo_count : MAX_PHOTOS;
++        for (unsigned i = offset; i < total && count < limit; ++i, ++count) fill_row(rows + count * ROW_SIZE, &photos[i]);
++    }
++    pthread_mutex_unlock(&lock);
++    /* The game adds the hit count to its offset until it has every row: an empty page fails. */
++    if (!count) return SEARCH_FAIL;
++    *hits = count;
++    if (update_counter) *update_counter = 0;
++    return 0;
++}
++static uint64_t open_content;
++static ABI int32_t search_open_metadata(uint64_t content_id, uint32_t *handle) {
++    __atomic_store_n(&open_content, content_id, __ATOMIC_RELAXED);
++    if (handle) *handle = 1;
++    return 0;
++}
++/* The only metadata a photo has is its comment. */
++static ABI int32_t search_metadata_value(uint32_t handle, const char *key, MetadataValue *value) {
++    (void)handle;
++    if (!value || !value->buffer || !value->size) return SEARCH_FAIL;
++    uint32_t size = value->size < 0x101 ? value->size : 0x101;
++    memset(value->buffer, 0, size);
++    if (key && !strcmp(key, "comment")) {
++        pthread_mutex_lock(&lock);
++        int i = find_handle(__atomic_load_n(&open_content, __ATOMIC_RELAXED));
++        /* A photo with no comment gets the last export's: a review follows the save. */
++        const char *comment = i >= 0 && photos[i].comment[0] ? photos[i].comment : last_comment;
++        snprintf(value->buffer, size, "%s", comment);
++        pthread_mutex_unlock(&lock);
++    }
++    return 0;
++}
++
++/* ---- libSceContentDelete ---------------------------------------------------------------- */
++static ABI int32_t delete_by_id(uint64_t content_id) {
++    pthread_mutex_lock(&lock);
++    int i = find_handle(content_id);
++    if (i >= 0) {
++        char path[700]; path_of(photos[i].id, path, sizeof(path));
++        remove(path);
++        printf("Photo album: deleted %s\n", photos[i].id);
++        memmove(photos + i, photos + i + 1, (photo_count - (unsigned)i - 1) * sizeof(*photos));
++        --photo_count;
++    }
++    pthread_mutex_unlock(&lock);
++    return 0;
++}
++
++static const RuntimeExport exports[] = {
++    {"sceContentExportInit", export_init}, {"sceContentExportStart", export_start},
++    {"sceContentExportFromData", export_from_data},
++    {"sceContentExportFromDataWithThumbnail", export_from_data_thumb},
++    {"sceContentExportFinish", export_ok}, {"sceContentExportTerm", export_ok},
++    {"sceContentSearchInit", search_init}, {"sceContentSearchTerm", export_ok},
++    {"sceContentSearchGetMyApplicationIndex", search_app_index},
++    {"sceContentSearchGetNumOfContent", search_count}, {"sceContentSearchSearchContent", search_content},
++    {"sceContentSearchOpenMetadataByContentId", search_open_metadata},
++    {"sceContentSearchGetMetadataValue", search_metadata_value},
++    {"sceContentSearchCloseMetadata", export_ok},
++    {"sceContentDeleteInitialize", export_ok}, {"sceContentDeleteById", delete_by_id},
++    {"sceContentDeleteTerminate", export_ok},
++};
++uintptr_t runtime_photo_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_rtc.c b/src/runtime_rtc.c
 index 3232896..bf08e2e 100644
 --- a/src/runtime_rtc.c
