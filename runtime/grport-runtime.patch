@@ -25,10 +25,29 @@ index 529ef05..e04e771 100644
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
 diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
-index 02b422e..f6f9e48 100644
+index 02b422e..cf4956b 100644
 --- a/gpu/bbgpu.h
 +++ b/gpu/bbgpu.h
-@@ -39,6 +39,10 @@ int bbgpu_overlay_captures_input(void);
+@@ -34,11 +34,29 @@ void bbgpu_dump_guest_writes(void *ucontext);
+  * no window exists; poll returns 0 typing, 1 confirmed, 2 cancelled (UTF-8 text). */
+ int bbgpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
+ int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
++/* The save data dialog's list (SaveDataDialog, gpu/shim/bbport_overlay.cpp): one entry per
++ * save, an empty dir for "New save". begin returns 0 when no window exists; poll returns 0
++ * while the list is open, 1 picked (`picked`: the entry's index), 2 backed out; cancel closes
++ * it as backed out (the game closed the dialog). */
++typedef struct {
++    char dir[32];
++    char title[128], subtitle[128], detail[256];
++    int64_t mtime;
++} BbSaveEntry;
++int bbgpu_save_list_begin(const char *heading, const BbSaveEntry *entries, int count, int focus, int can_back);
++int bbgpu_save_list_poll(int *picked);
++void bbgpu_save_list_cancel(void);
++/* A short message on screen ("Game saved"), shown for a few seconds. */
++void bbgpu_notify(const char *text_utf8);
+ /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
+ int bbgpu_overlay_captures_input(void);
  /* 1 while the game should be silent: bbport.ini mute_unfocused is on and the window does not
   * have focus. Safe from any thread (the audio ports read it for every buffer). */
  int bbgpu_audio_muted(void);
@@ -17368,7 +17387,7 @@ index 8d41b8c..d34abcf 100644
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
-index 3a73ecf..9afbe8a 100644
+index 3a73ecf..0a9c793 100644
 --- a/gpu/shim/bbgpu.cpp
 +++ b/gpu/shim/bbgpu.cpp
 @@ -45,6 +45,7 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
@@ -17397,15 +17416,52 @@ index 3a73ecf..9afbe8a 100644
      const s32 width = config->width, height = config->height;
      g_window_thread = std::thread([title, width, height] {
          Common::SetCurrentThreadName("bb:window");
+@@ -351,6 +352,35 @@ extern "C" int bbgpu_audio_muted(void) {
+     return g_window && BbSettings::Get().mute_unfocused && !g_window->IsFocused() ? 1 : 0;
+ }
+ 
++extern "C" int bbgpu_save_list_begin(const char* heading, const BbSaveEntry* entries, int count,
++                                     int focus, int can_back) {
++    if (!g_window || !entries || count <= 0) return 0;
++    std::vector<BbOverlay::SaveEntry> list;
++    list.reserve(size_t(count));
++    for (int i = 0; i < count; ++i) {
++        const BbSaveEntry& e = entries[i];
++        list.push_back({std::string(e.dir, strnlen(e.dir, sizeof(e.dir))),
++                        std::string(e.title, strnlen(e.title, sizeof(e.title))),
++                        std::string(e.subtitle, strnlen(e.subtitle, sizeof(e.subtitle))),
++                        std::string(e.detail, strnlen(e.detail, sizeof(e.detail))), e.mtime});
++    }
++    return BbOverlay::BeginSaveList(heading ? heading : "", std::move(list), focus, can_back != 0)
++               ? 1
++               : 0;
++}
++
++extern "C" int bbgpu_save_list_poll(int* picked) {
++    return BbOverlay::PollSaveList(picked);
++}
++
++extern "C" void bbgpu_save_list_cancel(void) {
++    BbOverlay::CancelSaveList();
++}
++
++extern "C" void bbgpu_notify(const char* text) {
++    BbOverlay::Notify(text ? text : "");
++}
++
+ extern "C" int bbgpu_text_input_begin(const char* initial, const char* prompt) {
+     if (!g_window) return 0;
+     g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..396a7cc 100644
+index 651b74e..205a538 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
-@@ -9,10 +9,12 @@
+@@ -9,10 +9,13 @@
  #include <cmath>
  #include <cstdio>
  #include <cstdlib>
 +#include <cstring>
++#include <ctime>
  #include <mutex>
  
  #include <SDL3/SDL.h>
@@ -17414,7 +17470,36 @@ index 651b74e..396a7cc 100644
  #include "imgui.h"
  #include "imgui_impl_vulkan.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
-@@ -187,279 +189,83 @@ void Menu() {
+@@ -59,6 +62,28 @@ bool text_entry_active = false;
+ std::string text_entry_prompt, text_entry_text;
+ float base_scale = 1.0f;
+ 
++// The game's save data list (BeginSaveList), guarded by imgui_mutex; save_list_shown and
++// input_hold_until_ms are read without it (Visible, CapturesInput).
++bool save_list_active = false;
++std::atomic<bool> save_list_shown{false};
++std::string save_heading;
++std::vector<SaveEntry> save_entries;
++int save_selected = 0, save_state = 0, save_picked = -1, save_stick = 0;
++bool save_can_back = true, save_scroll = false;
++std::vector<ImVec4> save_rows; // each entry's rectangle on screen, from the last frame
++ImVec4 save_clip{};            // the list's visible area
++// After the list closes the game's input stays neutral briefly: the button that picked
++// (Cross, Enter) must not reach the game as a new press.
++std::atomic<s64> input_hold_until_ms{0};
++std::string notify_text;
++std::atomic<s64> notify_until_ms{0};
++
++s64 NowMs() {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
+ // Present rate for the FPS counter.
+ std::chrono::steady_clock::time_point last_present{};
+ float frame_ms_avg = 0.0f, last_present_ms = 0.0f;
+@@ -187,279 +212,83 @@ void Menu() {
          ImVec2(0.0f, 0.0f),
          ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
      bool keep_open = true;
@@ -17752,7 +17837,7 @@ index 651b74e..396a7cc 100644
      if (ImGui::Button("Close")) {
          keep_open = false;
      }
-@@ -481,8 +287,9 @@ void Menu() {
+@@ -481,8 +310,9 @@ void Menu() {
      if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
          quit_armed = false;
      }
@@ -17763,7 +17848,150 @@ index 651b74e..396a7cc 100644
      ImGui::End();
      if (!keep_open) {
          SetOpen(false);
-@@ -524,14 +331,14 @@ void FpsCounter() {
+@@ -513,6 +343,142 @@ void TextEntryBox() {
+     ImGui::End();
+ }
+ 
++// The game's save data list: its saves (title, details, time) and "New save"; the selection
++// moves with the keyboard, the controller or the mouse.
++void SaveListBox() {
++    const ImGuiViewport* viewport = ImGui::GetMainViewport();
++    const float width = viewport->WorkSize.x * 0.46f;
++    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
++                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
++                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
++    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
++    ImGui::SetNextWindowBgAlpha(0.94f);
++    ImGui::Begin("##save_list", nullptr,
++                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
++                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
++                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
++    ImGui::SetWindowFontScale(1.3f);
++    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", save_heading.c_str());
++    ImGui::SetWindowFontScale(1.0f);
++    ImGui::Separator();
++
++    const float line = ImGui::GetTextLineHeightWithSpacing();
++    const float pad = 6.0f * base_scale;
++    // Sized to the rows drawn last frame (an estimate on the first), at most 55% of the screen.
++    float rows_height = float(save_entries.size()) * (line * 4.5f + pad * 2.0f);
++    if (save_rows.size() == save_entries.size() && !save_rows.empty() && save_rows.back().w > 0.0f) {
++        rows_height = save_rows.back().w - save_rows.front().y + ImGui::GetStyle().WindowPadding.y * 2.0f;
++    }
++    const float list_height = std::min(rows_height, viewport->WorkSize.y * 0.55f);
++    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_None,
++                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav);
++    const ImVec2 clip_min = ImGui::GetWindowPos();
++    const ImVec2 clip_max(clip_min.x + ImGui::GetWindowWidth(),
++                          clip_min.y + ImGui::GetWindowHeight());
++    save_clip = ImVec4(clip_min.x, clip_min.y, clip_max.x, clip_max.y);
++    save_rows.assign(save_entries.size(), ImVec4());
++    ImDrawList* draw = ImGui::GetWindowDrawList();
++    for (size_t i = 0; i < save_entries.size(); ++i) {
++        const SaveEntry& entry = save_entries[i];
++        const bool selected = int(i) == save_selected;
++        if (selected && save_scroll) {
++            ImGui::SetScrollHereY(0.5f);
++            save_scroll = false;
++        }
++        const ImVec2 top = ImGui::GetCursorScreenPos();
++        const float row_width = ImGui::GetContentRegionAvail().x;
++        draw->ChannelsSplit(2);
++        draw->ChannelsSetCurrent(1);
++        ImGui::BeginGroup();
++        ImGui::Dummy(ImVec2(row_width, pad));
++        ImGui::Indent(pad * 2.0f);
++        ImGui::SetWindowFontScale(1.2f);
++        if (entry.dir.empty()) {
++            ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "+  %s", entry.title.c_str());
++        } else {
++            ImGui::TextUnformatted(entry.title.c_str());
++        }
++        ImGui::SetWindowFontScale(1.0f);
++        if (!entry.subtitle.empty()) {
++            ImGui::TextUnformatted(entry.subtitle.c_str());
++        }
++        if (!entry.detail.empty()) {
++            const size_t end = entry.detail.find('\n');
++            ImGui::TextDisabled("%s", entry.detail.substr(0, end).c_str());
++        }
++        if (entry.mtime > 0) {
++            const std::time_t when = std::time_t(entry.mtime);
++            char date[64] = "";
++            if (const std::tm* local = std::localtime(&when)) {
++                std::strftime(date, sizeof(date), "%Y-%m-%d %H:%M", local);
++            }
++            ImGui::TextDisabled("%s", date);
++        }
++        ImGui::Unindent(pad * 2.0f);
++        ImGui::Dummy(ImVec2(row_width, pad));
++        ImGui::EndGroup();
++        const ImVec2 bottom(top.x + row_width, ImGui::GetItemRectMax().y);
++        draw->ChannelsSetCurrent(0);
++        if (selected) {
++            draw->AddRectFilled(top, bottom, IM_COL32(200, 160, 90, 70), 4.0f * base_scale);
++            draw->AddRect(top, bottom, IM_COL32(220, 180, 110, 200), 4.0f * base_scale, 0,
++                          1.5f * base_scale);
++        }
++        draw->ChannelsMerge();
++        save_rows[i] = ImVec4(top.x, top.y, bottom.x, bottom.y);
++    }
++    ImGui::EndChild();
++    ImGui::Separator();
++    ImGui::TextDisabled("Up / Down to choose, Enter or Cross (A) = OK%s",
++                        save_can_back ? ", Esc or Circle (B) = back" : "");
++    ImGui::End();
++}
++
++void NotifyBox() {
++    const ImGuiViewport* viewport = ImGui::GetMainViewport();
++    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
++                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.74f),
++                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
++    ImGui::SetNextWindowBgAlpha(0.85f);
++    ImGui::Begin("##notify", nullptr,
++                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
++                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
++                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
++    ImGui::SetWindowFontScale(1.5f);
++    ImGui::TextUnformatted(notify_text.c_str());
++    ImGui::SetWindowFontScale(1.0f);
++    ImGui::End();
++}
++
++void FinishSaveList(int state) {
++    save_state = state;
++    save_picked = state == 1 ? save_selected : -1;
++    save_list_active = false;
++    save_list_shown = false;
++    input_hold_until_ms = NowMs() + 300;
++}
++
++void MoveSaveSelection(int delta) {
++    if (save_entries.empty()) {
++        return;
++    }
++    save_selected = std::clamp(save_selected + delta, 0, int(save_entries.size()) - 1);
++    save_scroll = true;
++}
++
++int SaveRowAt(float x, float y) {
++    if (x < save_clip.x || y < save_clip.y || x >= save_clip.z || y >= save_clip.w) {
++        return -1;
++    }
++    for (size_t i = 0; i < save_rows.size(); ++i) {
++        const ImVec4& r = save_rows[i];
++        if (x >= r.x && y >= r.y && x < r.z && y < r.w) {
++            return int(i);
++        }
++    }
++    return -1;
++}
++
+ void FpsCounter() {
+     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+     const float pad = 12.0f * base_scale;
+@@ -524,14 +490,14 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -17786,7 +18014,7 @@ index 651b74e..396a7cc 100644
      ImGui::End();
  }
  
-@@ -548,14 +355,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +514,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -17843,6 +18071,236 @@ index 651b74e..396a7cc 100644
  
      ImFontConfig font_config;
      font_config.FontDataOwnedByAtlas = false;
+@@ -703,11 +709,180 @@ bool HandleEvent(const SDL_Event& event) {
+ }
+ 
+ bool Visible() {
+-    return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps);
++    return initialized && (menu_open || text_entry_active || save_list_shown ||
++                           NowMs() < notify_until_ms || BbSettings::Get().show_fps);
+ }
+ 
+ bool CapturesInput() {
+-    return menu_open || text_entry_active;
++    return menu_open || text_entry_active || save_list_shown || NowMs() < input_hold_until_ms;
++}
++
++bool BeginSaveList(const std::string& heading, std::vector<SaveEntry> entries, int focus,
++                   bool can_back) {
++    std::scoped_lock lock{imgui_mutex};
++    if (!initialized || entries.empty()) {
++        return false;
++    }
++    save_heading = heading;
++    save_entries = std::move(entries);
++    save_selected = std::clamp(focus, 0, int(save_entries.size()) - 1);
++    save_can_back = can_back;
++    save_state = 0;
++    save_picked = -1;
++    save_stick = 0;
++    save_scroll = true;
++    save_rows.clear();
++    save_clip = ImVec4();
++    save_list_active = true;
++    save_list_shown = true;
++    return true;
++}
++
++int PollSaveList(int* picked) {
++    std::scoped_lock lock{imgui_mutex};
++    if (save_list_active) {
++        return 0;
++    }
++    if (picked) {
++        *picked = save_picked;
++    }
++    return save_state ? save_state : 2;
++}
++
++void CancelSaveList() {
++    std::scoped_lock lock{imgui_mutex};
++    if (save_list_active) {
++        FinishSaveList(2);
++    }
++}
++
++bool SaveListEvent(const SDL_Event& event) {
++    std::scoped_lock lock{imgui_mutex};
++    if (!save_list_active || menu_open) {
++        return false;
++    }
++    switch (event.type) {
++    case SDL_EVENT_KEY_DOWN:
++        switch (event.key.key) {
++        case SDLK_UP:
++        case SDLK_W:
++            MoveSaveSelection(-1);
++            break;
++        case SDLK_DOWN:
++        case SDLK_S:
++            MoveSaveSelection(1);
++            break;
++        case SDLK_PAGEUP:
++            MoveSaveSelection(-5);
++            break;
++        case SDLK_PAGEDOWN:
++            MoveSaveSelection(5);
++            break;
++        case SDLK_RETURN:
++        case SDLK_KP_ENTER:
++        case SDLK_SPACE:
++            if (!event.key.repeat) {
++                FinishSaveList(1);
++            }
++            break;
++        case SDLK_ESCAPE:
++        case SDLK_BACKSPACE:
++            if (!event.key.repeat && save_can_back) {
++                FinishSaveList(2);
++            }
++            break;
++        case SDLK_INSERT:
++            return false; // the settings menu still opens
++        default:
++            break;
++        }
++        return true;
++    case SDL_EVENT_KEY_UP:
++    case SDL_EVENT_TEXT_INPUT:
++        return true;
++    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
++    case SDL_EVENT_GAMEPAD_BUTTON_UP: {
++        const u8 button = event.gbutton.button;
++        if (button == SDL_GAMEPAD_BUTTON_LEFT_STICK || button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
++            return false; // L3+R3 opens the settings menu
++        }
++        if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
++            switch (button) {
++            case SDL_GAMEPAD_BUTTON_DPAD_UP:
++                MoveSaveSelection(-1);
++                break;
++            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
++                MoveSaveSelection(1);
++                break;
++            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
++                MoveSaveSelection(-5);
++                break;
++            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
++                MoveSaveSelection(5);
++                break;
++            case SDL_GAMEPAD_BUTTON_SOUTH:
++                FinishSaveList(1);
++                break;
++            case SDL_GAMEPAD_BUTTON_EAST:
++                if (save_can_back) {
++                    FinishSaveList(2);
++                }
++                break;
++            default:
++                break;
++            }
++        }
++        return true;
++    }
++    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
++        if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
++            const int value = event.gaxis.value;
++            const int direction = value < -16000 ? -1 : value > 16000 ? 1 : 0;
++            if (direction != save_stick && (direction != 0 || std::abs(value) < 8000)) {
++                save_stick = direction;
++                if (direction) {
++                    MoveSaveSelection(direction);
++                }
++            }
++        }
++        return true;
++    case SDL_EVENT_MOUSE_MOTION: {
++        const float density = PixelDensity(event.motion.windowID);
++        if (const int row = SaveRowAt(event.motion.x * density, event.motion.y * density);
++            row >= 0) {
++            save_selected = row;
++        }
++        return true;
++    }
++    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
++        const float density = PixelDensity(event.button.windowID);
++        if (event.button.button == SDL_BUTTON_LEFT) {
++            if (const int row = SaveRowAt(event.button.x * density, event.button.y * density);
++                row >= 0) {
++                save_selected = row;
++                FinishSaveList(1);
++            }
++        } else if (event.button.button == SDL_BUTTON_RIGHT && save_can_back) {
++            FinishSaveList(2);
++        }
++        return true;
++    }
++    case SDL_EVENT_MOUSE_BUTTON_UP:
++        return true;
++    case SDL_EVENT_MOUSE_WHEEL:
++        if (event.wheel.y != 0.0f) {
++            MoveSaveSelection(event.wheel.y > 0.0f ? -1 : 1);
++        }
++        return true;
++    default:
++        return false;
++    }
++}
++
++void Notify(const std::string& text) {
++    std::scoped_lock lock{imgui_mutex};
++    notify_text = text;
++    notify_until_ms = NowMs() + 2500;
+ }
+ 
+ void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
+@@ -776,6 +951,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+     if (text_entry_active) {
+         TextEntryBox();
+     }
++    if (save_list_active && !menu_open) {
++        SaveListBox();
++    }
++    if (NowMs() < notify_until_ms) {
++        NotifyBox();
++    }
+     ImGui::Render();
+ 
+     const vk::RenderingAttachmentInfo attachment{
+diff --git a/gpu/shim/bbport_overlay.h b/gpu/shim/bbport_overlay.h
+index 86ef250..a23da07 100644
+--- a/gpu/shim/bbport_overlay.h
++++ b/gpu/shim/bbport_overlay.h
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include <string>
++#include <vector>
+ #include "common/types.h"
+ #include "video_core/renderer_vulkan/vk_common.h"
+ 
+@@ -42,4 +43,21 @@ bool CapturesInput();
+ /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
+ void SetTextEntry(bool active, const std::string& prompt, const std::string& text);
+ 
++/// The game's save data list (sceSaveDataDialog): one entry per save, an empty dir for "New
++/// save". Begin returns false before the overlay exists. Poll: 0 open, 1 picked (`picked` is
++/// the index), 2 backed out. Cancel closes it as backed out.
++struct SaveEntry {
++    std::string dir, title, subtitle, detail;
++    s64 mtime;
++};
++bool BeginSaveList(const std::string& heading, std::vector<SaveEntry> entries, int focus,
++                   bool can_back);
++int PollSaveList(int* picked);
++void CancelSaveList();
++/// Window thread, before HandleEvent: true when the open save list consumed the event.
++bool SaveListEvent(const SDL_Event& event);
++
++/// A short message at the bottom of the screen for a few seconds ("Game saved").
++void Notify(const std::string& text);
++
+ } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
 index c729033..69a1cef 100644
 --- a/gpu/shim/bbport_prompt_icons.cpp
@@ -18649,7 +19107,7 @@ index 2e19d49..d234bb3 100644
          user.logged_in = true;
          user.shadnet_npid = text("BB_SHADNET_NPID", "");
 diff --git a/gpu/shim/window.cpp b/gpu/shim/window.cpp
-index 550e79e..7e9090e 100644
+index 550e79e..a324b31 100644
 --- a/gpu/shim/window.cpp
 +++ b/gpu/shim/window.cpp
 @@ -1,4 +1,5 @@
@@ -18724,6 +19182,15 @@ index 550e79e..7e9090e 100644
  
      const char* driver = SDL_GetCurrentVideoDriver();
      const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
+@@ -237,7 +278,7 @@ bool WindowSDL::PollEvents() {
+             UpdateTextTitle();
+             continue;
+         }
+-        if (BbOverlay::HandleEvent(event)) {
++        if (BbOverlay::SaveListEvent(event) || BbOverlay::HandleEvent(event)) {
+             continue;
+         }
+         switch (event.type) {
 diff --git a/packaging/windows/bb-probe.rc b/packaging/windows/bb-probe.rc
 index 46d615e..87446fa 100644
 --- a/packaging/windows/bb-probe.rc
@@ -25206,7 +25673,7 @@ index 9a16a9a..f244de6 100644
  void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
  
 diff --git a/src/runtime_services.c b/src/runtime_services.c
-index e75ed89..b145235 100644
+index e75ed89..056ecb3 100644
 --- a/src/runtime_services.c
 +++ b/src/runtime_services.c
 @@ -57,7 +57,7 @@ static ABI int32_t user_list(int32_t *ids) {
@@ -25276,21 +25743,29 @@ index e75ed89..b145235 100644
  static ABI int32_t np_compare(const void *a,const void *b) {
      if (!a || !b) return NP_INVALID_ARGUMENT;
      return memcmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
-@@ -259,7 +301,61 @@ static int32_t dialog_term(int i) {
+@@ -259,7 +301,139 @@ static int32_t dialog_term(int i) {
      static ABI int32_t tag##_open(const void *p) { (void)p; return dialog_open(i); } \
      static ABI int32_t tag##_status(void) { return dialog_status(i); } \
      static ABI int32_t tag##_term(void) { return dialog_term(i); }
 -DIALOG(msg,1) DIALOG(save,2) DIALOG(profile,3) DIALOG(commerce,4)
 +DIALOG(msg,1) DIALOG(profile,3) DIALOG(commerce,4)
-+/* GRport: SaveDataDialog answers like a player who confirms: a list picks the save the game
-+ * focuses (or its first), a question gets Yes. (Driveclub's runtime said "canceled", which
-+ * made Gravity Rush's Continue and Gallery go back to the title menu.) Layouts as the PS4's
-+ * OrbisSaveDataDialogParam / Items / Result. */
++/* GRport: SaveDataDialog. A list is shown in the overlay (bbgpu_save_list_*): the player picks
++ * a save, "New save" (an empty dir name: the game makes the next one) or backs out. Without a
++ * window it answers like a player who confirms, picking the save the game focuses (or its
++ * first). A question gets Yes; a finished save or load shows a short message. (Driveclub's
++ * runtime said "canceled" to every list, which made Gravity Rush's Continue and Gallery go back
++ * to the title menu.) Layouts as the PS4's OrbisSaveDataDialogParam / Items / Result. */
 +typedef struct { char data[32]; } DialogDirName;
 +typedef struct {
 +    int32_t user; int32_t pad; const void *title; const DialogDirName *dir_names; uint32_t dir_count;
 +    int32_t pad2; const void *new_item; uint32_t focus; int32_t pad3; const DialogDirName *focus_dir;
 +} DialogItems;
++typedef struct { const char *title; const void *icon; size_t icon_size; uint8_t reserved[32]; } DialogNewItem;
++typedef struct { uint32_t back; uint8_t reserved[32]; } DialogOption;
++typedef struct {
++    char title[128], subtitle[128], detail[1024];
++    uint32_t user_param; int32_t pad; int64_t mtime; uint8_t reserved[32];
++} DialogSaveParam; /* OrbisSaveDataParam, as runtime_savedata.c's Param */
 +typedef struct {
 +    size_t base_size; uint8_t base_reserved[36]; uint32_t magic;
 +    int32_t size; uint32_t mode, type; int32_t pad; const void *anim; const DialogItems *items;
@@ -25300,9 +25775,55 @@ index e75ed89..b145235 100644
 +    uint32_t mode; int32_t result; uint32_t button; int32_t pad; DialogDirName *dir_name; void *param;
 +    void *user_data; uint8_t reserved[32];
 +} SaveDialogResult;
-+static struct { uint32_t mode; void *user_data; char dir[32]; int32_t user; } save_dialog;
++static struct { uint32_t mode, type; void *user_data; char dir[32]; int32_t user, canceled, listing; } save_dialog;
++static BbSaveEntry save_entries[64];
 +int runtime_savedata_param(int32_t user, const char *dir, void *out); /* runtime_savedata.c */
 +static ABI int32_t save_init(void) { return dialog_init(2); }
++/* The list in the overlay: the saves that exist among the game's dir names (as the PS4 shows
++ * them), "New save" first when saving, the game's focus (OrbisSaveDataDialogFocusPos) picked.
++ * 0 when there is no window to show it in. */
++static int save_list_open(const SaveDialogParam *p, const DialogItems *items) {
++    int count=0, latest=-1, oldest=-1, focus=0;
++    const DialogNewItem *new_item=p->type==1 ? items->new_item : NULL;
++    if (new_item) {
++        memset(&save_entries[0],0,sizeof(save_entries[0]));
++        snprintf(save_entries[0].title,sizeof(save_entries[0].title),"%s",new_item->title && new_item->title[0] ? new_item->title : "New save");
++        count=1;
++    }
++    for (uint32_t i=0;items->dir_names && i<items->dir_count && count<(int)(sizeof(save_entries)/sizeof(*save_entries));++i) {
++        const char *dir=items->dir_names[i].data;
++        DialogSaveParam param;
++        if (!dir[0] || runtime_savedata_param(items->user,dir,&param)) continue;
++        BbSaveEntry *e=&save_entries[count];
++        memset(e,0,sizeof(*e));
++        snprintf(e->dir,sizeof(e->dir),"%.31s",dir);
++        snprintf(e->title,sizeof(e->title),"%.127s",param.title[0] ? param.title : dir);
++        snprintf(e->subtitle,sizeof(e->subtitle),"%.127s",param.subtitle);
++        snprintf(e->detail,sizeof(e->detail),"%.255s",param.detail);
++        e->mtime=param.mtime;
++        if (latest<0 || e->mtime>save_entries[latest].mtime) latest=count;
++        if (oldest<0 || e->mtime<save_entries[oldest].mtime) oldest=count;
++        if (items->focus==6 && items->focus_dir && !strcmp(items->focus_dir->data,dir)) focus=count;
++        ++count;
++    }
++    const int first_data=new_item ? 1 : 0;
++    switch (items->focus) {
++    case 1: focus=count-1; break;                                         /* list tail */
++    case 2: focus=first_data<count ? first_data : 0; break;               /* data head */
++    case 3: focus=count-1; break;                                         /* data tail */
++    case 4: focus=latest>=0 ? latest : 0; break;                          /* latest */
++    case 5: focus=oldest>=0 ? oldest : 0; break;                          /* oldest */
++    default: break;                                                       /* list head, dir name */
++    }
++    if (!count) return 0;
++    const DialogOption *option=p->option;
++    const char *heading=p->type==1 ? "Save" : p->type==2 ? "Load" : p->type==3 ? "Delete" : "Saved data";
++    if (!bbgpu_save_list_begin(heading,save_entries,count,focus,!option || option->back==0)) return 0;
++    save_dialog.listing=1;
++    dialogs[2].status=2;
++    printf("Runtime: SaveDataDialog mode 1: list of %d shown (%s)\n",count,heading);
++    return 1;
++}
 +static ABI int32_t save_open(const SaveDialogParam *p) {
 +    int32_t r=dialog_open(2);
 +    if (r || !p) return r;
@@ -25310,7 +25831,11 @@ index e75ed89..b145235 100644
 +    save_dialog.mode=p->mode; save_dialog.user_data=p->user_data; save_dialog.user=1;
 +    if (p->mode==1 && p->items) save_dialog.user=p->items->user;
 +    if (p->mode==3 && p->sys_msg) printf("Runtime: SaveDataDialog system message %u\n",*(const uint32_t *)p->sys_msg);
++    save_dialog.type=p->type;
 +    const DialogItems *items=p->mode==1 ? p->items : NULL;
++    if (items && save_list_open(p,items)) return 0;
++    if (p->mode==3 && p->sys_msg && *(const uint32_t *)p->sys_msg==7)
++        bbgpu_notify(p->type==1 ? "Game saved" : p->type==2 ? "Game loaded" : p->type==3 ? "Save deleted" : "Done");
 +    if (items && items->focus_dir && items->focus_dir->data[0])
 +        snprintf(save_dialog.dir,sizeof(save_dialog.dir),"%.31s",items->focus_dir->data);
 +    else if (items && items->dir_names && items->dir_count)
@@ -25322,11 +25847,26 @@ index e75ed89..b145235 100644
 +    printf("Runtime: SaveDataDialog mode %u%s%s\n",p->mode,save_dialog.dir[0] ? ", picks " : "",save_dialog.dir);
 +    return 0;
 +}
-+static ABI int32_t save_status(void) { return dialog_status(2); }
++static ABI int32_t save_status(void) {
++    if (save_dialog.listing) {
++        int picked=-1;
++        const int state=bbgpu_save_list_poll(&picked);
++        if (state) {
++            save_dialog.listing=0;
++            save_dialog.canceled=state==2;
++            if (state==1 && picked>=0 && picked<(int)(sizeof(save_entries)/sizeof(*save_entries)))
++                snprintf(save_dialog.dir,sizeof(save_dialog.dir),"%s",save_entries[picked].dir);
++            printf("Runtime: SaveDataDialog list: %s%s\n",state==2 ? "canceled" : save_dialog.dir[0] ? "picked " : "new save",
++                   state==2 ? "" : save_dialog.dir);
++            dialogs[2].status=3;
++        }
++    }
++    return dialog_status(2);
++}
 +static ABI int32_t save_term(void) { return dialog_term(2); }
 +static ABI int32_t save_result(SaveDialogResult *result) {
 +    if (!result) return (int32_t)0x80B80007;
-+    result->mode=save_dialog.mode; result->result=0; result->button=1;
++    result->mode=save_dialog.mode; result->result=save_dialog.canceled ? 1 : 0; result->button=save_dialog.canceled ? 0 : 1;
 +    if (result->dir_name) { memset(result->dir_name,0,sizeof(*result->dir_name)); memcpy(result->dir_name->data,save_dialog.dir,strlen(save_dialog.dir)); }
 +    /* The picked save's param (title, details, time), 1328 bytes as sceSaveDataSetParam's. */
 +    if (result->param && save_dialog.dir[0] && runtime_savedata_param(save_dialog.user,save_dialog.dir,result->param))
@@ -25335,11 +25875,16 @@ index e75ed89..b145235 100644
 +    return 0;
 +}
 +static ABI int32_t save_ready(void) { return 1; }
-+static ABI int32_t save_close(const void *p) { (void)p; if (dialogs[2].status==2) dialogs[2].status=3; return 0; }
++static ABI int32_t save_close(const void *p) {
++    (void)p;
++    if (save_dialog.listing) { bbgpu_save_list_cancel(); save_dialog.listing=0; save_dialog.canceled=1; }
++    if (dialogs[2].status==2) dialogs[2].status=3;
++    return 0;
++}
  static ABI int32_t profile_result(void *result) { if (result) memset(result,0,4); return 0; }
  /* ImeDialog: text typed on the keyboard into the game window (title bar shows it).
   * OrbisImeDialogParam: user, type, languages(8), enter label, method, filter,
-@@ -311,10 +407,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
+@@ -311,10 +485,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
      utf16_to_utf8(param->title,128,prompt,sizeof(prompt));
      const char *preset=getenv("BB_IME_TEXT");
      if (preset) { ime_complete(0,preset); return 0; }
@@ -25352,7 +25897,7 @@ index e75ed89..b145235 100644
      if (!bbgpu_text_input_begin(start,prompt[0] ? prompt : "Text")) ime_complete(0,start);
      else printf("Runtime: ImeDialog opened: shown on screen; keyboard Enter or Cross accepts, Esc or Circle cancels\n");
      return 0;
-@@ -513,6 +609,58 @@ static const RuntimeExport exports[]={
+@@ -513,6 +687,58 @@ static const RuntimeExport exports[]={
      {"sceNpScoreGetRankingByNpIdPcId",np_signed_out}, {"sceNpScoreGetRankingByRange",np_signed_out},
      {"sceNpScoreRecordGameData",np_signed_out}, {"sceNpScoreRecordScore",np_signed_out},
      {"sceNpScoreSetPlayerCharacterId",ok_void},
@@ -25411,7 +25956,7 @@ index e75ed89..b145235 100644
      {"sceVoiceCreatePort",voice_port}, {"sceVoiceDeletePort",ok_void},
      {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
      {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
-@@ -527,6 +675,8 @@ static const RuntimeExport exports[]={
+@@ -527,6 +753,8 @@ static const RuntimeExport exports[]={
      {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
      {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
      {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},

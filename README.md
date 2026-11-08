@@ -59,8 +59,9 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   that drift.
 - **PS4 Pro mode** (launcher SETUP, Gravity Rush 2, experimental, off by default): the game
   takes its own PS4 Pro render path.
-- **Saves**, Continue and Gallery; **language** of menus and subtitles; keyboard, mouse and
-  controllers; FPS counter.
+- **Save slots**: Save and Load show a list of your saves to pick from (or a new one), and
+  "Game saved" / "Game loaded" when done; Continue and Gallery; **language** of menus and
+  subtitles; keyboard, mouse and controllers; FPS counter.
 
 ## Known problems
 
