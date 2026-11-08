@@ -45,6 +45,7 @@ def test_setup_choices_are_saved(app):
     page.set_patch("Disable motion blur", False)
     page.set_window_size("2560x1440")
     page.set_readbacks("relaxed")
+    page.set_ps4_pro(True)
     assert page.deadzone_box.text == "10%"  # the default
     page.set_deadzone(24)
     assert page.deadzone_box.text == "24%"
@@ -53,6 +54,7 @@ def test_setup_choices_are_saved(app):
     assert saved.window_mode == "window" and saved.window_size == "2560x1440"
     assert "Disable motion blur" not in saved.games["gr2"].extras
     assert saved.games["gr2"].readbacks == "relaxed" and saved.games["gr1"].readbacks == "off"
+    assert saved.games["gr2"].ps4_pro and not saved.games["gr1"].ps4_pro
 
 
 def test_play_refuses_without_the_runtime(app):

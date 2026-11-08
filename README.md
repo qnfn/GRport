@@ -57,6 +57,8 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   SETUP).
 - **Stick dead zone** (launcher SETUP, 0-40% per game, 10% by default) for controller sticks
   that drift.
+- **PS4 Pro mode** (launcher SETUP, Gravity Rush 2, experimental, off by default): the game
+  takes its own PS4 Pro render path.
 - **Saves**, Continue and Gallery; **language** of menus and subtitles; keyboard, mouse and
   controllers; FPS counter.
 

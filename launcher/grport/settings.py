@@ -42,6 +42,7 @@ class GameSettings:
     threading: str = "auto"     # THREADING
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
+    ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
 
 

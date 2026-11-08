@@ -205,3 +205,18 @@ def test_stick_deadzone_reaches_the_runtime_and_bad_values_reset(paths, tmp_path
     for bad in (-5, 91, "12", True):
         paths.settings_json.write_text(json.dumps({"games": {"gr2": {"stick_deadzone": bad}}}))
         assert load_settings(paths).games["gr2"].stick_deadzone == 10
+
+
+def test_ps4_pro_mode_reaches_only_gravity_rush_2(paths, tmp_path):
+    gr2 = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    gr1 = games.inspect(make_game(tmp_path / "CUSA01130", "CUSA01130", "01.00"))
+    s = LauncherSettings()
+    assert "BB_NEO" not in runtime.env(paths, s, gr2, base={"BB_NEO": "1"})  # off by default
+    s.games["gr2"].ps4_pro = True
+    assert runtime.env(paths, s, gr2, base={})["BB_NEO"] == "1"
+    s.games["gr1"].ps4_pro = True  # only from a hand-edited grport.json; no Pro mode in GR1
+    assert "BB_NEO" not in runtime.env(paths, s, gr1, base={})
+    save_settings(paths, s)
+    assert load_settings(paths).games["gr2"].ps4_pro is True
+    paths.settings_json.write_text(json.dumps({"games": {"gr2": {"ps4_pro": "yes"}}}))
+    assert load_settings(paths).games["gr2"].ps4_pro is False

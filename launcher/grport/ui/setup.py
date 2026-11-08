@@ -36,6 +36,9 @@ DEADZONE_NOTE = ("Stick dead zone: how far a controller stick moves before the g
                  "for sticks that drift or wobble (the character walks on its own). Raise it "
                  "until the drift stops; 0% turns it off. Both sticks, keyboard and mouse "
                  "unaffected.")
+PRO_NOTE = ("PS4 Pro mode (experimental): Gravity Rush 2 thinks it runs on a PS4 Pro and uses "
+            "its own Pro rendering. Untested on PC: turn it off if the game crashes or looks "
+            "wrong. Off by default.")
 READBACK_NOTE = ("GPU readbacks: the game gets the GPU's results back exactly when it needs them. "
                  "Precise fixes the rare missing or flickering effect but costs FPS; Off is "
                  "fastest. Off by default.")
@@ -163,6 +166,13 @@ class SetupPage(tk.Frame):
                                           self.set_fps)
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
+        self.pro_choice = None
+        if self.key == "gr2":
+            row = self._row(gfx, "PS4 Pro mode")
+            self.pro_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")),
+                                              self.set_ps4_pro)
+            self.pro_choice.pack(side="left")
+            self._note(gfx, PRO_NOTE)
 
         controls = self.board.add(2, 0, span=2, title="Controller")
         row = self._row(controls, "Stick dead zone", first=True)
@@ -238,6 +248,8 @@ class SetupPage(tk.Frame):
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
         self.threading_choice.set(g.threading)
+        if self.pro_choice is not None:
+            self.pro_choice.set(g.ps4_pro)
         self.deadzone_box.set(f"{g.stick_deadzone}%")
         chosen = patches.extras(s, self.key)
         for prefix, choice in self.patch_choices.items():
@@ -297,6 +309,10 @@ class SetupPage(tk.Frame):
 
     def set_threading(self, value: str) -> None:
         self.g.threading = value
+        self._saved()
+
+    def set_ps4_pro(self, on: bool) -> None:
+        self.g.ps4_pro = bool(on)
         self._saved()
 
     def set_deadzone(self, percent: int) -> None:

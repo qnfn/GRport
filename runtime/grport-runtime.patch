@@ -17368,10 +17368,27 @@ index 8d41b8c..d34abcf 100644
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
-index 3a73ecf..5185966 100644
+index 3a73ecf..9afbe8a 100644
 --- a/gpu/shim/bbgpu.cpp
 +++ b/gpu/shim/bbgpu.cpp
-@@ -233,7 +233,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
+@@ -45,6 +45,7 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
+ uint64_t runtime_process_time_us(void);
+ uint64_t runtime_process_time_counter(void);
+ uint64_t runtime_tsc_frequency(void);
++int32_t runtime_neo_mode(void);
+ int32_t* runtime_errno(void);
+ void runtime_memory_set_gpu_hooks(RuntimeGpuRange map, RuntimeGpuRange unmap, RuntimeGpuRange invalidate);
+ }
+@@ -172,7 +173,7 @@ u64 PS4_SYSV_ABI sceKernelReadTsc() { return Common::FencedRDTSC(); }
+ u64 PS4_SYSV_ABI sceKernelGetProcessTime() { return runtime_process_time_us(); }
+ u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounter() { return runtime_process_time_counter(); }
+ u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounterFrequency() { return 1'000'000'000; }
+-s32 PS4_SYSV_ABI sceKernelIsNeoMode() { return 0; } // base PS4
++s32 PS4_SYSV_ABI sceKernelIsNeoMode() { return runtime_neo_mode(); }
+ s32 PS4_SYSV_ABI sceKernelGetCompiledSdkVersion(s32* ver) {
+     if (!ver) return ORBIS_KERNEL_ERROR_EINVAL;
+     *ver = s32(g_sdk_version);
+@@ -233,7 +234,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
      if (config->user_dir) setenv("BB_GPU_USER_DIR", config->user_dir, 0);
  #endif
      Core::Emulator::FillElfInfo(*config);
@@ -19892,10 +19909,10 @@ index 0000000..72c73e3
 +#endif
 diff --git a/src/nid_names_all.inc b/src/nid_names_all.inc
 new file mode 100644
-index 0000000..8a96874
+index 0000000..30235fc
 --- /dev/null
 +++ b/src/nid_names_all.inc
-@@ -0,0 +1,1129 @@
+@@ -0,0 +1,1130 @@
 +/* NID -> symbol name for imports of CUSA00003 and its bundled modules, from shadPS4
 + * aerolib.inl (GPL-2.0-or-later); sorted by NID for bsearch (runtime_symbol). */
 +{"+-du9tWgE9s","sceCompanionHttpdTerminate"},
@@ -20523,6 +20540,7 @@ index 0000000..8a96874
 +{"Wnp1OVcrZgk","sceAvPlayerGetAudioData"},
 +{"Wq4RNB3snSQ","sceHttpGetNonblock"},
 +{"WrOLvHU0yQM","pthread_setspecific"},
++{"WslcK1FQcGI","sceKernelIsNeoMode"},
 +{"XD3mDeybCnk","scePthreadRwlockTryrdlock"},
 +{"XDncXQIJUSk","sceNpGetOnlineId"},
 +{"XKRegsFpEpk","catchReturnFromMain"},
@@ -21612,7 +21630,7 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..f5cd112 100644
+index 773ee79..10b11b6 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -45,6 +45,10 @@ void runtime_thread_attach_main(void);
@@ -21626,7 +21644,15 @@ index 773ee79..f5cd112 100644
  unsigned runtime_sema_waiters(uint32_t id);
  uintptr_t runtime_time_resolve(const char *name);
  void runtime_content_configure(const uint32_t values[5]);
-@@ -80,13 +84,28 @@ void runtime_memory_reserve(void);
+@@ -55,6 +59,7 @@ typedef struct { const char *name; void *function; } RuntimeExport;
+ const char *runtime_symbol(const char *nid);
+ uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
+ uintptr_t runtime_kernel_resolve(const char *name);
++int32_t runtime_neo_mode(void);
+ uintptr_t runtime_file_resolve(const char *name);
+ uintptr_t runtime_services_resolve(const char *name);
+ void runtime_file_report(void);
+@@ -80,13 +85,28 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -23764,11 +23790,56 @@ index 0ccd2ce..aa55ca8 100644
  "# A shadPS4 input config (user/input_config/CUSA03173.ini) can be copied over this file.\n" \
  "# F7 toggles the mouse, F8 reloads this file.\n" \
  "\n"
+diff --git a/src/runtime_kernel.c b/src/runtime_kernel.c
+index 273a8f8..d84842f 100644
+--- a/src/runtime_kernel.c
++++ b/src/runtime_kernel.c
+@@ -106,6 +106,13 @@ static ABI uint64_t tsc_frequency(void) {
+ uint64_t runtime_process_time_us(void) { return process_time(); }
+ uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
+ uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
++/* BB_NEO=1 reports a PS4 Pro, so a game with a Pro mode takes its own Pro render path. */
++int32_t runtime_neo_mode(void) {
++    static int32_t neo=-1;
++    if (neo<0) { const char *env=getenv("BB_NEO"); neo=env && !strcmp(env,"1"); }
++    return neo;
++}
++static ABI int32_t is_neo_mode(void) { return runtime_neo_mode(); }
+ static int sleep_ns(uint64_t ns) {
+ #ifdef _WIN32
+     compat_sleep_ns(ns);
+@@ -305,6 +312,7 @@ static const RuntimeExport exports[]={
+     {"sceKernelGettimezone",kernel_gettimezone}, {"gettimeofday",posix_gettimeofday},
+     {"sceKernelGettimeofday",kernel_gettimeofday},
+     {"time",posix_time},
++    {"sceKernelIsNeoMode",is_neo_mode},
+     {"getpagesize",get_pagesize}, {"getpid",get_pid}, {"sched_yield",yield},
+     {"_exit",hard_exit},
+     {"sceKernelDebugRaiseException",raise_exception},
 diff --git a/src/runtime_memory.c b/src/runtime_memory.c
-index 35b3f4f..71ce72c 100644
+index 35b3f4f..90d3fed 100644
 --- a/src/runtime_memory.c
 +++ b/src/runtime_memory.c
-@@ -40,6 +40,10 @@ static uint64_t pool_size_bytes(void) {
+@@ -23,14 +23,15 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #endif
+-/* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. BB_DMEM_MB raises it (the resolution
+- * patches above 1080p need about 4 GiB more; run.sh sets it). */
++/* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB, 512 MiB more on a PS4 Pro (BB_NEO=1).
++ * BB_DMEM_MB raises it (the resolution patches above 1080p need about 4 GiB more; run.sh sets it). */
+ static uint64_t pool_size_bytes(void) {
+     static uint64_t size;
+     if (!size) {
+         const char *env = getenv("BB_DMEM_MB");
+         uint64_t mb = env ? strtoull(env, NULL, 10) : 0;
+-        if (mb < 5056 || mb > 16384) mb = 5056;
++        const uint64_t retail = runtime_neo_mode() ? 5056 + 512 : 5056;
++        if (mb < retail || mb > 16384) mb = retail;
+         size = mb * 1024 * 1024;
+     }
+     return size;
+@@ -40,6 +41,10 @@ static uint64_t pool_size_bytes(void) {
  #define PAGE UINT64_C(16384)
  #define USER_MIN UINT64_C(0x1000000000)
  #define USER_MAX UINT64_C(0xfc00000000)
@@ -23779,7 +23850,7 @@ index 35b3f4f..71ce72c 100644
  #define LIMIT 4096
  #define INVALID ((int32_t)UINT32_C(0x80020016))
  #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
-@@ -141,6 +145,9 @@ void runtime_memory_reserve(void) {
+@@ -141,6 +146,9 @@ void runtime_memory_reserve(void) {
      if (!VirtualAlloc2(NULL,(void *)USER_MIN,USER_MAX-USER_MIN,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,NULL,0))
          win_fail("reserving the PS4 address range (link with --disable-high-entropy-va)",USER_MIN,USER_MAX-USER_MIN);
      region_insert(0,(HostRegion){USER_MIN,USER_MAX,0,0});
@@ -23789,7 +23860,7 @@ index 35b3f4f..71ce72c 100644
  }
  /* Guest memory committed only as the game maps it: the whole pool did not fit Windows' commit
   * limit (RAM + page file) at once (pool()). */
-@@ -560,6 +567,15 @@ static ABI int32_t map_flexible_named(void **inout, uint64_t size, int prot, int
+@@ -560,6 +568,15 @@ static ABI int32_t map_flexible_named(void **inout, uint64_t size, int prot, int
      (void)name; return map_flexible(inout,size,prot,flags);
  }
  static ABI int32_t release_flexible(void *address, uint64_t size) { return direct_unmap(address,size); }
@@ -23805,7 +23876,7 @@ index 35b3f4f..71ce72c 100644
  static ABI int32_t reserve_range(void **inout, uint64_t size, int flags, uint64_t alignment) {
      if (!alignment) alignment=PAGE;
      if (!inout || !size || size%PAGE || !valid_alignment(alignment)) return INVALID;
-@@ -665,6 +681,7 @@ static const RuntimeExport exports[]={
+@@ -665,6 +682,7 @@ static const RuntimeExport exports[]={
      {"sceKernelReleaseDirectMemory",direct_release}, {"sceKernelMunmap",direct_unmap}, {"munmap",direct_unmap},
      {"sceKernelMapFlexibleMemory",map_flexible}, {"sceKernelMapNamedFlexibleMemory",map_flexible_named},
      {"sceKernelReleaseFlexibleMemory",release_flexible}, {"sceKernelReserveVirtualRange",reserve_range},

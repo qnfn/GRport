@@ -97,6 +97,12 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     out["BB_THREADED_RECORDING"] = "0" if g.threading == "0" else "1"
     # SETUP > Stick dead zone: radial, on both controller sticks; 0 is off.
     out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
+    # SETUP > PS4 Pro mode (Gravity Rush 2, experimental): the game sees a PS4 Pro and takes
+    # its own Pro render path; the runtime adds the Pro's 512 MiB to the direct memory pool.
+    if info.game.key == "gr2" and g.ps4_pro:
+        out["BB_NEO"] = "1"
+    else:
+        out.pop("BB_NEO", None)
     # FSR / DLSS anti-aliasing on the scene before the tonemap (the in-game menu); Gravity
     # Rush 2's motion comes from its own velocity target.
     out["BB_GR_UPSCALE"] = "1"

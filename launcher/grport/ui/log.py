@@ -223,6 +223,8 @@ class LogPage(tk.Frame):
             f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",
             f"Stick dead zone: {g.stick_deadzone}%",
         ]
+        if key == "gr2":
+            lines.append(f"PS4 Pro mode: {'on' if g.ps4_pro else 'off'}")
         lines.append(f"Windows: {platform.version()}")
         try:
             tail = read_tail(path, REPORT_LINES)
