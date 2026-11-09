@@ -160,9 +160,10 @@ def test_frame_rates_and_patches_per_game(paths, tmp_path):
     assert s.window_mode == "borderless"
     assert patches.wanted(60, "gr1", []) == []
     assert patches.wanted(120, "gr1", ["Skip intro"]) == [patches.GR1_KICK_FIX, "Skip intro"]
-    assert patches.wanted(30, "gr2", patches.default_extras("gr2"))[:2] == [
-        patches.CRASH_FIX, "Disable motion blur"]
-    assert patches.wanted(30, "gr2", ["unknown"]) == [patches.CRASH_FIX]
+    assert patches.wanted(30, "gr2", patches.default_extras("gr2"))[:3] == [
+        patches.CRASH_FIX, patches.DLC_UNLOCK, "Disable motion blur"]
+    assert patches.wanted(30, "gr2", ["unknown", "Unlock All DLC"]) == [
+        patches.CRASH_FIX, patches.DLC_UNLOCK]
     info = games.inspect(make_game(tmp_path / "CUSA01113", "CUSA01113", "01.00"))
     s.games["gr1"].fps = 120
     assert runtime.env(paths, s, info, base={})["BB_VBLANK_HZ"] == "120"

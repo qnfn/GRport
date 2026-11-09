@@ -5,6 +5,7 @@ import queue
 import subprocess
 import sys
 import threading
+import webbrowser
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -21,6 +22,7 @@ from grport.ui.log import LogPage
 from grport.ui.setup import SetupPage
 
 TABS = ("play", "setup", "log")
+KOFI_URL = "https://ko-fi.com/qnfn1"
 PAGES = {"play": HomePage, "setup": SetupPage, "log": LogPage}
 
 
@@ -269,6 +271,12 @@ class App(tk.Tk):
         version = theme.text_label(top, self, f"v{__version__}", font="small", fg="muted",
                                    bg="bg")
         version.pack(side="right", padx=(0, self.px(14)))
+        support = theme.text_label(top, self, "♥ Support GRport", font="small", fg="accent",
+                                   bg="bg", cursor="hand2")
+        support.pack(side="right", padx=(0, self.px(14)))
+        support.bind("<Button-1>", lambda e: webbrowser.open(KOFI_URL))
+        support.bind("<Enter>", lambda e: support.configure(fg=self.palette["text"]))
+        support.bind("<Leave>", lambda e: support.configure(fg=self.palette["accent"]))
 
     def _show_release(self, release) -> None:
         self.update_release = release

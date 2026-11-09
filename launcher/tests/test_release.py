@@ -29,6 +29,8 @@ XML = """<Patch>
   <Line Type="bytes" Address="0x00401000" Value="9090"/></PatchList></Metadata>
 <Metadata Name="60fps v4.8 (READ NOTES)" AppVer="01.00"><PatchList>
   <Line Type="bytes" Address="0x00402000" Value="cc"/></PatchList></Metadata>
+<Metadata Name="Unlock All DLC" AppVer="01.11"><PatchList>
+  <Line Type="bytes" Address="0x00403000" Value="90"/></PatchList></Metadata>
 </Patch>"""
 
 
@@ -37,11 +39,11 @@ def test_patches_compile_by_prefix_and_version(tmp_path):
     xml.write_text(XML, encoding="utf-8")
     blob = patches.compile_patches(xml, patches.wanted(60))
     magic, base, count = struct.unpack_from("<8sQQ", blob, 0)
-    assert (magic, base, count) == (b"BBPATCH2", 0x400000, 2)
+    assert (magic, base, count) == (b"BBPATCH2", 0x400000, 3)
     # GoldHEN addresses are image offsets + 0x400000; the 01.00 patch is not used.
     offset, length = struct.unpack_from("<QQ", blob, 24)
     assert (offset, length) == (0x1000, 2)
-    assert patches.wanted(30) == [patches.CRASH_FIX]
+    assert patches.wanted(30) == [patches.CRASH_FIX, patches.DLC_UNLOCK]
 
 
 def test_patch_line_types(tmp_path):

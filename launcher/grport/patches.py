@@ -26,6 +26,7 @@ PATCH_URL = REPO + FILES["gr2"]
 CRASH_FIX = "30 fps Crash fix"  # name prefixes: the author's versions change
 # Gravity Rush Remastered above 60 FPS: the camera rolls past level after a gravity kick.
 GR1_KICK_FIX = "Gravity kick camera leveling"
+DLC_UNLOCK = "Unlock All DLC"  # Gravity Rush 2: always on
 GOLDHEN_BASE = 0x400000
 
 # The optional patches: (name prefix in the author's file, label, on by default, note).
@@ -51,7 +52,6 @@ OPTIONAL = {
         ("Unlock All Gestures", "Unlock all gestures", False, ""),
         ("Unlock All Photo Items", "Unlock all photo items", False, ""),
         ("Unlock all Dusty Token", "Unlock all Dusty Token rewards", False, ""),
-        ("Unlock All DLC", "Unlock all DLC", False, ""),
         ("Remove DLC Requirement", "Load saves made with DLC", False,
          "Loads save data that needs DLC you do not have."),
     ),
@@ -89,14 +89,14 @@ def download(paths: AppPaths, key: str = "gr2") -> Path:
 
 def wanted(fps: int, key: str = "gr2", extras=()) -> list:
     """Name prefixes of the patches for a game, frame rate and optional choices. Gravity Rush 2:
-    the crash fix always, the FPS patch above 30. Gravity Rush Remastered: the gravity kick fix
-    above 60."""
+    the crash fix and Unlock All DLC always, the FPS patch above 30. Gravity Rush Remastered:
+    the gravity kick fix above 60."""
     known = [prefix for prefix, _, _, _ in OPTIONAL.get(key, ())]
     out = []
     if key == "gr2":
         if fps in FPS_CHOICES["gr2"] and fps != 30:
             out.append(f"{fps}fps v")
-        out.append(CRASH_FIX)
+        out += [CRASH_FIX, DLC_UNLOCK]
     elif key == "gr1" and fps > 60:
         out.append(GR1_KICK_FIX)
     return out + [prefix for prefix in known if prefix in extras]

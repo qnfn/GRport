@@ -78,6 +78,10 @@ If something goes wrong, use **LOG > Copy for bug report** in the launcher and o
 - `runtime/`: the runtime's source, as a patch to the GPL runtime it is based on (see
   `runtime/README.md`).
 
+## Support
+
+GRport is free. If you'd like to support it: [ko-fi.com/qnfn1](https://ko-fi.com/qnfn1) ♥
+
 ## Credits
 
 - The Windows PS4 runtime by Supermedo and the shadPS4 project, on which GRport's runtime is
