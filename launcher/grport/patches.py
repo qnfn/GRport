@@ -9,6 +9,7 @@ there. They are GoldHEN-style byte writes at the game's image offset + 0x400000.
 compiled file goes to the prepare step (its writes keep their bytes) and to the runtime
 (--patches).
 """
+import hashlib
 import struct
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -144,23 +145,24 @@ def _mismatch_file(paths: AppPaths, key: str) -> Path:
     return paths.root / "user" / key / "patches-mismatch.txt"
 
 
-def _eboot_stamp(info: GameFolder) -> str:
+def _stamp(info: GameFolder, blob: bytes) -> str:
     st = info.eboot.stat()
-    return f"{info.eboot} {st.st_size} {st.st_mtime_ns}"
+    return f"{info.eboot} {st.st_size} {st.st_mtime_ns} {hashlib.sha1(blob).hexdigest()}"
 
 
 def mark_mismatch(paths: AppPaths, info: GameFolder) -> None:
     """The prepare step found the patches made for another build of this game: it runs
-    unpatched (30 FPS) until its eboot changes."""
+    unpatched (30 FPS) until its eboot or the chosen patches change."""
     path = _mismatch_file(paths, info.game.key)
+    patch = patch_file(paths, info.game.key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_eboot_stamp(info), encoding="utf-8")
-    patch_file(paths, info.game.key).unlink(missing_ok=True)
+    path.write_text(_stamp(info, patch.read_bytes() if patch.is_file() else b""), encoding="utf-8")
+    patch.unlink(missing_ok=True)
 
 
-def mismatched(paths: AppPaths, info: GameFolder) -> bool:
+def mismatched(paths: AppPaths, info: GameFolder, blob: bytes) -> bool:
     try:
-        return _mismatch_file(paths, info.game.key).read_text(encoding="utf-8") == _eboot_stamp(info)
+        return _mismatch_file(paths, info.game.key).read_text(encoding="utf-8") == _stamp(info, blob)
     except OSError:
         return False
 
@@ -174,8 +176,7 @@ def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | Non
     path = patch_file(paths, key)
     g = s.games[key]
     names = wanted(g.fps, key, extras(s, key))
-    if (key not in FILES or info.version != APP_VERSIONS[key] or mismatched(paths, info)
-            or not names):
+    if key not in FILES or info.version != APP_VERSIONS[key] or not names:
         path.unlink(missing_ok=True)
         return None
     if names == [CRASH_FIX] and not source(paths, key).is_file():
@@ -185,6 +186,9 @@ def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | Non
             path.unlink(missing_ok=True)
             return None
     blob = compile_patches(download(paths, key), names, APP_VERSIONS[key])
+    if mismatched(paths, info, blob):
+        path.unlink(missing_ok=True)
+        return None
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.is_file() or path.read_bytes() != blob:
         path.write_bytes(blob)

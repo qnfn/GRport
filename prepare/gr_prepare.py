@@ -59,20 +59,29 @@ def patched_offsets(path: Path) -> list:
 def patch_mismatches(boot: Path, patch: Path) -> "tuple[int, int]":
     """(call sites the patches write, of them not a call in this eboot). Patches made for
     another build of the game write into the middle of other code: most writes of a call have
-    to land on a call (0xE8) here (some add new calls)."""
+    to land on a call (0xE8) here (some add new calls). Only a call written on its own counts:
+    one that touches another write is part of new code (Unlock All DLC writes six calls into a
+    code cave), not a call site of the game's."""
     raw = boot.read_bytes()
     size = struct.unpack_from("<Q", raw, 8)[0]
     image = raw[len(raw) - size:]
     blob = patch.read_bytes()
     _magic, _base, count = struct.unpack_from("<8sQQ", blob, 0)
-    pos, calls, bad = 24, 0, 0
+    pos, writes = 24, []
     for _ in range(count):
         offset, length = struct.unpack_from("<QQ", blob, pos)
-        data = blob[pos + 16:pos + 16 + length]
-        if length == 5 and data[0] == 0xE8:
+        writes.append((offset, blob[pos + 16:pos + 16 + length]))
+        pos += 16 + length
+    spans = {(offset, offset + len(data)) for offset, data in writes}
+
+    def alone(start: int, end: int) -> bool:
+        return not any(s <= end and e >= start for s, e in spans if (s, e) != (start, end))
+
+    calls = bad = 0
+    for offset, data in writes:
+        if len(data) == 5 and data[0] == 0xE8 and alone(offset, offset + 5):
             calls += 1
             bad += offset >= size or image[offset] != 0xE8
-        pos += 16 + length
     return calls, bad
 
 

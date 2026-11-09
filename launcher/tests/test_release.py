@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Updates from GitHub releases and the Gravity Rush 2 patch compiler."""
 import struct
+from pathlib import Path
 
 from grport import patches, updater
 
@@ -60,3 +61,46 @@ def test_patch_line_types(tmp_path):
         pos += 16 + length
     assert writes == [(0x30a63, b"CROW\0"), (0x100, b"\x00\x00\x00\x3f"),
                       (0x200, bytes.fromhex("e9f840f900"))]
+
+
+def _bbpatch(writes):
+    blob = struct.pack("<8sQQ", b"BBPATCH2", patches.GOLDHEN_BASE, len(writes))
+    for offset, data in writes:
+        blob += struct.pack("<QQ", offset, len(data)) + data
+    return blob
+
+
+def test_patch_mismatch_ignores_calls_in_new_code(tmp_path):
+    # Unlock All DLC writes six calls into a code cave next to its other writes: they are new
+    # code, not the game's call sites, and must not make prepare call the patches mismatched.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prepare"))
+    import gr_prepare
+    image = bytearray(0x1000)
+    image[0x100] = image[0x200] = 0xE8  # the game's calls
+    boot = tmp_path / "boot.bin"
+    boot.write_bytes(struct.pack("<QQ", 0, len(image)) + bytes(image))
+    call = bytes.fromhex("e800000000")
+    cave = [(0x800, bytes.fromhex("488d3d00000000")), (0x807, b"\x31\xf6"), (0x809, call),
+            (0x80e, bytes.fromhex("488d3d00000000")), (0x815, b"\x31\xf6"), (0x817, call)]
+    patch = tmp_path / "p.bin"
+    patch.write_bytes(_bbpatch([(0x100, call), (0x200, call)] + cave))
+    assert gr_prepare.patch_mismatches(boot, patch) == (2, 0)
+    patch.write_bytes(_bbpatch([(0x110, call), (0x210, call)] + cave))  # another build
+    assert gr_prepare.patch_mismatches(boot, patch) == (2, 2)
+
+
+def test_patch_mismatch_is_kept_only_for_the_same_patches(tmp_path):
+    # A mismatch found with one set of patches does not disable another set (or the same set
+    # after an update) for good.
+    from types import SimpleNamespace
+    eboot = tmp_path / "eboot.bin"
+    eboot.write_bytes(b"x")
+    info = SimpleNamespace(eboot=eboot, game=SimpleNamespace(key="gr2"))
+    paths = SimpleNamespace(root=tmp_path)
+    patches.patch_file(paths, "gr2").parent.mkdir(parents=True)
+    patches.patch_file(paths, "gr2").write_bytes(b"one")
+    patches.mark_mismatch(paths, info)
+    assert not patches.patch_file(paths, "gr2").exists()
+    assert patches.mismatched(paths, info, b"one")
+    assert not patches.mismatched(paths, info, b"two")
