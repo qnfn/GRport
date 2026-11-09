@@ -41,3 +41,22 @@ def test_patches_compile_by_prefix_and_version(tmp_path):
     offset, length = struct.unpack_from("<QQ", blob, 24)
     assert (offset, length) == (0x1000, 2)
     assert patches.wanted(30) == [patches.CRASH_FIX]
+
+
+def test_patch_line_types(tmp_path):
+    # Unlock All DLC writes its DLC names as utf8 lines; the debug patches use bytes32.
+    xml = tmp_path / "p.xml"
+    xml.write_text("""<Patch><Metadata Name="Unlock All DLC" AppVer="01.11"><PatchList>
+  <Line Type="utf8" Address="0x00430a63" Value="CROW"/>
+  <Line Type="bytes32" Address="0x00400100" Value="0x3f000000"/>
+  <Line Type="bytes" Address="0x00400200" Value="e9f840f900"/></PatchList></Metadata>
+</Patch>""", encoding="utf-8")
+    blob = patches.compile_patches(xml, ["Unlock All DLC"])
+    assert struct.unpack_from("<8sQQ", blob, 0)[2] == 3
+    pos, writes = 24, []
+    for _ in range(3):
+        offset, length = struct.unpack_from("<QQ", blob, pos)
+        writes.append((offset, blob[pos + 16:pos + 16 + length]))
+        pos += 16 + length
+    assert writes == [(0x30a63, b"CROW\0"), (0x100, b"\x00\x00\x00\x3f"),
+                      (0x200, bytes.fromhex("e9f840f900"))]

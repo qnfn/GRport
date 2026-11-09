@@ -101,6 +101,24 @@ def wanted(fps: int, key: str = "gr2", extras=()) -> list:
     return out + [prefix for prefix in known if prefix in extras]
 
 
+_INTS = {"bytes16": "<H", "bytes32": "<I", "bytes64": "<Q"}
+_FLOATS = {"float32": "<f", "float64": "<d"}
+
+
+def _line_bytes(kind: "str | None", value: str) -> bytes:
+    """The bytes a GoldHEN patch line writes, as shadPS4 and GoldHEN read its Type: hex for
+    bytes, little-endian numbers for bytesNN/floatNN, a NUL-terminated string for utf8."""
+    if kind == "bytes":
+        return bytes.fromhex(value)
+    if kind in _INTS:
+        return struct.pack(_INTS[kind], int(value, 0))
+    if kind in _FLOATS:
+        return struct.pack(_FLOATS[kind], float(value))
+    if kind == "utf8":
+        return value.encode("utf-8") + b"\0"
+    raise ValueError(f"unsupported patch line type {kind}")
+
+
 def compile_patches(xml: Path, prefixes: list, app_version: str = APP_VERSIONS["gr2"]) -> bytes:
     root = ET.parse(xml).getroot()
     writes = []
@@ -110,10 +128,8 @@ def compile_patches(xml: Path, prefixes: list, app_version: str = APP_VERSIONS["
         if not metas:
             raise ValueError(f"the patch file has no '{prefix}' patch for version {app_version}")
         for line in metas[-1].iter("Line"):  # the newest of its versions
-            if line.get("Type") != "bytes":
-                raise ValueError(f"unsupported patch line type {line.get('Type')}")
             writes.append((int(line.get("Address"), 16) - GOLDHEN_BASE,
-                           bytes.fromhex(line.get("Value"))))
+                           _line_bytes(line.get("Type"), line.get("Value"))))
     blob = struct.pack("<8sQQ", b"BBPATCH2", GOLDHEN_BASE, len(writes))
     for offset, data in writes:
         blob += struct.pack("<QQ", offset, len(data)) + data
