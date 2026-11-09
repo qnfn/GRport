@@ -81,6 +81,7 @@ If something goes wrong, use **LOG > Copy for bug report** in the launcher and o
 ## Support
 
 GRport is free. If you'd like to support it: [ko-fi.com/qnfn1](https://ko-fi.com/qnfn1) ♥
+More of my projects: [github.com/qnfn](https://github.com/qnfn)
 
 ## Credits
 
