@@ -8,9 +8,14 @@ runtime/ and the README. The player's files stay: saves and settings (user/), gr
 the downloaded patches (patches/) and data/ (prepared again by itself, since the runtime
 changed). The running launcher renames itself to GRport.exe.old (Windows allows renaming a
 running exe); the next start deletes it.
+
+Linux: the AppImage is one file, GRport-x86_64.AppImage on each release. The launcher downloads
+it next to the running one, checks it the same way and moves it over the old file (Linux lets
+a running file be replaced); the new one starts with the player's own environment.
 """
 import hashlib
 import json
+import os
 import re
 import shutil
 import urllib.request
@@ -50,12 +55,18 @@ class Release:
     notes_url: str
 
 
-def asset_name(version: str, fsr: bool) -> str:
+APPIMAGE_ASSET = "GRport-x86_64.AppImage"
+
+
+def asset_name(version: str, fsr: bool, appimage: bool = False) -> str:
+    if appimage:
+        return APPIMAGE_ASSET
     return f"GRport-{version}-windows{'-fsr' if fsr else ''}.zip"
 
 
-def newest(releases: list, current: str, fsr: bool) -> "Release | None":
-    """The newest published release above `current` that has this edition's zip."""
+def newest(releases: list, current: str, fsr: bool, appimage: bool = False) -> "Release | None":
+    """The newest published release above `current` that has this edition's file (the
+    Windows zip, or the AppImage on Linux)."""
     mine = _current(current)
     best = None
     for r in releases if isinstance(releases, list) else []:
@@ -73,7 +84,7 @@ def newest(releases: list, current: str, fsr: bool) -> "Release | None":
         if best is not None and parsed <= parse_version(best.version):
             continue
         for a in r.get("assets", []) or []:
-            if isinstance(a, dict) and a.get("name") == asset_name(version, fsr):
+            if isinstance(a, dict) and a.get("name") == asset_name(version, fsr, appimage):
                 digest = str(a.get("digest") or "")
                 best = Release(version, str(a.get("browser_download_url", "")),
                                int(a.get("size") or 0),
@@ -82,17 +93,19 @@ def newest(releases: list, current: str, fsr: bool) -> "Release | None":
     return best if best and best.url.startswith("https://") else None
 
 
-def check(current: str, fsr: bool, timeout: float = 10.0) -> "Release | None":
+def check(current: str, fsr: bool, timeout: float = 10.0, appimage: bool = False) -> "Release | None":
     req = urllib.request.Request(API, headers={"User-Agent": USER_AGENT,
                                                "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return newest(json.loads(resp.read().decode("utf-8")), current, fsr)
+        return newest(json.loads(resp.read().decode("utf-8")), current, fsr, appimage)
 
 
-def download(release: Release, folder: Path, fsr: bool, progress=None) -> Path:
-    """The release zip in `folder` (checked against GitHub's size and SHA-256)."""
+def download(release: Release, folder: Path, fsr: bool, progress=None,
+             name: "str | None" = None) -> Path:
+    """The release file in `folder` (checked against GitHub's size and SHA-256), saved as
+    `name` (default: the edition's zip name)."""
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / asset_name(release.version, fsr)
+    target = folder / (name or asset_name(release.version, fsr))
     part = target.with_suffix(".part")
     digest = hashlib.sha256()
     done = 0
@@ -181,6 +194,55 @@ def install(new: Path, root: Path, running_exe: "Path | None") -> list[str]:
     shutil.rmtree(old, ignore_errors=True)
     shutil.rmtree(root / STAGE, ignore_errors=True)
     return replaced
+
+
+# Set by the AppImage's wrapper (linux/default.nix) for the copy that is running: the new one
+# sets its own. Values pointing into the running image are dropped too (its mount goes away).
+APPIMAGE_OWN = frozenset({
+    "APPDIR", "APPIMAGE", "ARGV0", "OWD", "GRPORT_RUNTIME_EXE", "GRPORT_PREPARE_EXE",
+    "BB_SYSTEM_FONT", "BB_BUNDLED_VK_DRIVER_FILES", "BB_VULKANINFO", "BB_DATA_DIR",
+    "FONTCONFIG_FILE", "SSL_CERT_FILE", "PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH",
+    "DISABLE_VK_LAYER_VALVE_steam_overlay_1", "DISABLE_VK_LAYER_VALVE_steam_fossilize_1",
+})
+_LIST_VARS = ("PATH", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS")
+
+
+def appimage_env(environ: dict) -> dict:
+    """The environment to start a new AppImage from the running one with: the player's own
+    (linux/entry.c kept their LD_PRELOAD... as BB_HOST_<name>), without the running image's."""
+    inside = [p for p in (environ.get("APPDIR"), "/nix/store/") if p]
+    out = {}
+    for key, value in environ.items():
+        if key in APPIMAGE_OWN or key.startswith("BB_HOST_"):
+            continue
+        if key in _LIST_VARS:
+            kept = [p for p in value.split(":") if p and not any(i in p for i in inside)]
+            if kept:
+                out[key] = ":".join(kept)
+            continue
+        if any(i in value for i in inside):
+            continue
+        out[key] = value
+    for key, value in environ.items():
+        if key.startswith("BB_HOST_") and value:
+            out[key[len("BB_HOST_"):]] = value
+    if "PATH" not in out:
+        out["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+    return out
+
+
+def install_appimage(release: Release, target: Path, progress=None) -> Path:
+    """Downloads the release's AppImage next to `target` (the running one) and moves it over
+    it; returns target. The old file stays until the new one is complete and checked."""
+    target = Path(target)
+    new = download(release, target.parent, False, progress, name=target.name + ".new")
+    try:
+        os.chmod(new, 0o755)
+        os.replace(new, target)
+    except OSError:
+        new.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def clean_up(root: Path) -> None:

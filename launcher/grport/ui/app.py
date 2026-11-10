@@ -36,6 +36,12 @@ def _lookup_gpu(results: "queue.Queue") -> None:
         results.put(("gpu", None))
 
 
+def _appimage() -> "Path | None":
+    """The running AppImage file (Linux), else None."""
+    path = os.environ.get("APPIMAGE") if os.name != "nt" else None
+    return Path(path) if path else None
+
+
 class App(tk.Tk):
     def __init__(self, paths: AppPaths, autoplay: "str | None" = None):
         theme.enable_dpi_awareness()
@@ -86,7 +92,7 @@ class App(tk.Tk):
         if getattr(sys, "frozen", False):  # updates replace the built launcher, not sources
             updater.clean_up(self.paths.root)
             threading.Thread(target=self._check_update, daemon=True).start()
-        elif os.name != "nt" and os.environ.get("APPIMAGE"):  # Linux: told, not installed
+        elif _appimage():  # Linux: the AppImage replaces itself
             threading.Thread(target=self._check_update, daemon=True).start()
         self.after(150, self._poll)
         # GRport.exe --gr1 / --gr2: start that game at once; the launcher waits minimized and
@@ -110,7 +116,8 @@ class App(tk.Tk):
 
     def _check_update(self) -> None:
         try:
-            release = updater.check(__version__, updater.installed_fsr(self.paths.root))
+            release = updater.check(__version__, updater.installed_fsr(self.paths.root),
+                                    appimage=_appimage() is not None)
         except Exception:  # noqa: BLE001 - offline, rate limited: no update shown
             return
         if release is not None:
@@ -121,12 +128,8 @@ class App(tk.Tk):
         release = self.update_release
         if release is None or self.phase != "idle" or self.updating:
             return
-        if os.name != "nt" and os.environ.get("APPIMAGE"):
-            webbrowser.open(f"https://github.com/qnfn/GRport/releases/tag/v{release.version}")
-            self.pages["play"].flash(f"GRport {release.version}: download GRport-x86_64.AppImage "
-                                     "from the page that opened and replace this one.", "warn")
-            return
-        if not getattr(sys, "frozen", False):
+        appimage = _appimage()
+        if not appimage and not getattr(sys, "frozen", False):
             self.pages["play"].flash(f"GRport {release.version} is out: updates install into the "
                                      "built GRport.exe, not a source run.", "warn")
             return
@@ -147,12 +150,19 @@ class App(tk.Tk):
                 shown[0] = text
                 self._results.put(("status", text))
 
+        mb = 1 << 20
+
+        def downloading(done, total):
+            status(f"Updating to {name}: downloading {done // mb} of {total // mb} MB "
+                   f"({100 * done // max(1, total)}%)" if total else
+                   f"Updating to {name}: downloading {done // mb} MB")
+
         def work():
-            mb = 1 << 20
-            zip_path = updater.download(release, root / "updates", fsr, lambda done, total: status(
-                f"Updating to {name}: downloading {done // mb} of {total // mb} MB "
-                f"({100 * done // max(1, total)}%)" if total else
-                f"Updating to {name}: downloading {done // mb} MB"))
+            if appimage:
+                updater.install_appimage(release, appimage, downloading)
+                status(f"Updated to {name}: restarting GRport...")
+                return []
+            zip_path = updater.download(release, root / "updates", fsr, downloading)
             new = updater.stage(zip_path, root, lambda done, total: status(
                 f"Updating to {name}: unpacking ({100 * done // max(1, total)}%)"))
             status(f"Updating to {name}: installing...")
@@ -168,6 +178,12 @@ class App(tk.Tk):
                 return
             # A fresh environment: inheriting this launcher's PyInstaller variables, the new one
             # would use our unpacked files, which are deleted when we close.
+            if appimage:
+                subprocess.Popen([str(appimage)], cwd=str(appimage.parent),
+                                 env=dict(updater.appimage_env(dict(os.environ)), GRPORT_FRESH="1"),
+                                 start_new_session=True)
+                self.destroy()
+                return
             env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1", GRPORT_FRESH="1")
             subprocess.Popen([str(root / "GRport.exe")], cwd=str(root), env=env)
             self.destroy()
