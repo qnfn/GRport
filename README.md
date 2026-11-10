@@ -85,8 +85,15 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 - **Save slots**: Save and Load show a list of your saves to pick from (or a new one), and
   "Game saved" / "Game loaded" when done; Continue and Gallery; **language** of menus and
   subtitles; keyboard, mouse and controllers; FPS counter.
-- **Gravity Rush 2 photo album**: every photo is kept in `user/gr2/Capture Gallery`; past the
-  game's 999-photo limit the in-game album shows the newest 500, so the camera keeps working (also in burst mode).
+- **Trophies** (both games): earned trophies are kept per game and the game knows them after a
+  restart; each unlock shows a card in the game with the trophy's icon, name and grade. The
+  launcher's TROPHIES tab lists them all with their icons, earned dates and your progress. Local
+  to your PC: they don't reach your PSN account.
+- **Gravity Rush 2 photo album**: every photo is kept in `user/gr2/Capture Gallery`. SETUP >
+  Camera Roll: **999 photos** (the game's own limit, the default) or **No limit**, where the
+  in-game album shows the newest 500 so the camera keeps working past 999 (also in burst mode).
+- **Updates from the launcher**: the update button downloads and installs the new version and
+  shows its progress.
 
 ## Known problems
 
