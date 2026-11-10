@@ -62,6 +62,10 @@ WINDOW_SIZE_NOTE = ("Window size: only the window, in Window mode ({size}, the s
 PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
                 "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
+# Every _row label on the page: the label column fits the longest one.
+ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
+              "Threading", "Frame rate", "PS4 Pro mode", "Stick dead zone",
+              *(label for _, label, _, _ in PICTURE))
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
 THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
                   "Auto turns it on (as On does); choose Off if the game crashes.")
@@ -144,12 +148,19 @@ class SetupPage(tk.Frame):
                     add="+")
         return label
 
+    def _label_width(self) -> int:
+        """The label column in characters, wide enough for the longest row label."""
+        font = self.app.fonts["body_bold"]
+        longest = max(font.measure(text) for text in ROW_LABELS)
+        return max(14, -(-longest // max(1, font.measure("0"))) + 1)
+
     def _row(self, card, label: str, first: bool = False) -> tk.Frame:
         app = self.app
         row = tk.Frame(card)
         app.paint(row, bg="panel")
         row.pack(fill="x", pady=(0 if first else app.px(12), 0))
-        theme.text_label(row, app, label, font="body_bold", width=14).pack(side="left")
+        theme.text_label(row, app, label, font="body_bold", width=self._label_width()).pack(
+            side="left")
         return row
 
     def _note(self, card, text: str) -> tk.Label:

@@ -127,3 +127,21 @@ def test_picture_settings_write_that_games_grport_ini(app):
     assert values["upscaler"] == "off" and values["sharpness"] == "0.50"
     assert page.picture_choices["upscaler"].value == "off"
     assert not (app.paths.root / "user" / "gr2" / "grport.ini").exists()
+
+
+def test_setup_row_labels_fit(app):
+    """Every row label is shown whole ('FSR 1 to the screen', 'Mute in background')."""
+    import tkinter as tk
+    app.show("setup")
+    app.update()
+    page = app.pages["setup"]
+    labels = [w for w in page.inner.winfo_children()]
+    stack, seen = list(labels), 0
+    while stack:
+        w = stack.pop()
+        stack += w.winfo_children()
+        if isinstance(w, tk.Label) and int(w.cget("width") or 0) > 0:
+            text = w.cget("text")
+            assert w.winfo_reqwidth() >= w.nametowidget(w).tk.call("font", "measure", w.cget("font"), text), text
+            seen += 1
+    assert seen >= 10
