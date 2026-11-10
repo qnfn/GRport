@@ -1,3 +1,25 @@
+diff --git a/build.sh b/build.sh
+index 70c0c04..9baf58a 100644
+--- a/build.sh
++++ b/build.sh
+@@ -43,14 +43,14 @@ fi
+ if [[ -z ${CC:-} ]]; then echo 'Install GCC/Clang or set CC.' >&2; exit 1; fi
+ # Dependencies come from pkg-config (Vulkan loader/headers, SDL3). On NixOS the
+ # environment is provided by shell.nix; re-enter it automatically if needed.
+-if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
++if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 freetype2 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
+     if [[ -z ${BB_IN_NIX_SHELL:-} ]] && command -v nix-shell >/dev/null; then
+         exec env BB_IN_NIX_SHELL=1 nix-shell shell.nix --run "bash build.sh $*"
+     fi
+     echo 'Need pkg-config with vulkan and sdl3, cmake and ninja (see shell.nix).' >&2; exit 1
+ fi
+-read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3)"
+-read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3)"
++read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3 freetype2)"
++read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3 freetype2)"
+ # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libbbgpu.so.
+ # BB_PGO: generate (instrumented build that writes pgo/ while the game runs), use, off.
+ # Default: use the profile in pgo/ when there is one. BB_LTO=OFF disables link-time optimization.
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
 index 529ef05..5d46794 100644
 --- a/gpu/CMakeLists.txt
@@ -10922,7 +10944,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/shell.nix b/shell.nix
-index 3623918..5e2b534 100644
+index 3623918..707c7a9 100644
 --- a/shell.nix
 +++ b/shell.nix
 @@ -2,9 +2,12 @@
@@ -10930,9 +10952,10 @@ index 3623918..5e2b534 100644
  pkgs.mkShell {
    packages = with pkgs; [
 -    gcc gnumake cmake ninja pkg-config python3 binutils
+-    vulkan-headers vulkan-loader sdl3
 +    gcc gnumake cmake ninja pkg-config binutils
 +    (python3.withPackages (ps: [ ps.pillow ])) # Pillow: the trophy pop-up's pictures (run.py)
-     vulkan-headers vulkan-loader sdl3
++    vulkan-headers vulkan-loader sdl3 freetype
      # GPU library (gpu/): shadPS4 video core dependencies
      ffmpeg-headless boost fmt magic-enum robin-map xxhash vulkan-memory-allocator glslang spirv-cross xbyak zydis spirv-headers miniz libx11 libxcb xorgproto wayland
 +    # Online (gpu/bbnet): shadNet's protobuf, HTTPS and gzip for cpp-httplib, JSON, UPnP
@@ -14145,10 +14168,10 @@ index c64c0f9..4bff266 100644
      struct stat s;
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
-index 0000000..62bea4f
+index 0000000..fdfc464
 --- /dev/null
 +++ b/src/runtime_font.c
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,341 @@
 +/* libSceFont on FreeType (Driveclub).
 + *
 + * The game opens its own TrueType/OpenType fonts from memory, sets a pixel scale and
@@ -14296,12 +14319,24 @@ index 0000000..62bea4f
 +    return 0;
 +}
 +
-+/* System font sets: the closest Windows font. */
++/* System font sets: BB_SYSTEM_FONT (the Linux AppImage names its bundled DejaVu Sans), else the
++ * closest font the system has. */
 +static ABI int32_t open_font_set(void *lib, uint32_t type, uint32_t mode, const void *params, Font **out) {
 +    (void)lib, (void)mode, (void)params;
 +    if (!out) return FONT_ERROR_INVALID_PARAMETER;
-+    static const char *const candidates[] = {"C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf"};
++    const char *const candidates[] = {
++        getenv("BB_SYSTEM_FONT"),
++#ifdef _WIN32
++        "C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf",
++#else
++        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
++        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
++        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
++        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
++#endif
++    };
 +    for (size_t i = 0; i < sizeof(candidates) / sizeof(*candidates); ++i) {
++        if (!candidates[i] || !*candidates[i]) continue;
 +        FILE *file = fopen(candidates[i], "rb");
 +        if (!file) continue;
 +        fseek(file, 0, SEEK_END);

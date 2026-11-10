@@ -43,7 +43,6 @@ jobs:
           grep -E 'error:|FAILED|undefined reference' all.log | sort -u | head -300
 
       - name: AppImage
-        if: hashFiles('grport/linux/default.nix') != ''
         run: bash grport/linux/appimage.sh runtime dist
 
       - uses: actions/upload-artifact@v4

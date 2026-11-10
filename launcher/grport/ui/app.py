@@ -83,6 +83,8 @@ class App(tk.Tk):
         if getattr(sys, "frozen", False):  # updates replace the built launcher, not sources
             updater.clean_up(self.paths.root)
             threading.Thread(target=self._check_update, daemon=True).start()
+        elif os.name != "nt" and os.environ.get("APPIMAGE"):  # Linux: told, not installed
+            threading.Thread(target=self._check_update, daemon=True).start()
         self.after(150, self._poll)
         # GRport.exe --gr1 / --gr2: start that game at once; the launcher waits minimized and
         # closes with the game (it comes back on screen if the game cannot start).
@@ -115,6 +117,11 @@ class App(tk.Tk):
         """Downloads and installs the newer release, then starts the new launcher."""
         release = self.update_release
         if release is None or self.phase != "idle":
+            return
+        if os.name != "nt" and os.environ.get("APPIMAGE"):
+            webbrowser.open(f"https://github.com/qnfn/GRport/releases/tag/v{release.version}")
+            self.pages["play"].flash(f"GRport {release.version}: download GRport-x86_64.AppImage "
+                                     "from the page that opened and replace this one.", "warn")
             return
         if not getattr(sys, "frozen", False):
             self.pages["play"].flash(f"GRport {release.version} is out: updates install into the "

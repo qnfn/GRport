@@ -245,3 +245,24 @@ def test_resolution_patch_extra_dmem(tmp_path):
     assert patches.extra_dmem_mb(xml, "16:10 1920x1200", "01.11") == 0
     assert patches.extra_dmem_mb(xml, "", "01.11") == 0
     assert patches.extra_dmem_mb(tmp_path / "missing.xml", "Resolution 3840x2160", "01.11") == 0
+
+
+def test_linux_desktop_entry_and_packaged_paths(tmp_path, monkeypatch):
+    """Linux AppImage: .desktop shortcuts start $APPIMAGE; the runtime comes from the package."""
+    from grport import shortcuts
+    paths = AppPaths.for_root(tmp_path / "home")
+    paths.root.mkdir()
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    with pytest.raises(OSError):
+        shortcuts._create_desktop_entry(paths, tmp_path / "apps")
+    monkeypatch.setenv("APPIMAGE", "/games/GRport-x86_64.AppImage")
+    entry = shortcuts._create_desktop_entry(paths, tmp_path / "apps").read_text(encoding="utf-8")
+    assert entry.startswith("[Desktop Entry]\n")
+    assert 'Exec="/games/GRport-x86_64.AppImage"\n' in entry
+    assert (paths.root / "grport.png").is_file()
+    monkeypatch.setenv("GRPORT_RUNTIME_EXE", "/pkg/bin/GRport-runtime")
+    monkeypatch.setenv("GRPORT_PREPARE_EXE", "/pkg/bin/gr-prepare")
+    assert runtime.exe(paths) == Path("/pkg/bin/GRport-runtime")
+    assert runtime.prepare_exe(paths) == Path("/pkg/bin/gr-prepare")
+    monkeypatch.setenv("GRPORT_HOME", str(tmp_path / "data"))
+    assert AppPaths.current().root == tmp_path / "data"
