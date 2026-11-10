@@ -1,0 +1,386 @@
+[
+ {
+  "id": 0,
+  "name": "It's all Relative",
+  "detail": "Collected every trophy. Congratulations!",
+  "grade": "platinum"
+ },
+ {
+  "id": 1,
+  "name": "Lost Kat",
+  "detail": "Awakened in Auldnoir.",
+  "grade": "bronze"
+ },
+ {
+  "id": 2,
+  "name": "Learner's Permit",
+  "detail": "Mastered the fundamentals of gravity.",
+  "grade": "bronze"
+ },
+ {
+  "id": 3,
+  "name": "From Oblivion",
+  "detail": "Completed Episode 1.",
+  "grade": "bronze"
+ },
+ {
+  "id": 4,
+  "name": "Shadows Over the City",
+  "detail": "Completed Episode 2.",
+  "grade": "bronze"
+ },
+ {
+  "id": 5,
+  "name": "Home Sweet Home",
+  "detail": "Completed Episode 3.",
+  "grade": "bronze"
+ },
+ {
+  "id": 6,
+  "name": "The Hekseville Phantom",
+  "detail": "Completed Episode 4.",
+  "grade": "bronze"
+ },
+ {
+  "id": 7,
+  "name": "A Meeting with Destiny",
+  "detail": "Completed Episode 5.",
+  "grade": "bronze"
+ },
+ {
+  "id": 8,
+  "name": "The Lost City",
+  "detail": "Completed Episode 6.",
+  "grade": "bronze"
+ },
+ {
+  "id": 9,
+  "name": "Too Many Secrets",
+  "detail": "Completed Episode 7.",
+  "grade": "bronze"
+ },
+ {
+  "id": 10,
+  "name": "A Hundred and One Nights",
+  "detail": "Completed Episode 8.",
+  "grade": "bronze"
+ },
+ {
+  "id": 11,
+  "name": "Letting Old Ghosts Die",
+  "detail": "Completed Episode 9.",
+  "grade": "bronze"
+ },
+ {
+  "id": 12,
+  "name": "Curiosity Killed the Cat",
+  "detail": "Completed Episode 10.",
+  "grade": "bronze"
+ },
+ {
+  "id": 13,
+  "name": "Thick Skin",
+  "detail": "Completed Episode 11.",
+  "grade": "bronze"
+ },
+ {
+  "id": 14,
+  "name": "Look Out Below",
+  "detail": "Completed Episode 12.",
+  "grade": "bronze"
+ },
+ {
+  "id": 15,
+  "name": "Kids Just Don't Understand",
+  "detail": "Completed Episode 13.",
+  "grade": "bronze"
+ },
+ {
+  "id": 16,
+  "name": "The Lost Tribe",
+  "detail": "Completed Episode 14.",
+  "grade": "bronze"
+ },
+ {
+  "id": 17,
+  "name": "Memories of Another World",
+  "detail": "Completed Episode 15.",
+  "grade": "bronze"
+ },
+ {
+  "id": 18,
+  "name": "Children of the Past",
+  "detail": "Completed Episode 16.",
+  "grade": "bronze"
+ },
+ {
+  "id": 19,
+  "name": "Fading Light",
+  "detail": "Completed Episode 17.",
+  "grade": "bronze"
+ },
+ {
+  "id": 20,
+  "name": "Adreaux On Call",
+  "detail": "Completed Episode 18.",
+  "grade": "bronze"
+ },
+ {
+  "id": 21,
+  "name": "Falling to Pieces",
+  "detail": "Completed Episode 19.",
+  "grade": "bronze"
+ },
+ {
+  "id": 22,
+  "name": "An Unguarded Moment",
+  "detail": "Completed Episode 20.",
+  "grade": "bronze"
+ },
+ {
+  "id": 23,
+  "name": "No Rest for the Virtuous",
+  "detail": "Completed Episode 21.",
+  "grade": "gold"
+ },
+ {
+  "id": 24,
+  "name": "Ancient Game Hunter",
+  "detail": "Defeated the rare Nevi in Rift Planes: The Ruins.",
+  "grade": "silver"
+ },
+ {
+  "id": 25,
+  "name": "Burning Game Hunter",
+  "detail": "Defeated the rare Nevi in Rift Planes: The Inferno.",
+  "grade": "silver"
+ },
+ {
+  "id": 26,
+  "name": "Illusory Game Hunter",
+  "detail": "Defeated the rare Nevi in Rift Planes: The Mirage.",
+  "grade": "silver"
+ },
+ {
+  "id": 27,
+  "name": "Frequent Flyer",
+  "detail": "Landed 10 gravity kicks without landing or taking damage.",
+  "grade": "silver"
+ },
+ {
+  "id": 28,
+  "name": "Pitching Machine",
+  "detail": "Hurled 10 objects into enemies without missing or taking damage.",
+  "grade": "silver"
+ },
+ {
+  "id": 29,
+  "name": "Gravitational Anomaly",
+  "detail": "Defeated 8 enemies with one special attack.",
+  "grade": "silver"
+ },
+ {
+  "id": 30,
+  "name": "New Challenger",
+  "detail": "Cleared a challenge.",
+  "grade": "bronze"
+ },
+ {
+  "id": 31,
+  "name": "True Challenger",
+  "detail": "Cleared EVERY challenge.",
+  "grade": "bronze"
+ },
+ {
+  "id": 32,
+  "name": "Gold Medalist",
+  "detail": "Gold-medaled a challenge.",
+  "grade": "bronze"
+ },
+ {
+  "id": 33,
+  "name": "Silver Lining",
+  "detail": "Earned a silver or better in every challenge.",
+  "grade": "silver"
+ },
+ {
+  "id": 34,
+  "name": "All That Glitters",
+  "detail": "Gold-medaled EVERY challenge.",
+  "grade": "gold"
+ },
+ {
+  "id": 35,
+  "name": "Going Underground",
+  "detail": "Discovered every manhole.",
+  "grade": "silver"
+ },
+ {
+  "id": 36,
+  "name": "Lost in Time and Space",
+  "detail": "Heard the mysterious couple's complete story.",
+  "grade": "silver"
+ },
+ {
+  "id": 37,
+  "name": "Gem Collector",
+  "detail": "Collected a total of 20,000 precious gems.",
+  "grade": "silver"
+ },
+ {
+  "id": 38,
+  "name": "Gem Aficionado",
+  "detail": "Collected a total of 40,000 precious gems.",
+  "grade": "gold"
+ },
+ {
+  "id": 39,
+  "name": "Top Cat",
+  "detail": "Raised Kat's reputation to “Top Cat.”",
+  "grade": "gold"
+ },
+ {
+  "id": 40,
+  "name": "In Service",
+  "detail": "Obtained the Maid costume.",
+  "grade": "bronze"
+ },
+ {
+  "id": 41,
+  "name": "The Diary of a Maid",
+  "detail": "Completed “The Diary of a Maid.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 42,
+  "name": "The Madam and the Shifter",
+  "detail": "Completed “The Madam and the Shifter.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 43,
+  "name": "Rooftop Walker",
+  "detail": "Earned a silver medal or better in Auldnoir Free Race II.",
+  "grade": "bronze"
+ },
+ {
+  "id": 44,
+  "name": "Rooftop Runner",
+  "detail": "Earned a gold medal in Auldnoir Free Race II.",
+  "grade": "silver"
+ },
+ {
+  "id": 45,
+  "name": "Unlimited Shifter",
+  "detail": "Earned a silver medal or better in the Rift Plane Unlimited Time Attack.",
+  "grade": "bronze"
+ },
+ {
+  "id": 46,
+  "name": "Maximum Shifter",
+  "detail": "Earned a gold medal in the Rift Plane Unlimited Time Attack.",
+  "grade": "silver"
+ },
+ {
+  "id": 47,
+  "name": "Head of the Household",
+  "detail": "Cleared every mission and challenge mission in the Maid Pack.",
+  "grade": "silver"
+ },
+ {
+  "id": 48,
+  "name": "Undercover",
+  "detail": "Obtained the Spy costume.",
+  "grade": "bronze"
+ },
+ {
+  "id": 49,
+  "name": "A Time to Play",
+  "detail": "Completed “A Time to Play.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 50,
+  "name": "The Dreamlife of Ghosts",
+  "detail": "Completed “The Dreamlife of Ghosts.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 51,
+  "name": "Second-String Pitcher",
+  "detail": "Earned a silver medal or better in the Pleajeune Pitching Challenge.",
+  "grade": "bronze"
+ },
+ {
+  "id": 52,
+  "name": "All-Star Pitcher",
+  "detail": "Earned a gold medal in the Pleajeune Pitching Challenge.",
+  "grade": "silver"
+ },
+ {
+  "id": 53,
+  "name": "Magma Racer",
+  "detail": "Earned a silver medal or better in the Rift Plane Health Race.",
+  "grade": "bronze"
+ },
+ {
+  "id": 54,
+  "name": "Fireproof Racer",
+  "detail": "Earned a gold medal in the Rift Plane Health Race.",
+  "grade": "silver"
+ },
+ {
+  "id": 55,
+  "name": "Superspy",
+  "detail": "Cleared every mission and challenge mission in the Spy Pack.",
+  "grade": "silver"
+ },
+ {
+  "id": 56,
+  "name": "New Recruit",
+  "detail": "Obtained the Special Forces costume.",
+  "grade": "bronze"
+ },
+ {
+  "id": 57,
+  "name": "The Rules of War",
+  "detail": "Completed “The Rules of War.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 58,
+  "name": "The Phantom of Bravery",
+  "detail": "Completed “The Phantom of Bravery.”",
+  "grade": "bronze"
+ },
+ {
+  "id": 59,
+  "name": "Apprentice Plumber",
+  "detail": "Earned a silver medal or better in Endestria Energy Race II.",
+  "grade": "bronze"
+ },
+ {
+  "id": 60,
+  "name": "World-Class Plumber",
+  "detail": "Earned a gold medal in Endestria Energy Race II.",
+  "grade": "silver"
+ },
+ {
+  "id": 61,
+  "name": "Mushroom Slider",
+  "detail": "Earned a silver medal or better in the Rift Plane Sliding Race.",
+  "grade": "bronze"
+ },
+ {
+  "id": 62,
+  "name": "Truffle Slider",
+  "detail": "Earned a gold medal in the Rift Plane Sliding Race.",
+  "grade": "silver"
+ },
+ {
+  "id": 63,
+  "name": "Special Forces",
+  "detail": "Cleared every mission and challenge mission in the Special Forces Pack.",
+  "grade": "silver"
+ }
+]

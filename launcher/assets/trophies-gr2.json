@@ -1,0 +1,290 @@
+[
+ {
+  "id": 0,
+  "name": "Ultimate Shifter",
+  "detail": "Collected every trophy.",
+  "grade": "platinum"
+ },
+ {
+  "id": 1,
+  "name": "Kat Rising",
+  "detail": "Returned to Banga Settlement.",
+  "grade": "bronze"
+ },
+ {
+  "id": 2,
+  "name": "Gravity Test",
+  "detail": "Completed the gravity shifting tutorial.",
+  "grade": "bronze"
+ },
+ {
+  "id": 3,
+  "name": "Banga Sets Sail",
+  "detail": "Completed the Banga Chapter.",
+  "grade": "bronze"
+ },
+ {
+  "id": 4,
+  "name": "Jirga Para Lhao Revolution",
+  "detail": "Completed the Jirga Para Lhao Chapter.",
+  "grade": "bronze"
+ },
+ {
+  "id": 5,
+  "name": "Hekseville Twilight",
+  "detail": "Completed the Hekseville Chapter.",
+  "grade": "bronze"
+ },
+ {
+  "id": 6,
+  "name": "Fin",
+  "detail": "Completed the Eto Chapter.",
+  "grade": "gold"
+ },
+ {
+  "id": 7,
+  "name": "A Day in Kat's Life",
+  "detail": "Completed 1 side mission.",
+  "grade": "bronze"
+ },
+ {
+  "id": 8,
+  "name": "Kat's Daily Routine",
+  "detail": "Completed 20 side missions.",
+  "grade": "silver"
+ },
+ {
+  "id": 9,
+  "name": "Kat Working Overtime",
+  "detail": "Completed 40 side missions.",
+  "grade": "silver"
+ },
+ {
+  "id": 10,
+  "name": "Lifetime Service Award",
+  "detail": "Completed all side missions.",
+  "grade": "gold"
+ },
+ {
+  "id": 11,
+  "name": "Lunar Vortex",
+  "detail": "Grabbed 5 enemies with one Lunar Style Vortex Field.",
+  "grade": "bronze"
+ },
+ {
+  "id": 12,
+  "name": "Ball of Destruction",
+  "detail": "Defeated 3 enemies with one Jupiter Style Debris Ball.",
+  "grade": "bronze"
+ },
+ {
+  "id": 13,
+  "name": "Surge of Power",
+  "detail": "Defeated 5 enemies with one Jupiter Style Surge Kick.",
+  "grade": "bronze"
+ },
+ {
+  "id": 14,
+  "name": "Cat Claw",
+  "detail": "Defeated 10 enemies with one Spiraling Claw.",
+  "grade": "silver"
+ },
+ {
+  "id": 15,
+  "name": "High Wind Alert",
+  "detail": "Defeated 10 enemies within 10 seconds using one Gravity Typhoon.",
+  "grade": "silver"
+ },
+ {
+  "id": 16,
+  "name": "Event Horizon",
+  "detail": "Defeated 10 enemies with one Micro Black Hole.",
+  "grade": "silver"
+ },
+ {
+  "id": 17,
+  "name": "Mining Instructions",
+  "detail": "Reached the 3rd Layer of the Delvool Mining Trench.",
+  "grade": "silver"
+ },
+ {
+  "id": 18,
+  "name": "Kat versus World",
+  "detail": "Defeated 1,000 enemies.",
+  "grade": "silver"
+ },
+ {
+  "id": 19,
+  "name": "New Challenger",
+  "detail": "Played a challenge mission.",
+  "grade": "bronze"
+ },
+ {
+  "id": 20,
+  "name": "Bronze Medalist",
+  "detail": "Completed all challenge missions with bronze or better.",
+  "grade": "bronze"
+ },
+ {
+  "id": 21,
+  "name": "Silver Medalist",
+  "detail": "Completed all challenge missions with silver or better.",
+  "grade": "silver"
+ },
+ {
+  "id": 22,
+  "name": "Gold Medalist",
+  "detail": "Completed all challenge missions with gold or better.",
+  "grade": "gold"
+ },
+ {
+  "id": 23,
+  "name": "Sacred Trio",
+  "detail": "Equipped all three types of talismans at one time.",
+  "grade": "bronze"
+ },
+ {
+  "id": 24,
+  "name": "Talisman Crafter",
+  "detail": "Merged a talisman 3 times.",
+  "grade": "bronze"
+ },
+ {
+  "id": 25,
+  "name": "Saghassi Fan",
+  "detail": "Found all of Saghassi's Paintings in Jirga Para Lhao.",
+  "grade": "bronze"
+ },
+ {
+  "id": 26,
+  "name": "Saghassi Maniac",
+  "detail": "Found all of Saghassi's Paintings in Hekseville.",
+  "grade": "bronze"
+ },
+ {
+  "id": 27,
+  "name": "Tour Guide",
+  "detail": "Discovered all of the sites in Jirga Para Lhao.",
+  "grade": "bronze"
+ },
+ {
+  "id": 28,
+  "name": "Tour Conductor",
+  "detail": "Discovered all of the sites in Hekseville.",
+  "grade": "bronze"
+ },
+ {
+  "id": 29,
+  "name": "Camera Men",
+  "detail": "Completed the men's portrait collection.",
+  "grade": "bronze"
+ },
+ {
+  "id": 30,
+  "name": "Smile for the Camera",
+  "detail": "Completed the women's portrait collection.",
+  "grade": "bronze"
+ },
+ {
+  "id": 31,
+  "name": "Mining Expert",
+  "detail": "Collected 5 talisman stones.",
+  "grade": "silver"
+ },
+ {
+  "id": 32,
+  "name": "Pipe Coordinator",
+  "detail": "Placed 9 types of furniture in Kat's Pipe House.",
+  "grade": "silver"
+ },
+ {
+  "id": 33,
+  "name": "Sewer Aficionado",
+  "detail": "Discovered every mysterious warp manhole.",
+  "grade": "silver"
+ },
+ {
+  "id": 34,
+  "name": "Power Kat",
+  "detail": "Raised all of Kat's powers to the maximum.",
+  "grade": "silver"
+ },
+ {
+  "id": 35,
+  "name": "Rift Hunter",
+  "detail": "Defeated the five giant Nevi that appear with mining site gravity disturbances.",
+  "grade": "silver"
+ },
+ {
+  "id": 36,
+  "name": "Gem Collector",
+  "detail": "Collected 60,000 precious gems.",
+  "grade": "gold"
+ },
+ {
+  "id": 37,
+  "name": "Memory Labyrinth",
+  "detail": "Escaped the Labyrinth of Memories. (Finished Episode 2)",
+  "grade": "bronze"
+ },
+ {
+  "id": 38,
+  "name": "Light and Shadow",
+  "detail": "Fled collapsing Illumina. (Finished Episode 4)",
+  "grade": "bronze"
+ },
+ {
+  "id": 39,
+  "name": "Lost Tears",
+  "detail": "Saved the Lost Children. (Finished Episode 6)",
+  "grade": "silver"
+ },
+ {
+  "id": 40,
+  "name": "Keeping Secrets",
+  "detail": "Sachya left the Labyrinth without being discovered by Collectors. (Episode 2)",
+  "grade": "bronze"
+ },
+ {
+  "id": 41,
+  "name": "Guardian Raven",
+  "detail": "Rescued Zaza from the Collectors. (Episode 2)",
+  "grade": "bronze"
+ },
+ {
+  "id": 42,
+  "name": "Personal Space",
+  "detail": "Found the Keepers of Light and Darkness without running into anyone. (Episode 3)",
+  "grade": "bronze"
+ },
+ {
+  "id": 43,
+  "name": "Under Control",
+  "detail": "Prevented the manifestations of Light and Darkness from powering up. (Episode 4)",
+  "grade": "bronze"
+ },
+ {
+  "id": 44,
+  "name": "Scratch Resistant",
+  "detail": "Slid through Illumina without taking any damage. (Episode 4)",
+  "grade": "bronze"
+ },
+ {
+  "id": 45,
+  "name": "Unrivaled",
+  "detail": "Recovered a memory without Lumino or Tenebria around to interfere. (Episode 5)",
+  "grade": "bronze"
+ },
+ {
+  "id": 46,
+  "name": "Furious Collector",
+  "detail": "Kept the Giant Collector's attention all the way to the station. (Episode 6)",
+  "grade": "bronze"
+ },
+ {
+  "id": 47,
+  "name": "Déjà Vu",
+  "detail": "Found all of the memories scattered in the labyrinth. (Episode 2)",
+  "grade": "silver"
+ }
+]
