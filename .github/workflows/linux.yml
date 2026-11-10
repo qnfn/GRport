@@ -35,9 +35,12 @@ jobs:
         working-directory: runtime
         run: BB_LTO=OFF BB_PGO=off nix-shell shell.nix --run 'BB_IN_NIX_SHELL=1 BB_LTO=OFF BB_PGO=off bash build.sh'
 
-      - name: Build log on failure
+      - name: All compile errors on failure
         if: failure()
-        run: tail -200 runtime/out/gpu-build.log || true
+        working-directory: runtime
+        run: |
+          nix-shell shell.nix --run 'ninja -C out/gpu -k 0 bbgpu' > all.log 2>&1 || true
+          grep -E 'error:|FAILED|undefined reference' all.log | sort -u | head -300
 
       - name: AppImage
         if: hashFiles('grport/linux/default.nix') != ''

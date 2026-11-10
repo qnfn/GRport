@@ -1,5 +1,5 @@
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
-index 529ef05..e04e771 100644
+index 529ef05..5d46794 100644
 --- a/gpu/CMakeLists.txt
 +++ b/gpu/CMakeLists.txt
 @@ -111,6 +111,10 @@ function(add_host_shader FILENAME SHADER_NAME)
@@ -13,7 +13,29 @@ index 529ef05..e04e771 100644
  add_host_shader(ms_image_blit.frag ms_image_blit_frag)
  add_host_shader(ms_image_blit.frag ms_image_blit_msaa_frag SRC_MSAA=1)
  add_host_shader(fault_buffer_process.comp fault_buffer_process_comp)
-@@ -274,7 +278,9 @@ if (WIN32)
+@@ -200,15 +204,18 @@ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_Z
+ # verification failed" (error 10) for The Hunter's Dream on some PCs.
+ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+ target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
++# UPnP (net_upnp.cpp) on every system: static on Windows, the system's library on Linux.
++find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
++target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+ if (WIN32)
+     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
+     target_include_directories(bbnet PRIVATE third_party/wepoll)
+-    find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
+     find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
+-    target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+     target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
+-    target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
++else()
++    find_library(MINIUPNPC_LIBRARY NAMES miniupnpc REQUIRED)
+ endif()
++target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
+ target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
+ target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
+ target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
+@@ -274,7 +281,9 @@ if (WIN32)
              $<$<COMPILE_LANGUAGE:C>:-Wno-error=unused-but-set-global>)
      endif()
      target_include_directories(bb-probe PRIVATE .. ../src)
