@@ -3884,7 +3884,7 @@ index dc4d978..f434ad6 100644
      /// GPU thread: whether passes are being looked at (armed or recording; cheap).
      static bool Active() {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
-index c276c2f..b03ff57 100644
+index c276c2f..76edc2e 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 @@ -39,8 +39,10 @@ vk::Format HudlessViewFormat(vk::Format storage, vk::Format requested) {
@@ -3900,6 +3900,15 @@ index c276c2f..b03ff57 100644
  
  int DlssMaxCount() {
      const Dlss* dlss = Dlss::Get();
+@@ -405,7 +407,7 @@ vk::ImageView FrameGenerator::Hudless(vk::Format format, vk::Extent2D& size) {
+     if (!hudless_captured || !captured || !hudless_image) {
+         return {};
+     }
+-    size = {hudless_width, hudless_height};
++    size = vk::Extent2D{hudless_width, hudless_height};
+     format = HudlessViewFormat(hudless_format, format);
+     for (const auto& view : hudless_views) {
+         if (view.format == format) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h
 index 3041663..775b196 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h
@@ -6073,7 +6082,7 @@ index 0a2fea3..2f25121 100644
  
      for (vk::Semaphore& semaphore : image_acquired) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
-index 7c2da3f..6c50a33 100644
+index 7c2da3f..3440f78 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 @@ -7,6 +7,7 @@
@@ -6797,7 +6806,7 @@ index 7c2da3f..6c50a33 100644
 +    {
 +        std::array<vk::DescriptorBufferInfo, 3> buffers{};
 +        for (u32 i = 0; i < 3; ++i) {
-+            buffers[i] = {.buffer = inputs.buffers[i].buffer,
++            buffers[i] = vk::DescriptorBufferInfo{.buffer = inputs.buffers[i].buffer,
 +                          .offset = inputs.buffers[i].offset,
 +                          .range = inputs.buffers[i].size};
 +        }
