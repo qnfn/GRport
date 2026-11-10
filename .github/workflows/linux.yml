@@ -45,6 +45,35 @@ jobs:
       - name: AppImage
         run: bash grport/linux/appimage.sh runtime dist
 
+      # No GPU and no game here: the runtime's Vulkan self-test on Mesa's software driver,
+      # gr-prepare's Python, and the launcher on a virtual screen (screenshot in the artifact).
+      - name: Smoke test
+        run: |
+          sudo apt-get install -y -qq xvfb imagemagick >/dev/null
+          pkg=$(nix-build grport/linux --no-out-link)
+          lvp=$(nix-build '<nixpkgs>' -A mesa --no-out-link)/share/vulkan/icd.d/lvp_icd.x86_64.json
+          mkdir -p smoke
+          VK_DRIVER_FILES=$lvp timeout 120 "$pkg/share/grport/bin/GRport-runtime" --vulkan-only | tee smoke/runtime.txt
+          grep -q PASS smoke/runtime.txt
+          "$pkg/bin/gr-prepare" > smoke/prepare.txt 2>&1 || true
+          cat smoke/prepare.txt
+          ! grep -q -E "ModuleNotFoundError|ImportError" smoke/prepare.txt
+          export GRPORT_HOME=$PWD/smoke/home
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c "
+            '$pkg/bin/grport' > smoke/launcher.txt 2>&1 & pid=\$!
+            sleep 20
+            import -window root smoke/launcher.png
+            kill -0 \$pid && echo 'launcher: running after 20 s' >> smoke/launcher.txt
+            kill \$pid || true"
+          cat smoke/launcher.txt
+          grep -q 'running after 20 s' smoke/launcher.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: smoke/
+
       - uses: actions/upload-artifact@v4
         with:
           name: GRport-linux
