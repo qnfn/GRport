@@ -220,7 +220,9 @@ class LogPage(tk.Frame):
             f"Window: {s.window_mode}" + (f" {s.window_size}" if s.window_mode == "window" else ""),
             f"Frame rate: {g.fps} FPS",
             f"Render resolution: {resolution_label(g.resolution)}",
-            f"Patches: {', '.join(patches.extras(s, key)) or 'none'}",
+            f"Patches: {', '.join(patches.extras(s, key)) or 'none'}"
+            + (f" (NOT APPLIED: the game is v{info.version}, the patches need "
+               f"v{patches.APP_VERSIONS[key]})" if info and patches.version_problem(info) else ""),
             f"GPU readbacks: {g.readbacks}",
             f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",
             f"Stick dead zone: {g.stick_deadzone}%",
