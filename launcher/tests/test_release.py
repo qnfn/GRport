@@ -106,3 +106,23 @@ def test_patch_mismatch_is_kept_only_for_the_same_patches(tmp_path):
     assert not patches.patch_file(paths, "gr2").exists()
     assert patches.mismatched(paths, info, b"one")
     assert not patches.mismatched(paths, info, b"two")
+
+
+def test_update_stage_reports_unpack_progress_and_installs(tmp_path):
+    import zipfile
+    root = tmp_path / "GRport"
+    (root / "runtime").mkdir(parents=True)
+    (root / "GRport.exe").write_bytes(b"old")
+    (root / "user").mkdir()
+    (root / "user" / "save.bin").write_bytes(b"keep")
+    zip_path = tmp_path / "GRport-9.9.9-windows.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("GRport-9.9.9-windows/GRport.exe", b"new launcher")
+        z.writestr("GRport-9.9.9-windows/runtime/GRport-runtime.exe", b"x" * 1000)
+    seen = []
+    new = updater.stage(zip_path, root, lambda done, total: seen.append((done, total)))
+    assert seen[-1] == (1012, 1012) and len(seen) == 2  # after each file, ending at the total
+    assert all(a[0] <= b[0] for a, b in zip(seen, seen[1:]))
+    updater.install(new, root, None)
+    assert (root / "GRport.exe").read_bytes() == b"new launcher"
+    assert (root / "user" / "save.bin").read_bytes() == b"keep"

@@ -223,6 +223,21 @@ def test_ps4_pro_mode_reaches_only_gravity_rush_2(paths, tmp_path):
     assert load_settings(paths).games["gr2"].ps4_pro is False
 
 
+def test_camera_roll_reaches_gr2_only_and_bad_values_reset(paths, tmp_path):
+    gr2 = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    gr1 = games.inspect(make_game(tmp_path / "CUSA01130", "CUSA01130", "01.00"))
+    s = LauncherSettings()
+    assert runtime.env(paths, s, gr2, base={})["BB_PHOTO_ROLL"] == "999"  # the game's own limit
+    s.games["gr2"].photo_roll = "unlimited"
+    assert runtime.env(paths, s, gr2, base={})["BB_PHOTO_ROLL"] == "500"
+    assert "BB_PHOTO_ROLL" not in runtime.env(paths, s, gr1, base={"BB_PHOTO_ROLL": "500"})
+    save_settings(paths, s)
+    assert load_settings(paths).games["gr2"].photo_roll == "unlimited"
+    for bad in (999, 500, "800", True):
+        paths.settings_json.write_text(json.dumps({"games": {"gr2": {"photo_roll": bad}}}))
+        assert load_settings(paths).games["gr2"].photo_roll == "999"
+
+
 def test_autoplay_key():
     from grport.__main__ import autoplay_key
     assert autoplay_key([]) is None

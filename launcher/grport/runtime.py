@@ -12,7 +12,7 @@ from pathlib import Path
 from . import patches
 from .games import GameFolder
 from .paths import AppPaths
-from .settings import LANGUAGES, LauncherSettings, window
+from .settings import LANGUAGES, PHOTO_ROLLS, LauncherSettings, window
 
 READBACKS = {"off": "0", "relaxed": "1", "precise": "2"}
 
@@ -108,6 +108,11 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
     # SETUP > PS4 Pro mode (Gravity Rush 2, experimental): the game sees a PS4 Pro and takes
     # its own Pro render path; the runtime adds the Pro's 512 MiB to the direct memory pool.
+    # SETUP > Camera Roll (Gravity Rush 2): how many of the newest photos the game is shown.
+    if info.game.key == "gr2":
+        out["BB_PHOTO_ROLL"] = str(PHOTO_ROLLS[g.photo_roll])
+    else:
+        out.pop("BB_PHOTO_ROLL", None)
     if info.game.key == "gr2" and g.ps4_pro:
         out["BB_NEO"] = "1"
     else:

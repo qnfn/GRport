@@ -16027,10 +16027,10 @@ index 687bfb5..138e671 100644
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
 diff --git a/src/runtime_photo.c b/src/runtime_photo.c
 new file mode 100644
-index 0000000..ef50a7e
+index 0000000..c1836ef
 --- /dev/null
 +++ b/src/runtime_photo.c
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,292 @@
 +/* Gravity Rush 2's photo album: libSceContentExport, libSceContentSearch and libSceContentDelete
 + * on a host folder, "Capture Gallery/Gravity Rush 2" in the user folder, one <id>.jpg per photo.
 + * The guest sees it at /screenshot. Adapted from GR2fork (github.com/junminlee2004/GR2fork,
@@ -16052,11 +16052,15 @@ index 0000000..ef50a7e
 +#include <time.h>
 +
 +#define PHOTO_SIZE 1024        /* the game renders a photo into a target of this size */
-+/* The game's album holds 999 photos and it stops taking more there (issue #10). Every photo
-+ * stays in the folder; the game is shown the newest SHOWN_PHOTOS, so it has room for new ones.
-+ * It counts each photo it takes and lists the album again only now and then: with 950 shown,
-+ * burst shots filled the 49 left in seconds and R1 only opened message dialogs. */
-+#define SHOWN_PHOTOS 500
++/* The game's album holds 999 photos and it stops taking more there, as on the PS4. Every photo
++ * stays in the folder; the game is shown the newest shown_photos of them. The launcher's
++ * Camera Roll switch (BB_PHOTO_ROLL) picks 999, the game's own limit (the default), or "no
++ * limit": 500 shown, so the game always has room for new ones (issue #10). It counts each photo
++ * it takes and lists the album again only now and then: with 950 shown, burst shots filled the
++ * 49 left in seconds and R1 only opened message dialogs. */
++#define SHOWN_PHOTOS 999
++#define MIN_SHOWN 50
++static unsigned shown_photos = SHOWN_PHOTOS;
 +#define ID_LEN 24
 +#define GUEST_DIR "/screenshot"
 +#define EXPORT_NOTACCEPT ((int32_t)0x809D3002)
@@ -16065,8 +16069,8 @@ index 0000000..ef50a7e
 +typedef struct { char id[ID_LEN]; uint64_t handle; char comment[257]; } Photo;
 +static Photo *photos;  /* sorted by id, every photo in the folder */
 +static unsigned photo_count, photo_capacity;
-+/* The first photo the game sees: the album shows the newest SHOWN_PHOTOS. */
-+static unsigned shown_first(void) { return photo_count > SHOWN_PHOTOS ? photo_count - SHOWN_PHOTOS : 0; }
++/* The first photo the game sees: the album shows the newest shown_photos. */
++static unsigned shown_first(void) { return photo_count > shown_photos ? photo_count - shown_photos : 0; }
 +static char host_dir[600];
 +static int mounted;
 +static char pending[ID_LEN];
@@ -16106,6 +16110,11 @@ index 0000000..ef50a7e
 +    /* Arming also clamps the album's T# of several thousand layers (runtime_image.c reads the
 +     * photo target back): it has to happen before the album is drawn. */
 +    bbgpu_photo_arm(PHOTO_SIZE, PHOTO_SIZE);
++    const char *roll = getenv("BB_PHOTO_ROLL");
++    if (roll && *roll) {
++        long n = strtol(roll, NULL, 10);
++        shown_photos = n < MIN_SHOWN ? MIN_SHOWN : n > SHOWN_PHOTOS ? SHOWN_PHOTOS : (unsigned)n;
++    }
 +    const char *user = runtime_file_user_dir();
 +    if (!user) return;
 +    snprintf(host_dir, sizeof(host_dir), "%s/Capture Gallery", user);
@@ -16126,7 +16135,7 @@ index 0000000..ef50a7e
 +    }
 +    if (dir) closedir(dir);
 +    printf("Photo album: %u photos in %s (the game shows the newest %u)\n", photo_count, host_dir,
-+           photo_count < SHOWN_PHOTOS ? photo_count : SHOWN_PHOTOS);
++           photo_count < shown_photos ? photo_count : shown_photos);
 +}
 +static void ensure_setup(void) { pthread_once(&once, setup); }
 +

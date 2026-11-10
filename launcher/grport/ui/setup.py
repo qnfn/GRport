@@ -65,7 +65,7 @@ PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloade
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
 # Every _row label on the page: the label column fits the longest one.
 ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
-              "Threading", "Frame rate", "PS4 Pro mode", "Stick dead zone",
+              "Threading", "Frame rate", "PS4 Pro mode", "Stick dead zone", "Camera Roll",
               *(label for _, label, _, _ in PICTURE))
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
 THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
@@ -74,6 +74,12 @@ DEADZONE_NOTE = ("Stick dead zone: how far a controller stick moves before the g
                  "for sticks that drift or wobble (the character walks on its own). Raise it "
                  "until the drift stops; 0% turns it off. Both sticks, keyboard and mouse "
                  "unaffected.")
+PHOTO_ROLL_CHOICES = (("999", "999 photos"), ("unlimited", "No limit"))
+PHOTO_ROLL_NOTE = ("Camera Roll: 999 photos is the game's own limit, as on the PS4: the camera "
+                   "stops taking photos when the Camera Roll is full. No limit: keep taking "
+                   "photos forever; the Camera Roll then shows your newest 500 (the game can't "
+                   "list more than 999, and the rest is room for burst shots). Every photo is "
+                   "saved in user/gr2/Capture Gallery either way.")
 PRO_NOTE = ("PS4 Pro mode (experimental): Gravity Rush 2 thinks it runs on a PS4 Pro and uses "
             "its own Pro rendering. Untested on PC: turn it off if the game crashes or looks "
             "wrong. Off by default.")
@@ -240,13 +246,20 @@ class SetupPage(tk.Frame):
                 self.sharpness_box.pack(side="left")
         self._note(picture, PICTURE_NOTE)
 
-        controls = self.board.add(3, 0, span=2, title="Controller")
+        controls = self.board.add(3, 0, span=2, title="Controller" if self.key != "gr2"
+                                  else "Controller and camera")
         row = self._row(controls, "Stick dead zone", first=True)
         self.deadzone_box = theme.Dropdown(row, app, lambda: self._popup(
             self.deadzone_box, [(v, f"{v}%") for v in DEADZONE_CHOICES], self.g.stick_deadzone,
             self.set_deadzone))
         self.deadzone_box.pack(side="left")
         self._note(controls, DEADZONE_NOTE)
+        self.roll_choice = None
+        if self.key == "gr2":
+            row = self._row(controls, "Camera Roll")
+            self.roll_choice = theme.Segmented(row, app, PHOTO_ROLL_CHOICES, self.set_photo_roll)
+            self.roll_choice.pack(side="left")
+            self._note(controls, PHOTO_ROLL_NOTE)
 
         links = self.board.add(5, 0, span=2, title="Shortcuts")
         row = tk.Frame(links)
@@ -342,6 +355,8 @@ class SetupPage(tk.Frame):
         if self.pro_choice is not None:
             self.pro_choice.set(g.ps4_pro)
         self.deadzone_box.set(f"{g.stick_deadzone}%")
+        if self.roll_choice is not None:
+            self.roll_choice.set(g.photo_roll)
         chosen = patches.extras(s, self.key)
         for prefix, choice in self.patch_choices.items():
             choice.set(prefix in chosen)
@@ -433,6 +448,10 @@ class SetupPage(tk.Frame):
 
     def set_ps4_pro(self, on: bool) -> None:
         self.g.ps4_pro = bool(on)
+        self._saved()
+
+    def set_photo_roll(self, value: str) -> None:
+        self.g.photo_roll = value
         self._saved()
 
     def set_deadzone(self, percent: int) -> None:

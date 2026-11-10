@@ -21,6 +21,12 @@ THREADING = ("auto", "1", "0")
 DEADZONE_CHOICES = tuple(range(0, 41, 2))
 DEADZONE_DEFAULT = 10
 DEADZONE_MAX = 90
+# Gravity Rush 2's Camera Roll: "999" is the game's own limit (it stops taking photos there);
+# "unlimited" shows the game only the newest 500, so it always has room for new ones (burst
+# shots fill it between its album updates). Every photo stays in the folder (issue #10).
+# Value: the runtime's BB_PHOTO_ROLL (how many of the newest photos the game is shown).
+PHOTO_ROLLS = {"999": 999, "unlimited": 500}
+PHOTO_ROLL_DEFAULT = "999"
 # fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
 # window: a real window with a title bar, kept inside the desktop.
 WINDOW_MODES = ("fullscreen", "borderless", "window")
@@ -124,6 +130,7 @@ class GameSettings:
     threading: str = "auto"     # THREADING
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
+    photo_roll: str = PHOTO_ROLL_DEFAULT  # Gravity Rush 2 only: PHOTO_ROLLS
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
     resolution: str = ""        # RESOLUTIONS: a resolution patch prefix; "" the game's 1080p
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
@@ -181,6 +188,8 @@ def _load_game(key: str, raw) -> GameSettings:
         g.fps = FPS_CHOICES[key][0]
     if not 0 <= g.stick_deadzone <= DEADZONE_MAX:
         g.stick_deadzone = DEADZONE_DEFAULT
+    if g.photo_roll not in PHOTO_ROLLS:
+        g.photo_roll = PHOTO_ROLL_DEFAULT
     if g.resolution not in dict(RESOLUTIONS):
         g.resolution = ""
     return g

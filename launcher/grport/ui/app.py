@@ -80,6 +80,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         threading.Thread(target=_lookup_gpu, args=(self._results,), daemon=True).start()
         self.update_release = None
+        self.updating = False
         if getattr(sys, "frozen", False):  # updates replace the built launcher, not sources
             updater.clean_up(self.paths.root)
             threading.Thread(target=self._check_update, daemon=True).start()
@@ -116,7 +117,7 @@ class App(tk.Tk):
     def install_update(self) -> None:
         """Downloads and installs the newer release, then starts the new launcher."""
         release = self.update_release
-        if release is None or self.phase != "idle":
+        if release is None or self.phase != "idle" or self.updating:
             return
         if os.name != "nt" and os.environ.get("APPIMAGE"):
             webbrowser.open(f"https://github.com/qnfn/GRport/releases/tag/v{release.version}")
@@ -133,15 +134,34 @@ class App(tk.Tk):
             return
         root = self.paths.root
         fsr = updater.installed_fsr(root)
-        self.pages["play"].flash(f"Downloading GRport {release.version}...", "muted")
+        self.updating = True  # one update at a time; the button reads "Updating..."
+        self.pages["play"].show_update(release.version, busy=True)
+        name = f"GRport {release.version}"
+        self.pages["play"].flash(f"Updating to {name}: connecting to GitHub...", "muted", keep=True)
+        shown = [None]
+
+        def status(text: str) -> None:  # from the update thread: only changes reach the page
+            if text != shown[0]:
+                shown[0] = text
+                self._results.put(("status", text))
 
         def work():
-            zip_path = updater.download(release, root / "updates", fsr)
-            new = updater.stage(zip_path, root)
-            return updater.install(new, root, Path(sys.executable))
+            mb = 1 << 20
+            zip_path = updater.download(release, root / "updates", fsr, lambda done, total: status(
+                f"Updating to {name}: downloading {done // mb} of {total // mb} MB "
+                f"({100 * done // max(1, total)}%)" if total else
+                f"Updating to {name}: downloading {done // mb} MB"))
+            new = updater.stage(zip_path, root, lambda done, total: status(
+                f"Updating to {name}: unpacking ({100 * done // max(1, total)}%)"))
+            status(f"Updating to {name}: installing...")
+            replaced = updater.install(new, root, Path(sys.executable))
+            status(f"Updated to {name}: restarting GRport...")
+            return replaced
 
         def done(_result, error):
             if error is not None:
+                self.updating = False
+                self.pages["play"].show_update(release.version)
                 self.pages["play"].flash(f"The update failed: {error}", "bad")
                 return
             # A fresh environment: inheriting this launcher's PyInstaller variables, the new one
@@ -224,6 +244,8 @@ class App(tk.Tk):
                 self.gpu = item[1]
             elif item[0] == "update":
                 self._show_release(item[1])
+            elif item[0] == "status":
+                self.pages["play"].flash(item[1], "muted", keep=True)
             elif item[0] == "task":
                 _, on_done, result, error = item
                 on_done(result, error)

@@ -195,10 +195,11 @@ class HomePage(tk.Frame):
             body = self.board.add(0, i)
             self.cards[game.key] = GameCard(self, body, game)
 
-    def show_update(self, version: str) -> None:
+    def show_update(self, version: str, busy: bool = False) -> None:
         self.update_button.destroy()
         self.update_button = theme.PillButton(self._update_bar, self.app,
-                                              f"Update to {version}", self.app.install_update,
+                                              "Updating..." if busy else f"Update to {version}",
+                                              self.app.install_update,
                                               font=self.app.fonts["button"],
                                               height=self.app.px(32), padx=self.app.px(16))
         self.update_button.pack(side="right", padx=(0, self.app.px(14)))
@@ -224,10 +225,11 @@ class HomePage(tk.Frame):
             else:
                 self.flash("", "muted")
 
-    def flash(self, text: str, role: str) -> None:
+    def flash(self, text: str, role: str, keep: bool = False) -> None:
+        """Show a status line; it clears after 5 s unless it is an error or keep is set."""
         self.status.configure(text=text, fg=self.app.palette.get(role, self.app.palette["text"]))
         if self._status_job is not None:
             self.app.after_cancel(self._status_job)
             self._status_job = None
-        if text and role != "bad":
+        if text and role != "bad" and not keep:
             self._status_job = self.app.after(5000, lambda: self.flash("", "muted"))

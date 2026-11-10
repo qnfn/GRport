@@ -122,8 +122,9 @@ def _release_root(stage: Path) -> Path:
     return stage
 
 
-def stage(zip_path: Path, root: Path) -> Path:
-    """Extracts the release next to the install; returns the folder holding its files."""
+def stage(zip_path: Path, root: Path, progress=None) -> Path:
+    """Extracts the release next to the install; returns the folder holding its files.
+    progress(done, total) gets the unpacked bytes after each file."""
     target = root / STAGE
     shutil.rmtree(target, ignore_errors=True)
     with zipfile.ZipFile(zip_path) as z:
@@ -131,7 +132,13 @@ def stage(zip_path: Path, root: Path) -> Path:
             parts = Path(name.replace("\\", "/")).parts
             if not parts or Path(name).is_absolute() or ".." in parts:
                 raise ValueError(f"unsafe path in the update: {name}")
-        z.extractall(target)
+        members = z.infolist()
+        total, done = sum(m.file_size for m in members), 0
+        for member in members:
+            z.extract(member, target)
+            done += member.file_size
+            if progress:
+                progress(done, total)
     new = _release_root(target)
     if not (new / "GRport.exe").is_file() or not (new / "runtime" / "GRport-runtime.exe").is_file():
         raise ValueError("the update has no GRport.exe")
