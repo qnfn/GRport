@@ -1,5 +1,5 @@
 diff --git a/build.sh b/build.sh
-index 70c0c04..9baf58a 100644
+index 70c0c04..2e461f7 100644
 --- a/build.sh
 +++ b/build.sh
 @@ -43,14 +43,14 @@ fi
@@ -20,6 +20,13 @@ index 70c0c04..9baf58a 100644
  # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libbbgpu.so.
  # BB_PGO: generate (instrumented build that writes pgo/ while the game runs), use, off.
  # Default: use the profile in pgo/ when there is one. BB_LTO=OFF disables link-time optimization.
+@@ -104,4 +104,6 @@ if [[ ${1:-} == --test ]]; then
+     out/sema-test
+     "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
+     out/content-test
++    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_trophy.c src/runtime_trophy.c -o out/trophy-test
++    out/trophy-test
+ fi
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
 index 529ef05..5d46794 100644
 --- a/gpu/CMakeLists.txt
@@ -69,10 +76,10 @@ index 529ef05..5d46794 100644
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
 diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
-index 02b422e..cf4956b 100644
+index 02b422e..fb731c8 100644
 --- a/gpu/bbgpu.h
 +++ b/gpu/bbgpu.h
-@@ -34,11 +34,29 @@ void bbgpu_dump_guest_writes(void *ucontext);
+@@ -34,11 +34,31 @@ void bbgpu_dump_guest_writes(void *ucontext);
   * no window exists; poll returns 0 typing, 1 confirmed, 2 cancelled (UTF-8 text). */
  int bbgpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
  int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
@@ -90,6 +97,8 @@ index 02b422e..cf4956b 100644
 +void bbgpu_save_list_cancel(void);
 +/* A short message on screen ("Game saved"), shown for a few seconds. */
 +void bbgpu_notify(const char *text_utf8);
++/* "Trophy unlocked": top left of the screen for 5 seconds. */
++void bbgpu_notify_trophy(const char *text_utf8);
  /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
  int bbgpu_overlay_captures_input(void);
  /* 1 while the game should be silent: bbport.ini mute_unfocused is on and the window does not
@@ -8131,7 +8140,7 @@ index 8d41b8c..d34abcf 100644
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
-index 3a73ecf..0a9c793 100644
+index 3a73ecf..454c8e0 100644
 --- a/gpu/shim/bbgpu.cpp
 +++ b/gpu/shim/bbgpu.cpp
 @@ -45,6 +45,7 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
@@ -8160,7 +8169,7 @@ index 3a73ecf..0a9c793 100644
      const s32 width = config->width, height = config->height;
      g_window_thread = std::thread([title, width, height] {
          Common::SetCurrentThreadName("bb:window");
-@@ -351,6 +352,35 @@ extern "C" int bbgpu_audio_muted(void) {
+@@ -351,6 +352,39 @@ extern "C" int bbgpu_audio_muted(void) {
      return g_window && BbSettings::Get().mute_unfocused && !g_window->IsFocused() ? 1 : 0;
  }
  
@@ -8193,11 +8202,15 @@ index 3a73ecf..0a9c793 100644
 +    BbOverlay::Notify(text ? text : "");
 +}
 +
++extern "C" void bbgpu_notify_trophy(const char* text) {
++    BbOverlay::NotifyTrophy(text ? text : "");
++}
++
  extern "C" int bbgpu_text_input_begin(const char* initial, const char* prompt) {
      if (!g_window) return 0;
      g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..f28e047 100644
+index 651b74e..c17d444 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
 @@ -9,10 +9,13 @@
@@ -8214,7 +8227,7 @@ index 651b74e..f28e047 100644
  #include "imgui.h"
  #include "imgui_impl_vulkan.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
-@@ -59,6 +62,28 @@ bool text_entry_active = false;
+@@ -59,6 +62,29 @@ bool text_entry_active = false;
  std::string text_entry_prompt, text_entry_text;
  float base_scale = 1.0f;
  
@@ -8233,6 +8246,7 @@ index 651b74e..f28e047 100644
 +std::atomic<s64> input_hold_until_ms{0};
 +std::string notify_text;
 +std::atomic<s64> notify_until_ms{0};
++bool notify_corner = false; // a trophy: top left as on a PS4
 +
 +s64 NowMs() {
 +    return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -8243,7 +8257,7 @@ index 651b74e..f28e047 100644
  // Present rate for the FPS counter.
  std::chrono::steady_clock::time_point last_present{};
  float frame_ms_avg = 0.0f, last_present_ms = 0.0f;
-@@ -187,279 +212,83 @@ void Menu() {
+@@ -187,279 +213,83 @@ void Menu() {
          ImVec2(0.0f, 0.0f),
          ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
      bool keep_open = true;
@@ -8581,7 +8595,7 @@ index 651b74e..f28e047 100644
      if (ImGui::Button("Close")) {
          keep_open = false;
      }
-@@ -481,8 +310,9 @@ void Menu() {
+@@ -481,8 +311,9 @@ void Menu() {
      if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
          quit_armed = false;
      }
@@ -8592,7 +8606,7 @@ index 651b74e..f28e047 100644
      ImGui::End();
      if (!keep_open) {
          SetOpen(false);
-@@ -513,6 +343,142 @@ void TextEntryBox() {
+@@ -513,6 +344,148 @@ void TextEntryBox() {
      ImGui::End();
  }
  
@@ -8689,9 +8703,15 @@ index 651b74e..f28e047 100644
 +
 +void NotifyBox() {
 +    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.74f),
-+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
++    if (notify_corner) {
++        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.03f,
++                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.05f),
++                                ImGuiCond_Always, ImVec2(0.0f, 0.0f));
++    } else {
++        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
++                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.74f),
++                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
++    }
 +    ImGui::SetNextWindowBgAlpha(0.85f);
 +    ImGui::Begin("##notify", nullptr,
 +                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
@@ -8735,7 +8755,7 @@ index 651b74e..f28e047 100644
  void FpsCounter() {
      const ImGuiViewport* viewport = ImGui::GetMainViewport();
      const float pad = 12.0f * base_scale;
-@@ -524,14 +490,19 @@ void FpsCounter() {
+@@ -524,14 +497,19 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -8763,7 +8783,7 @@ index 651b74e..f28e047 100644
      ImGui::End();
  }
  
-@@ -548,14 +519,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +526,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -8820,7 +8840,7 @@ index 651b74e..f28e047 100644
  
      ImFontConfig font_config;
      font_config.FontDataOwnedByAtlas = false;
-@@ -703,11 +714,180 @@ bool HandleEvent(const SDL_Event& event) {
+@@ -703,11 +721,188 @@ bool HandleEvent(const SDL_Event& event) {
  }
  
  bool Visible() {
@@ -8999,11 +9019,19 @@ index 651b74e..f28e047 100644
 +void Notify(const std::string& text) {
 +    std::scoped_lock lock{imgui_mutex};
 +    notify_text = text;
++    notify_corner = false;
 +    notify_until_ms = NowMs() + 2500;
++}
++
++void NotifyTrophy(const std::string& text) {
++    std::scoped_lock lock{imgui_mutex};
++    notify_text = text;
++    notify_corner = true;
++    notify_until_ms = NowMs() + 5000;
  }
  
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
-@@ -776,6 +956,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+@@ -776,6 +971,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
      if (text_entry_active) {
          TextEntryBox();
      }
@@ -9017,7 +9045,7 @@ index 651b74e..f28e047 100644
  
      const vk::RenderingAttachmentInfo attachment{
 diff --git a/gpu/shim/bbport_overlay.h b/gpu/shim/bbport_overlay.h
-index 86ef250..a23da07 100644
+index 86ef250..10bed9e 100644
 --- a/gpu/shim/bbport_overlay.h
 +++ b/gpu/shim/bbport_overlay.h
 @@ -6,6 +6,7 @@
@@ -9028,7 +9056,7 @@ index 86ef250..a23da07 100644
  #include "common/types.h"
  #include "video_core/renderer_vulkan/vk_common.h"
  
-@@ -42,4 +43,21 @@ bool CapturesInput();
+@@ -42,4 +43,23 @@ bool CapturesInput();
  /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text);
  
@@ -9048,6 +9076,8 @@ index 86ef250..a23da07 100644
 +
 +/// A short message at the bottom of the screen for a few seconds ("Game saved").
 +void Notify(const std::string& text);
++// A trophy unlock: top left as on a PS4, for 5 seconds.
++void NotifyTrophy(const std::string& text);
 +
  } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
@@ -12875,7 +12905,7 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..10b11b6 100644
+index 773ee79..4065c76 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -45,6 +45,10 @@ void runtime_thread_attach_main(void);
@@ -12897,7 +12927,7 @@ index 773ee79..10b11b6 100644
  uintptr_t runtime_file_resolve(const char *name);
  uintptr_t runtime_services_resolve(const char *name);
  void runtime_file_report(void);
-@@ -80,13 +85,28 @@ void runtime_memory_reserve(void);
+@@ -80,13 +85,36 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -12921,6 +12951,14 @@ index 773ee79..10b11b6 100644
  uintptr_t runtime_savedata_resolve(const char *name);
  void runtime_savedata_report(void);
  void runtime_thread_attach_host(const char *name);
++/* DCport: earned trophies, kept in <user>/trophies/<user id>.txt (runtime_trophy.c). A context
++ * belongs to a user; earn returns 0 when new, 1 when already earned, -1 for a bad id. */
++#define RUNTIME_TROPHY_IDS 128
++void runtime_trophy_context(int32_t context, int32_t user);
++int runtime_trophy_earn(int32_t context, int32_t id, int64_t now);
++uint32_t runtime_trophy_flags(int32_t context, uint32_t flags[4]);
++int64_t runtime_trophy_time(int32_t context, int32_t id);
++void runtime_trophy_reset(void);
 +/* Driveclub's system functions the Bloodborne runtime has no contract for (runtime_dc.c). */
 +uintptr_t runtime_dc_resolve(const char *name);
 +/* libSceFont on FreeType (runtime_font.c). */
@@ -13128,10 +13166,10 @@ index 045f3c0..0c83bbe 100644
      if (!strcmp(name,"fMP5NHUOaMk#M#N")) return (uintptr_t)module_loaded;
 diff --git a/src/runtime_dc.c b/src/runtime_dc.c
 new file mode 100644
-index 0000000..6604499
+index 0000000..826ab60
 --- /dev/null
 +++ b/src/runtime_dc.c
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,427 @@
 +/* Driveclub (CUSA00003): system library functions the Bloodborne runtime never needed.
 + *
 + * Resolved last (after the shadPS4 HLE table), so nothing here shadows an existing
@@ -13431,9 +13469,14 @@ index 0000000..6604499
 +static ABI int32_t companion_no_event(void) { return (int32_t)0x80E40008; } /* NO_EVENT */
 +
 +/* --- Trophies ---------------------------------------------------------------------------- */
++/* DCport: the trophies earned so far (runtime_trophy.c). count is the range of trophy ids the
++ * flags cover, not how many are set: all 128, so DLC trophies with high ids are seen too.
++ * Idea from driveclub-recomp 78e1e2f (cedarquartz7429). */
 +static ABI int32_t trophy_unlock_state(int32_t context, int32_t handle, uint32_t *flags, uint32_t *count) {
-+    if (flags) memset(flags, 0, 16);  /* SceNpTrophyFlagArray: 128 bits */
-+    if (count) *count = 0;
++    uint32_t bits[4];  /* SceNpTrophyFlagArray: 128 bits */
++    runtime_trophy_flags(context, bits);
++    if (flags) memcpy(flags, bits, sizeof bits);
++    if (count) *count = RUNTIME_TROPHY_IDS;
 +    return 0;
 +}
 +
@@ -16512,10 +16555,19 @@ index 9a16a9a..9f6cbc3 100644
  void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
  
 diff --git a/src/runtime_services.c b/src/runtime_services.c
-index e75ed89..bfc5908 100644
+index e75ed89..4ea061e 100644
 --- a/src/runtime_services.c
 +++ b/src/runtime_services.c
-@@ -57,7 +57,7 @@ static ABI int32_t user_list(int32_t *ids) {
+@@ -40,6 +40,8 @@
+ #define PLAYGO_BAD_CHUNK ((int32_t)0x80B2000C)
+ #define AUDIO_IN_NOT_OPENED ((int32_t)0x80260109)
+ #define TROPHY_INVALID ((int32_t)0x80551604)
++#define TROPHY_INVALID_ID ((int32_t)0x8055160A)
++#define TROPHY_ALREADY_UNLOCKED ((int32_t)0x8055160C)
+ 
+ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
+ static int next_id=1;
+@@ -57,7 +59,7 @@ static ABI int32_t user_list(int32_t *ids) {
  }
  static ABI int32_t user_name(int32_t id,char *name,uint64_t size) {
      if (id!=USER_ID || !name) return USER_INVALID_ARGUMENT;
@@ -16524,7 +16576,7 @@ index e75ed89..bfc5908 100644
      if (strlen(value)+1>size) return (int32_t)0x8096000a; /* BUFFER_TOO_SHORT */
      strcpy(name,value); return 0;
  }
-@@ -72,7 +72,12 @@ static ABI int32_t user_event(int32_t *event) {
+@@ -72,7 +74,12 @@ static ABI int32_t user_event(int32_t *event) {
  }
  
  /* ---- SystemService ---- */
@@ -16538,7 +16590,7 @@ index e75ed89..bfc5908 100644
  static ABI int32_t system_param(int32_t id,int32_t *value) {
      if (!value) return SYSTEM_PARAMETER;
      switch (id) {
-@@ -218,6 +223,43 @@ static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
+@@ -218,6 +225,43 @@ static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
  static ABI int32_t np_request(const void *param) { (void)param; return new_id(); }
  static ABI int32_t np_request_ctx(int32_t ctx,const void *param) { (void)ctx; (void)param; return new_id(); }
  static ABI int32_t np_poll(int32_t request,int32_t *result) { (void)request; if (result) *result=NP_SIGNED_OUT; return 0; }
@@ -16582,7 +16634,7 @@ index e75ed89..bfc5908 100644
  static ABI int32_t np_compare(const void *a,const void *b) {
      if (!a || !b) return NP_INVALID_ARGUMENT;
      return memcmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
-@@ -259,7 +301,167 @@ static int32_t dialog_term(int i) {
+@@ -259,7 +303,167 @@ static int32_t dialog_term(int i) {
      static ABI int32_t tag##_open(const void *p) { (void)p; return dialog_open(i); } \
      static ABI int32_t tag##_status(void) { return dialog_status(i); } \
      static ABI int32_t tag##_term(void) { return dialog_term(i); }
@@ -16751,7 +16803,7 @@ index e75ed89..bfc5908 100644
  static ABI int32_t profile_result(void *result) { if (result) memset(result,0,4); return 0; }
  /* ImeDialog: text typed on the keyboard into the game window (title bar shows it).
   * OrbisImeDialogParam: user, type, languages(8), enter label, method, filter,
-@@ -311,10 +513,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
+@@ -311,10 +515,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
      utf16_to_utf8(param->title,128,prompt,sizeof(prompt));
      const char *preset=getenv("BB_IME_TEXT");
      if (preset) { ime_complete(0,preset); return 0; }
@@ -16764,7 +16816,93 @@ index e75ed89..bfc5908 100644
      if (!bbgpu_text_input_begin(start,prompt[0] ? prompt : "Text")) ime_complete(0,start);
      else printf("Runtime: ImeDialog opened: shown on screen; keyboard Enter or Cross accepts, Esc or Circle cancels\n");
      return 0;
-@@ -513,6 +715,58 @@ static const RuntimeExport exports[]={
+@@ -334,19 +538,45 @@ static ABI int32_t ime_result(uint32_t *result) {
+ }
+ static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
+ 
+-/* ---- Trophies: accepted locally, recorded in the log ---- */
++/* ---- Trophies: kept locally (runtime_trophy.c), also recorded in the log ---- */
+ static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
+-    (void)user; (void)label; (void)options;
++    (void)label; (void)options;
+     if (!ctx) return TROPHY_INVALID;
+-    *ctx=new_id(); return 0;
++    *ctx=new_id();
++    runtime_trophy_context(*ctx,user);
++    return 0;
+ }
+ static ABI int32_t trophy_handle(int32_t *handle) { if (!handle) return TROPHY_INVALID; *handle=new_id(); return 0; }
+ static ABI int32_t trophy_register(int32_t ctx,int32_t handle,uint64_t options) { (void)ctx; (void)handle; (void)options; return 0; }
++/* The pop-up names the trophy from <user>/trophy-names.txt ("id<TAB>grade<TAB>name" lines,
++ * written by the launcher: the game's own list is encrypted), else just its number. */
++static void trophy_popup(int32_t id) {
++    char path[600], line[512], text[600];
++    snprintf(text,sizeof(text),"Trophy unlocked (#%d)",(int)id);
++    snprintf(path,sizeof(path),"%s/trophy-names.txt",runtime_file_user_dir());
++    FILE *f=fopen(path,"r");
++    while (f && fgets(line,sizeof(line),f)) {
++        char *grade=strchr(line,'\t'), *name=grade ? strchr(grade+1,'\t') : NULL;
++        if (!name || atoi(line)!=id) continue;
++        *grade++=0; *name++=0;
++        name[strcspn(name,"\r\n")]=0;
++        if (*grade>='a' && *grade<='z') *grade=(char)(*grade-32);
++        snprintf(text,sizeof(text),"Trophy unlocked: %s%s%s%s",name,*grade ? " (" : "",grade,*grade ? ")" : "");
++        break;
++    }
++    if (f) fclose(f);
++    bbgpu_notify_trophy(text);
++}
+ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *platinum) {
+-    (void)ctx; (void)handle;
++    (void)handle;
++    if (platinum) *platinum=-1;
++    if (id<0 || id>=RUNTIME_TROPHY_IDS) return TROPHY_INVALID_ID;
++    /* DCport: earned trophies are kept for the next start; a second unlock is refused as on
++     * a PS4 (the game asks which are earned first). */
++    if (runtime_trophy_earn(ctx,id,(int64_t)time(NULL))) return TROPHY_ALREADY_UNLOCKED;
+     /* <user>/trophies.log ("id unix-time" per line) is read by the launcher's Trophies page,
+      * also when the game was started without it (shortcut, Steam). */
+-    if (id>=0 && id<128) {
++    {
+         char path[600];
+         snprintf(path,sizeof(path),"%s/trophies.log",runtime_file_user_dir());
+         pthread_mutex_lock(&lock);
+@@ -355,7 +585,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
+         pthread_mutex_unlock(&lock);
+     }
+     printf("Runtime: trophy %d unlocked\n",id);
+-    if (platinum) *platinum=-1;
++    trophy_popup(id);
+     return 0;
+ }
+ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
+@@ -364,8 +594,24 @@ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,voi
+     if (data) { uint64_t size; memcpy(&size,data,8); memset((char *)data+8,0,size>8 && size<4096 ? size-8 : 0); }
+     return 0;
+ }
++/* SceNpTrophyData: size, trophy id, unlocked, 3 reserved bytes, SceRtcTick of the unlock */
++typedef struct { uint64_t size; int32_t id; uint8_t unlocked, reserved[3]; uint64_t timestamp; } TrophyData;
++_Static_assert(sizeof(TrophyData)==24,"SceNpTrophyData");
+ static ABI int32_t trophy_info(int32_t ctx,int32_t handle,int32_t id,void *details,void *data) {
+-    (void)id; return trophy_game_info(ctx,handle,details,data);
++    if (id<0 || id>=RUNTIME_TROPHY_IDS) return TROPHY_INVALID_ID;
++    trophy_game_info(ctx,handle,details,data);
++    if (details) { uint64_t size; memcpy(&size,details,8); if (size>=12 && size<4096) memcpy((char *)details+8,&id,4); }
++    if (data) {
++        uint64_t size; memcpy(&size,data,8);
++        if (size>=sizeof(TrophyData)) {
++            /* DCport: earned or not (runtime_trophy.c); ticks are microseconds since year 1. */
++            const int64_t when=runtime_trophy_time(ctx,id);
++            TrophyData value={.size=size,.id=id,.unlocked=when!=0,
++                              .timestamp=when ? UINT64_C(62135596800000000)+(uint64_t)when*1000000 : 0};
++            memcpy(data,&value,sizeof value);
++        }
++    }
++    return 0;
+ }
+ 
+ /* ---- PlayGo: fully installed package ---- */
+@@ -513,6 +759,58 @@ static const RuntimeExport exports[]={
      {"sceNpScoreGetRankingByNpIdPcId",np_signed_out}, {"sceNpScoreGetRankingByRange",np_signed_out},
      {"sceNpScoreRecordGameData",np_signed_out}, {"sceNpScoreRecordScore",np_signed_out},
      {"sceNpScoreSetPlayerCharacterId",ok_void},
@@ -16823,7 +16961,7 @@ index e75ed89..bfc5908 100644
      {"sceVoiceCreatePort",voice_port}, {"sceVoiceDeletePort",ok_void},
      {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
      {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
-@@ -527,6 +781,8 @@ static const RuntimeExport exports[]={
+@@ -527,6 +825,8 @@ static const RuntimeExport exports[]={
      {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
      {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
      {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},
@@ -16859,6 +16997,185 @@ index 6419d19..02f5aad 100644
          {"nsYoNRywwNg#p#J",attr_init}, {"62KCwEMmzcM#p#J",attr_destroy},
          {"x1X76arYMxU#p#J",attr_get}, {"8+s5BzZjxSg#p#J",attr_affinity},
          {"UTXzJbWhhTE#p#J",attr_set_stack}, {"-Wreprtu0Qs#p#J",attr_set_detach},
+diff --git a/src/runtime_trophy.c b/src/runtime_trophy.c
+new file mode 100644
+index 0000000..2501f23
+--- /dev/null
++++ b/src/runtime_trophy.c
+@@ -0,0 +1,173 @@
++/* DCport: earned trophies, kept across game restarts (#183 in driveclub-recomp: the AMG GT3
++ * needs trophy 126, and the game asks which trophies are earned at every start).
++ *
++ * <user>/trophies/<user id>.txt holds one "id unix-time" line per earned trophy (the format
++ * of <user>/trophies.log, which runtime_services.c keeps appending for the launcher). It is
++ * rewritten whole on each unlock: a temporary file, flushed, then moved over the old one, so
++ * a crash leaves either the old list or the new one. Earlier versions only had trophies.log;
++ * its entries count as the local user's (the only one, id 1).
++ * Idea from driveclub-recomp 78e1e2f / PR #260 (cedarquartz7429). */
++#define _GNU_SOURCE
++#include <errno.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include "runtime.h"
++#ifdef _WIN32
++#include <windows.h>
++#include <io.h>
++#else
++#include <unistd.h>
++#endif
++
++enum { TROPHIES = RUNTIME_TROPHY_IDS, USERS = 4, CONTEXTS = 16 };
++typedef struct {
++    int32_t user;     /* 0: free */
++    int loaded;
++    int64_t earned[TROPHIES]; /* unix time it was earned, 0 when not */
++} TrophyUser;
++static TrophyUser users[USERS];
++static struct { int32_t context, user; } contexts[CONTEXTS];
++static pthread_mutex_t trophy_lock = PTHREAD_MUTEX_INITIALIZER;
++
++/* BB_DC_TROPHY_STATE=0: the game is told no trophy is earned and every unlock is accepted,
++ * as in 0.5.4 (the list is still written). */
++static int report_state(void) {
++    const char *value = getenv("BB_DC_TROPHY_STATE");
++    return !(value && *value == '0');
++}
++
++/* Adds "id unix-time" lines; an id already there keeps its earlier time. */
++static void read_list(const char *path, int64_t earned[TROPHIES]) {
++    FILE *f = fopen(path, "r");
++    if (!f) return;
++    char line[128];
++    while (fgets(line, sizeof line, f)) {
++        int id;
++        long long when;
++        char rest;
++        if (sscanf(line, "%d %lld %c", &id, &when, &rest) != 2 || id < 0 || id >= TROPHIES || when <= 0)
++            continue;
++        if (!earned[id] || when < earned[id]) earned[id] = when;
++    }
++    fclose(f);
++}
++
++static void user_path(int32_t user, char *out, size_t size, int temporary) {
++    snprintf(out, size, "%s/trophies/%d.txt%s", runtime_file_user_dir(), (int)user, temporary ? ".new" : "");
++}
++
++static TrophyUser *user_state(int32_t user) {
++    if (user <= 0) user = 1;
++    TrophyUser *slot = NULL;
++    for (int i = 0; i < USERS; ++i) {
++        if (users[i].user == user) { slot = &users[i]; break; }
++        if (!users[i].user && !slot) slot = &users[i];
++    }
++    if (!slot) slot = &users[0]; /* more users than a PS4 has: reuse the first slot */
++    if (slot->user != user || !slot->loaded) {
++        memset(slot, 0, sizeof *slot);
++        slot->user = user;
++        slot->loaded = 1;
++        char path[700];
++        user_path(user, path, sizeof path, 0);
++        read_list(path, slot->earned);
++        if (user == 1) {
++            snprintf(path, sizeof path, "%s/trophies.log", runtime_file_user_dir());
++            read_list(path, slot->earned);
++        }
++    }
++    return slot;
++}
++
++static int save(const TrophyUser *state) {
++    char path[700], temporary[704];
++    snprintf(path, sizeof path, "%s/trophies", runtime_file_user_dir());
++    if (mkdir(path, 0755) && errno != EEXIST) return -1;
++    user_path(state->user, path, sizeof path, 0);
++    user_path(state->user, temporary, sizeof temporary, 1);
++    FILE *f = fopen(temporary, "wb");
++    if (!f) return -1;
++    int ok = 1;
++    for (int id = 0; id < TROPHIES; ++id)
++        if (state->earned[id] && fprintf(f, "%d %lld\n", id, (long long)state->earned[id]) < 0) ok = 0;
++    if (fflush(f)) ok = 0;
++#ifdef _WIN32
++    if (ok && _commit(_fileno(f))) ok = 0;
++#else
++    if (ok && fsync(fileno(f))) ok = 0;
++#endif
++    if (fclose(f)) ok = 0;
++#ifdef _WIN32
++    if (ok && !MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ok = 0;
++#else
++    if (ok && rename(temporary, path)) ok = 0;
++#endif
++    if (!ok) remove(temporary);
++    return ok ? 0 : -1;
++}
++
++void runtime_trophy_context(int32_t context, int32_t user) {
++    pthread_mutex_lock(&trophy_lock);
++    int slot = -1;
++    for (int i = 0; i < CONTEXTS && slot < 0; ++i)
++        if (contexts[i].context == context) slot = i;
++    for (int i = 0; i < CONTEXTS && slot < 0; ++i)
++        if (!contexts[i].context) slot = i;
++    if (slot < 0) slot = (int)((uint32_t)context % CONTEXTS); /* all taken: replace one */
++    contexts[slot].context = context;
++    contexts[slot].user = user;
++    pthread_mutex_unlock(&trophy_lock);
++}
++
++static int32_t context_user(int32_t context) {
++    for (int i = 0; i < CONTEXTS; ++i)
++        if (contexts[i].context && contexts[i].context == context) return contexts[i].user;
++    return 1;
++}
++
++int runtime_trophy_earn(int32_t context, int32_t id, int64_t now) {
++    if (id < 0 || id >= TROPHIES) return -1;
++    pthread_mutex_lock(&trophy_lock);
++    TrophyUser *state = user_state(context_user(context));
++    int result = report_state() ? 1 : 0;
++    if (!state->earned[id]) {
++        state->earned[id] = now > 0 ? now : 1;
++        result = 0;
++        if (save(state)) {
++            char path[700];
++            user_path(state->user, path, sizeof path, 0);
++            fprintf(stderr, "Runtime: trophy %d could not be saved to %s\n", id, path);
++        }
++    }
++    pthread_mutex_unlock(&trophy_lock);
++    return result;
++}
++
++uint32_t runtime_trophy_flags(int32_t context, uint32_t flags[4]) {
++    memset(flags, 0, 16);
++    uint32_t earned = 0;
++    pthread_mutex_lock(&trophy_lock);
++    TrophyUser *state = user_state(context_user(context));
++    for (int id = 0; id < TROPHIES && report_state(); ++id)
++        if (state->earned[id]) { flags[id / 32] |= 1u << (id % 32); ++earned; }
++    pthread_mutex_unlock(&trophy_lock);
++    return earned;
++}
++
++int64_t runtime_trophy_time(int32_t context, int32_t id) {
++    if (id < 0 || id >= TROPHIES) return 0;
++    pthread_mutex_lock(&trophy_lock);
++    const int64_t when = report_state() ? user_state(context_user(context))->earned[id] : 0;
++    pthread_mutex_unlock(&trophy_lock);
++    return when;
++}
++
++void runtime_trophy_reset(void) {
++    pthread_mutex_lock(&trophy_lock);
++    memset(users, 0, sizeof users);
++    memset(contexts, 0, sizeof contexts);
++    pthread_mutex_unlock(&trophy_lock);
++}
 diff --git a/tests/test_pad.c b/tests/test_pad.c
 index a477ea9..ccf4071 100644
 --- a/tests/test_pad.c
@@ -16960,6 +17277,106 @@ index a5edf37..37e4026 100644
      std::printf("prompt icons: all tests passed (worst mse %.1f)\n", worst);
      return 0;
  }
+diff --git a/tests/test_trophy.c b/tests/test_trophy.c
+new file mode 100644
+index 0000000..b66b116
+--- /dev/null
++++ b/tests/test_trophy.c
+@@ -0,0 +1,94 @@
++/* DCport: earned trophies survive a restart (runtime_trophy.c). */
++#include "runtime.h"
++#include <assert.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#ifdef _WIN32
++#include <direct.h>
++#define REMOVE_DIR(path) _rmdir(path)
++#define SET_ENV(name, value) _putenv_s(name, value)
++#else
++#include <unistd.h>
++#define REMOVE_DIR(path) rmdir(path)
++#define SET_ENV(name, value) setenv(name, value, 1)
++#endif
++
++static char user_dir[512];
++const char *runtime_file_user_dir(void) { return user_dir; }
++
++static void path(char *out, size_t size, const char *name) { snprintf(out, size, "%s/%s", user_dir, name); }
++static void clean(void) {
++    char p[600];
++    const char *files[] = {"trophies/1.txt", "trophies/1.txt.new", "trophies/2.txt", "trophies.log"};
++    for (unsigned i = 0; i < sizeof files / sizeof *files; ++i) { path(p, sizeof p, files[i]); remove(p); }
++    path(p, sizeof p, "trophies"); REMOVE_DIR(p);
++    REMOVE_DIR(user_dir);
++}
++static void write_file(const char *name, const char *text) {
++    char p[600]; path(p, sizeof p, name);
++    FILE *f = fopen(p, "wb"); assert(f); fputs(text, f); fclose(f);
++}
++static int exists(const char *name) {
++    char p[600]; path(p, sizeof p, name);
++    FILE *f = fopen(p, "rb"); if (f) fclose(f);
++    return f != NULL;
++}
++
++int main(void) {
++    const char *temp = getenv("TEMP");
++    snprintf(user_dir, sizeof user_dir, "%s/dcport-trophy-test", temp && *temp ? temp : "/tmp");
++    clean();
++#ifdef _WIN32
++    _mkdir(user_dir);
++#else
++    mkdir(user_dir, 0755);
++#endif
++    SET_ENV("BB_DC_TROPHY_STATE", "1");
++    uint32_t flags[4];
++
++    /* Nothing earned yet; 0.5.4's log counts as user 1's (earliest time kept, junk skipped). */
++    write_file("trophies.log", "3 500\n3 400\nbroken\n200 1\n");
++    runtime_trophy_context(10, 1);
++    runtime_trophy_context(20, 2);
++    assert(runtime_trophy_flags(10, flags) == 1 && flags[0] == 1u << 3 && !flags[1] && !flags[2] && !flags[3]);
++    assert(runtime_trophy_time(10, 3) == 400);
++    assert(runtime_trophy_flags(20, flags) == 0);
++
++    /* Unlocks: new, then already earned; bad ids refused; another user stays apart. */
++    assert(runtime_trophy_earn(10, 126, 1000) == 0);
++    assert(runtime_trophy_earn(10, 126, 2000) == 1);
++    assert(runtime_trophy_earn(10, 3, 2000) == 1);
++    assert(runtime_trophy_earn(10, 128, 2000) == -1 && runtime_trophy_earn(10, -1, 2000) == -1);
++    assert(runtime_trophy_earn(20, 5, 3000) == 0);
++    assert(exists("trophies/1.txt") && exists("trophies/2.txt") && !exists("trophies/1.txt.new"));
++
++    /* A restart: everything is read again from the files. */
++    runtime_trophy_reset();
++    runtime_trophy_context(30, 1);
++    runtime_trophy_context(40, 2);
++    assert(runtime_trophy_flags(30, flags) == 2 && flags[0] == 1u << 3 && flags[3] == 1u << 30);
++    assert(runtime_trophy_time(30, 126) == 1000 && runtime_trophy_time(30, 5) == 0);
++    assert(runtime_trophy_flags(40, flags) == 1 && flags[0] == 1u << 5);
++    /* An unknown context is the local user's. */
++    assert(runtime_trophy_flags(99, flags) == 2);
++
++    /* Without trophies.log the list alone keeps them. */
++    char p[600]; path(p, sizeof p, "trophies.log"); remove(p);
++    runtime_trophy_reset();
++    runtime_trophy_context(50, 1);
++    assert(runtime_trophy_flags(50, flags) == 2 && runtime_trophy_time(50, 3) == 400);
++
++    /* BB_DC_TROPHY_STATE=0: as 0.5.4, nothing reported and repeats accepted. */
++    SET_ENV("BB_DC_TROPHY_STATE", "0");
++    assert(runtime_trophy_flags(50, flags) == 0 && !flags[0] && !flags[3]);
++    assert(runtime_trophy_time(50, 126) == 0 && runtime_trophy_earn(50, 126, 5000) == 0);
++    SET_ENV("BB_DC_TROPHY_STATE", "1");
++    assert(runtime_trophy_time(50, 126) == 1000);
++
++    clean();
++    puts("PASS: trophies persist across restarts");
++    return 0;
++}
 diff --git a/third_party/stb/stb_image.h b/third_party/stb/stb_image.h
 new file mode 100644
 index 0000000..9eedabe

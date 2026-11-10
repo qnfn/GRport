@@ -28,10 +28,10 @@ def test_games_next_to_the_launcher_are_found(app):
 
 
 def test_every_page_builds_for_both_games(app):
-    assert set(app.pages) == {"play", "setup", "controls", "log"}
+    assert set(app.pages) == {"play", "setup", "controls", "trophies", "log"}
     for key in ("gr1", "gr2"):
         app.settings.selected = key
-        for tab in ("play", "setup", "controls", "log"):
+        for tab in ("play", "setup", "controls", "trophies", "log"):
             app.show(tab)
             app.update()
 

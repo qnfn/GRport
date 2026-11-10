@@ -12,7 +12,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageTk
 
-from grport import __version__, games, patches, runtime, sysinfo, updater
+from grport import __version__, games, patches, runtime, sysinfo, trophies, updater
 from grport.paths import AppPaths
 from grport.process import RUNNER
 from grport.settings import load_settings, save_settings
@@ -20,11 +20,13 @@ from grport.ui import dialogs, theme
 from grport.ui.controls import ControlsPage
 from grport.ui.home import HomePage
 from grport.ui.log import LogPage
+from grport.ui.trophies import TrophiesPage
 from grport.ui.setup import SetupPage
 
-TABS = ("play", "setup", "controls", "log")
+TABS = ("play", "setup", "controls", "trophies", "log")
 KOFI_URL = "https://ko-fi.com/qnfn1"
-PAGES = {"play": HomePage, "setup": SetupPage, "controls": ControlsPage, "log": LogPage}
+PAGES = {"play": HomePage, "setup": SetupPage, "controls": ControlsPage,
+         "trophies": TrophiesPage, "log": LogPage}
 
 
 def _lookup_gpu(results: "queue.Queue") -> None:
@@ -506,6 +508,7 @@ class App(tk.Tk):
             return self._start(key, runtime.prepare_command(self.paths, info, patch), dict(os.environ),
                                runtime.prepare_log(self.paths, key), self.paths.root,
                                "preparing", runtime.prepare_log(self.paths, key))
+        trophies.write_names(theme.assets_dir(), key, runtime.user_dir(self.paths, key))
         return self._start(key, runtime.command(self.paths, info, patch),
                            runtime.env(self.paths, self.settings, info),
                            self.paths.console_log, runtime.exe(self.paths).parent, "running",
