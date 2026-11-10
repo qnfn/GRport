@@ -1322,6 +1322,31 @@ index 39867e8..fc40417 100644
  
      void SetResult(s32 r) {
          {
+diff --git a/gpu/shadps4/common/path_util.cpp b/gpu/shadps4/common/path_util.cpp
+index b74fd99..c8a34e1 100644
+--- a/gpu/shadps4/common/path_util.cpp
++++ b/gpu/shadps4/common/path_util.cpp
+@@ -88,7 +88,10 @@ static auto UserPaths = [] {
+     // bbport: the port keeps GPU caches where BB_GPU_USER_DIR points.
+     const char* port_dir = std::getenv("BB_GPU_USER_DIR");
+     auto user_dir = port_dir ? std::filesystem::path(port_dir) : std::filesystem::current_path() / PORTABLE_DIR;
+-    if (!std::filesystem::exists(user_dir)) {
++    if (port_dir && !std::filesystem::exists(user_dir)) {
++        // GRport: the folder the launcher names, created (Linux too: never shadPS4's own folder).
++        std::filesystem::create_directories(user_dir);
++    } else if (!std::filesystem::exists(user_dir)) {
+         // If it doesn't exist, use the standard path for the platform instead.
+         // NOTE: On Windows we currently just create the portable directory instead.
+ #ifdef __APPLE__
+@@ -111,7 +114,7 @@ static auto UserPaths = [] {
+     std::unordered_map<PathType, fs::path> paths;
+ 
+     const auto create_path = [&](PathType shad_path, const fs::path& new_path) {
+-        std::filesystem::create_directory(new_path);
++        std::filesystem::create_directories(new_path); // parents too (a new ~/.local/share)
+         paths.insert_or_assign(shad_path, new_path);
+     };
+ 
 diff --git a/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp b/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp
 index 5e27f22..8c8df8f 100644
 --- a/gpu/shadps4/core/libraries/gnmdriver/gnmdriver.cpp
