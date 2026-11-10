@@ -4,12 +4,11 @@ import tkinter as tk
 
 from grport import games, ini, patches, runtime, settings, shortcuts
 from grport.settings import (ASPECTS, DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RENDER_GRID,
-                             WINDOW_HEIGHTS, WINDOW_HEIGHTS_16_10, aspect_of, resolution_label, resolution_size)
+                             WINDOW_HEIGHTS, aspect_of, resolution_label, resolution_size)
 from grport.ui import theme
 
-def window_size_choices(aspect: str) -> list:
-    heights = WINDOW_HEIGHTS_16_10 if aspect == "16:10" else WINDOW_HEIGHTS
-    return [(f"{h}p", "4K" if h == 2160 else f"{h}p") for h in heights]
+WINDOW_SIZE_CHOICES = tuple((f"{h}p", {1440: "2K", 2160: "4K"}.get(h, f"{h}p"))
+                            for h in WINDOW_HEIGHTS)
 READBACK_CHOICES = (("off", "Off"), ("relaxed", "Relaxed"), ("precise", "Precise"))
 IN_GAME_NOTE = ("The Picture settings below are also in GRport's in-game menu: Insert (or "
                 "L3+R3 on a controller) changes them while you play.")
@@ -170,7 +169,7 @@ class SetupPage(tk.Frame):
         self.window_choice = theme.Segmented(row, app, WINDOW_CHOICES, self.set_window_mode)
         self.window_choice.pack(side="left")
         row = self._row(display, "Window size")
-        self.size_choice = theme.Segmented(row, app, (), self.set_window_size)
+        self.size_choice = theme.Segmented(row, app, WINDOW_SIZE_CHOICES, self.set_window_size)
         self.size_choice.pack(side="left")
         self.window_note = self._note(display, "")
         row = self._row(display, "Render")
@@ -298,9 +297,7 @@ class SetupPage(tk.Frame):
         self.window_choice.set(s.window_mode)
         aspect = aspect_of(g.resolution)
         windowed = s.window_mode == "window"
-        sizes = window_size_choices(aspect)
-        self.size_choice.set_choices(sizes)
-        for value, _ in sizes:
+        for value, _ in WINDOW_SIZE_CHOICES:
             self.size_choice.set_enabled(value, windowed)
         w, h = settings.window(s, g)
         self.size_choice.set(f"{h}p")

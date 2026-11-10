@@ -91,9 +91,8 @@ RENDER_GRID = {
     "32:9": ("Super ultrawide 32:9 3840x1080", "Super ultrawide 32:9 5120x1440",
              "Super ultrawide 32:9 7680x2160"),
 }
-# SETUP > Window size, by aspect ratio: heights; the width follows the render shape.
-WINDOW_HEIGHTS = (720, 900, 1080, 1440, 2160)
-WINDOW_HEIGHTS_16_10 = (800, 900, 1050, 1200, 1600, 2400)
+# SETUP > Window size: heights; the width follows the render shape (1200p is 1920x1200 on 16:10).
+WINDOW_HEIGHTS = (720, 900, 1080, 1200, 1440, 1600, 2160)
 
 
 def resolution_size(prefix: str) -> tuple:
