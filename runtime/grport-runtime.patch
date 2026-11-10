@@ -76,10 +76,18 @@ index 529ef05..5d46794 100644
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
 diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
-index 02b422e..fb731c8 100644
+index 02b422e..d614ad7 100644
 --- a/gpu/bbgpu.h
 +++ b/gpu/bbgpu.h
-@@ -34,11 +34,31 @@ void bbgpu_dump_guest_writes(void *ucontext);
+@@ -2,6 +2,7 @@
+  * GnmDriver, VideoOut and kernel event queues, adapted to the native loader. */
+ #ifndef BBGPU_H
+ #define BBGPU_H
++#include <stddef.h>
+ #include <stdint.h>
+ #ifdef __cplusplus
+ extern "C" {
+@@ -34,11 +35,32 @@ void bbgpu_dump_guest_writes(void *ucontext);
   * no window exists; poll returns 0 typing, 1 confirmed, 2 cancelled (UTF-8 text). */
  int bbgpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
  int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
@@ -97,8 +105,9 @@ index 02b422e..fb731c8 100644
 +void bbgpu_save_list_cancel(void);
 +/* A short message on screen ("Game saved"), shown for a few seconds. */
 +void bbgpu_notify(const char *text_utf8);
-+/* "Trophy unlocked": top left of the screen for 5 seconds. */
-+void bbgpu_notify_trophy(const char *text_utf8);
++/* A trophy card in the top left for about 6 seconds: name, grade ("bronze", "silver", "gold",
++ * "platinum" or ""), the icon PNG from the trophy file (may be NULL). */
++void bbgpu_trophy(int id, const char *name_utf8, const char *grade, const unsigned char *png, size_t png_size);
  /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
  int bbgpu_overlay_captures_input(void);
  /* 1 while the game should be silent: bbport.ini mute_unfocused is on and the window does not
@@ -8140,7 +8149,7 @@ index 8d41b8c..d34abcf 100644
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
-index 3a73ecf..454c8e0 100644
+index 3a73ecf..315b936 100644
 --- a/gpu/shim/bbgpu.cpp
 +++ b/gpu/shim/bbgpu.cpp
 @@ -45,6 +45,7 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
@@ -8169,7 +8178,7 @@ index 3a73ecf..454c8e0 100644
      const s32 width = config->width, height = config->height;
      g_window_thread = std::thread([title, width, height] {
          Common::SetCurrentThreadName("bb:window");
-@@ -351,6 +352,39 @@ extern "C" int bbgpu_audio_muted(void) {
+@@ -351,6 +352,40 @@ extern "C" int bbgpu_audio_muted(void) {
      return g_window && BbSettings::Get().mute_unfocused && !g_window->IsFocused() ? 1 : 0;
  }
  
@@ -8202,32 +8211,39 @@ index 3a73ecf..454c8e0 100644
 +    BbOverlay::Notify(text ? text : "");
 +}
 +
-+extern "C" void bbgpu_notify_trophy(const char* text) {
-+    BbOverlay::NotifyTrophy(text ? text : "");
++extern "C" void bbgpu_trophy(int id, const char* name, const char* grade, const unsigned char* png,
++                             size_t png_size) {
++    BbOverlay::Trophy(id, name ? name : "", grade ? grade : "", png, png_size);
 +}
 +
  extern "C" int bbgpu_text_input_begin(const char* initial, const char* prompt) {
      if (!g_window) return 0;
      g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..c17d444 100644
+index 651b74e..7c6386a 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
-@@ -9,10 +9,13 @@
+@@ -9,11 +9,19 @@
  #include <cmath>
  #include <cstdio>
  #include <cstdlib>
 +#include <cstring>
 +#include <ctime>
++#include <deque>
  #include <mutex>
++#include <unordered_map>
++#include <vector>
  
  #include <SDL3/SDL.h>
  #include "bbport_settings.h"
++#include "../../third_party/stb/stb_image.h" // declarations only: built in gpu/shadps4/common/stb.cpp
 +#include "bbport_toggles.h"
  #include "imgui.h"
++#include "imgui_internal.h"
  #include "imgui_impl_vulkan.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
-@@ -59,6 +62,29 @@ bool text_entry_active = false;
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+@@ -59,6 +67,28 @@ bool text_entry_active = false;
  std::string text_entry_prompt, text_entry_text;
  float base_scale = 1.0f;
  
@@ -8246,7 +8262,6 @@ index 651b74e..c17d444 100644
 +std::atomic<s64> input_hold_until_ms{0};
 +std::string notify_text;
 +std::atomic<s64> notify_until_ms{0};
-+bool notify_corner = false; // a trophy: top left as on a PS4
 +
 +s64 NowMs() {
 +    return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -8257,7 +8272,7 @@ index 651b74e..c17d444 100644
  // Present rate for the FPS counter.
  std::chrono::steady_clock::time_point last_present{};
  float frame_ms_avg = 0.0f, last_present_ms = 0.0f;
-@@ -187,279 +213,83 @@ void Menu() {
+@@ -187,279 +217,83 @@ void Menu() {
          ImVec2(0.0f, 0.0f),
          ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
      bool keep_open = true;
@@ -8520,7 +8535,8 @@ index 651b74e..c17d444 100644
 +            s.debug_view = show_motion ? BbSettings::DebugMotion : BbSettings::DebugNone;
          }
 -        ImGui::EndCombo();
--    }
++        ImGui::EndDisabled();
+     }
 -    Hint("On: output and presets change without restarting, while game post-processing stays at 1080p. Off: the scene is patched to the preset resolution at startup. Auto enables the live path on capable discrete GPUs. Changes apply after restarting the game.");
 -    ImGui::SeparatorText("Game effects (restart required)");
 -    static const char* lods[] = {"Highest (-2)", "Original", "Lower (1)", "Lowest (2)"};
@@ -8534,8 +8550,6 @@ index 651b74e..c17d444 100644
 -            if (ImGui::Selectable(lods[i], i == lod_index)) {
 -                Store(s.model_lod, lod_values[i], true);
 -            }
-+        ImGui::EndDisabled();
-+    }
 +    ImGui::SeparatorText("Upscaling");
 +    static const char* scalers[] = {"Off", "FSR 1"};
 +    const int fsr1 = s.fsr1 ? 1 : 0;
@@ -8595,7 +8609,7 @@ index 651b74e..c17d444 100644
      if (ImGui::Button("Close")) {
          keep_open = false;
      }
-@@ -481,8 +311,9 @@ void Menu() {
+@@ -481,8 +315,9 @@ void Menu() {
      if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
          quit_armed = false;
      }
@@ -8606,7 +8620,7 @@ index 651b74e..c17d444 100644
      ImGui::End();
      if (!keep_open) {
          SetOpen(false);
-@@ -513,6 +344,148 @@ void TextEntryBox() {
+@@ -513,6 +348,351 @@ void TextEntryBox() {
      ImGui::End();
  }
  
@@ -8703,15 +8717,9 @@ index 651b74e..c17d444 100644
 +
 +void NotifyBox() {
 +    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-+    if (notify_corner) {
-+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.03f,
-+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.05f),
-+                                ImGuiCond_Always, ImVec2(0.0f, 0.0f));
-+    } else {
-+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.74f),
-+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-+    }
++    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
++                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.74f),
++                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 +    ImGui::SetNextWindowBgAlpha(0.85f);
 +    ImGui::Begin("##notify", nullptr,
 +                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
@@ -8721,6 +8729,215 @@ index 651b74e..c17d444 100644
 +    ImGui::TextUnformatted(notify_text.c_str());
 +    ImGui::SetWindowFontScale(1.0f);
 +    ImGui::End();
++}
++
++// ---- Trophy card -------------------------------------------------------------------------
++// A trophy unlock: a card in the top left with the trophy's own icon (from the game's trophy
++// file) and GRport's own grade emblem, a gravity orb with orbits (more for higher grades), on
++// a starry night panel like Kat's cape. Cards queue up when several trophies unlock at once.
++struct TrophyCard {
++    std::string name, grade;
++    int id = -1;
++    std::vector<unsigned char> rgba;
++    int width = 0, height = 0;
++    s64 start_ms = 0;
++};
++std::deque<TrophyCard> trophy_cards; // guarded by imgui_mutex; the front one is on screen
++std::atomic<bool> trophy_pending{false};
++std::unordered_map<int, ImTextureData*> trophy_textures; // one icon per trophy id, for the run
++constexpr s64 kCardIn = 380, kCardHold = 5600, kCardOut = 520;
++
++struct GradeLook {
++    ImVec4 main, light, dark;
++    int orbits;
++    const char* label;
++};
++GradeLook LookOf(const std::string& grade) {
++    if (grade == "platinum")
++        return {{0.72f, 0.86f, 1.00f, 1}, {1.00f, 1.00f, 1.00f, 1}, {0.22f, 0.27f, 0.55f, 1}, 3,
++                "Platinum trophy"};
++    if (grade == "gold")
++        return {{0.95f, 0.75f, 0.24f, 1}, {1.00f, 0.93f, 0.60f, 1}, {0.45f, 0.28f, 0.04f, 1}, 3,
++                "Gold trophy"};
++    if (grade == "silver")
++        return {{0.78f, 0.81f, 0.86f, 1}, {0.96f, 0.98f, 1.00f, 1}, {0.30f, 0.33f, 0.40f, 1}, 2,
++                "Silver trophy"};
++    if (grade == "bronze")
++        return {{0.80f, 0.50f, 0.29f, 1}, {0.96f, 0.72f, 0.52f, 1}, {0.36f, 0.18f, 0.08f, 1}, 1,
++                "Bronze trophy"};
++    return {{0.75f, 0.70f, 0.95f, 1}, {0.95f, 0.92f, 1.00f, 1}, {0.25f, 0.20f, 0.45f, 1}, 1,
++            "Trophy"};
++}
++ImU32 Col(const ImVec4& c, float alpha) {
++    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, c.w * alpha));
++}
++float Ease(float t) { // ease-out cubic
++    t = std::clamp(t, 0.0f, 1.0f);
++    return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
++}
++// A four-pointed twinkle.
++void Twinkle(ImDrawList* d, ImVec2 c, float r, ImU32 col) {
++    d->AddTriangleFilled({c.x, c.y - r}, {c.x + r * 0.22f, c.y}, {c.x - r * 0.22f, c.y}, col);
++    d->AddTriangleFilled({c.x, c.y + r}, {c.x - r * 0.22f, c.y}, {c.x + r * 0.22f, c.y}, col);
++    d->AddTriangleFilled({c.x - r, c.y}, {c.x, c.y - r * 0.22f}, {c.x, c.y + r * 0.22f}, col);
++    d->AddTriangleFilled({c.x + r, c.y}, {c.x, c.y + r * 0.22f}, {c.x, c.y - r * 0.22f}, col);
++}
++
++// The grade emblem: a shaded gravity orb with tilted orbits (bronze 1, silver 2, gold 3 with a
++// twinkle, platinum 3 colour-shifting orbits with two twinkles), a body travelling on each.
++void Emblem(ImDrawList* d, ImVec2 c, float r, const GradeLook& look, const std::string& grade,
++            float t, float alpha) {
++    const bool platinum = grade == "platinum";
++    d->AddCircleFilled(c, r * 2.0f, Col(look.main, 0.10f * alpha), 40);
++    d->AddCircleFilled(c, r * 1.45f, Col(look.main, 0.16f * alpha), 40);
++    auto ring = [&](int i) {
++        return ImVec2(r * (1.90f + 0.32f * float(i)), r * (0.60f + 0.14f * float(i)));
++    };
++    auto tilt = [&](int i) { return -0.42f + 0.62f * float(i); };
++    auto ring_col = [&](int i, float a) {
++        if (!platinum)
++            return Col(i == 0 ? look.light : look.main, a * alpha);
++        ImVec4 hue{0, 0, 0, 1};
++        ImGui::ColorConvertHSVtoRGB(std::fmod(t * 0.18f + float(i) * 0.33f, 1.0f), 0.38f, 1.0f,
++                                    hue.x, hue.y, hue.z);
++        return Col(hue, a * alpha);
++    };
++    // The back halves of the orbits pass behind the orb: drawn first, dimmer.
++    for (int i = 0; i < look.orbits; ++i)
++        d->AddEllipse(c, ring(i), ring_col(i, 0.35f), tilt(i), 64, r * 0.11f);
++    d->AddCircleFilled(c, r, Col(look.dark, alpha), 40);
++    d->AddCircleFilled({c.x - r * 0.10f, c.y - r * 0.10f}, r * 0.86f, Col(look.main, alpha), 40);
++    d->AddCircleFilled({c.x - r * 0.30f, c.y - r * 0.32f}, r * 0.42f, Col(look.light, 0.85f * alpha), 32);
++    d->AddCircleFilled({c.x - r * 0.38f, c.y - r * 0.40f}, r * 0.16f, Col({1, 1, 1, 1}, 0.9f * alpha), 16);
++    for (int i = 0; i < look.orbits; ++i) {
++        const ImVec2 rad = ring(i);
++        const float rot = tilt(i), cr = std::cos(rot), sr = std::sin(rot);
++        constexpr int n = 32;
++        ImVec2 pts[n + 1];
++        for (int k = 0; k <= n; ++k) { // the lower half faces the viewer
++            const float a = IM_PI * float(k) / float(n);
++            const float x = rad.x * std::cos(a), y = rad.y * std::sin(a);
++            pts[k] = {c.x + x * cr - y * sr, c.y + x * sr + y * cr};
++        }
++        d->AddPolyline(pts, n + 1, ring_col(i, 0.95f), 0, r * 0.12f);
++        const float a = t * (1.9f - 0.35f * float(i)) + float(i) * 2.1f;
++        const float x = rad.x * std::cos(a), y = rad.y * std::sin(a);
++        const ImVec2 body{c.x + x * cr - y * sr, c.y + x * sr + y * cr};
++        if (std::sin(a) >= 0.0f || std::hypot(body.x - c.x, body.y - c.y) > r)
++            d->AddCircleFilled(body, r * 0.17f, ring_col(i, 1.0f), 16);
++    }
++    if (grade == "gold" || platinum) {
++        const float tw = 0.55f + 0.45f * std::sin(t * 5.0f);
++        Twinkle(d, {c.x + r * 0.95f, c.y - r * 1.05f}, r * 0.55f * tw, Col({1, 1, 1, 1}, 0.9f * alpha));
++    }
++    if (platinum) {
++        const float tw = 0.55f + 0.45f * std::sin(t * 4.0f + 2.0f);
++        Twinkle(d, {c.x - r * 1.25f, c.y + r * 0.95f}, r * 0.40f * tw, Col({1, 1, 1, 1}, 0.8f * alpha));
++    }
++}
++
++void TrophyCardBox(TrophyCard& card, s64 now) {
++    const float s = base_scale;
++    const ImGuiViewport* vp = ImGui::GetMainViewport();
++    ImDrawList* d = ImGui::GetForegroundDrawList();
++    const GradeLook look = LookOf(card.grade);
++    const s64 age = now - card.start_ms;
++    const float in = Ease(float(age) / float(kCardIn));
++    const float out = age > kCardIn + kCardHold
++                          ? 1.0f - std::clamp(float(age - kCardIn - kCardHold) / float(kCardOut), 0.0f, 1.0f)
++                          : 1.0f;
++    const float alpha = std::min(in, out);
++    const float t = float(age) / 1000.0f;
++    const float w = 600.0f * s, h = 116.0f * s;
++    const float x = vp->WorkPos.x + 36.0f * s - (1.0f - in) * (w + 60.0f * s);
++    const float y = vp->WorkPos.y + 36.0f * s;
++    const ImVec2 p0{x, y}, p1{x + w, y + h};
++    const float round = 14.0f * s;
++
++    // Panel: a night-sky gradient with twinkling stars, a grade-coloured edge and accent.
++    d->AddRectFilled({x + 4 * s, y + 6 * s}, {p1.x + 4 * s, p1.y + 6 * s}, Col({0, 0, 0, 1}, 0.35f * alpha), round);
++    d->AddRectFilled(p0, p1, Col({0.07f, 0.05f, 0.14f, 1}, 0.94f * alpha), round);
++    d->PushClipRect(p0, p1, true);
++    d->AddRectFilledMultiColor({x + round * 0.5f, y}, {p1.x - round * 0.5f, p1.y},
++                               Col({0.20f, 0.10f, 0.32f, 1}, 0.0f), Col({0.12f, 0.16f, 0.36f, 1}, 0.55f * alpha),
++                               Col({0.12f, 0.16f, 0.36f, 1}, 0.55f * alpha), Col({0.20f, 0.10f, 0.32f, 1}, 0.0f));
++    for (int i = 0; i < 26; ++i) { // fixed pseudo-random stars, each twinkling at its own pace
++        const unsigned hsh = (unsigned(i) * 2654435761u) ^ (unsigned(card.id + 7) * 40503u);
++        const float sx = x + float(hsh % 1000u) / 1000.0f * w;
++        const float sy = y + float((hsh / 1000u) % 1000u) / 1000.0f * h;
++        const float tw = 0.35f + 0.65f * (0.5f + 0.5f * std::sin(t * (1.3f + float(i % 5) * 0.45f) + float(i)));
++        if (i % 7 == 0)
++            Twinkle(d, {sx, sy}, 4.8f * s, Col({1, 1, 1, 1}, 0.55f * tw * alpha));
++        else
++            d->AddCircleFilled({sx, sy}, 1.0f * s, Col({0.85f, 0.88f, 1, 1}, 0.55f * tw * alpha), 8);
++    }
++    if (age < 1400) { // a light sweep across as the card lands
++        const float k = float(age) / 1400.0f, sx = x - 120 * s + k * (w + 240 * s);
++        d->AddQuadFilled({sx, y}, {sx + 46 * s, y}, {sx - 24 * s, p1.y}, {sx - 70 * s, p1.y},
++                         Col({1, 1, 1, 1}, 0.10f * alpha));
++    }
++    d->PopClipRect();
++    d->AddRect(p0, p1, Col(look.main, 0.75f * alpha), round, 0, 1.6f * s);
++    d->AddRectFilled({x, y + round}, {x + 5 * s, p1.y - round}, Col(look.main, alpha));
++
++    // The trophy's own icon.
++    const float icon = 84.0f * s, ix = x + 18 * s, iy = y + (h - icon) * 0.5f;
++    ImTextureData*& tex = trophy_textures[card.id];
++    if (!tex && !card.rgba.empty()) {
++        tex = IM_NEW(ImTextureData)();
++        tex->Create(ImTextureFormat_RGBA32, card.width, card.height);
++        std::memcpy(tex->GetPixels(), card.rgba.data(), card.rgba.size());
++        tex->UseColors = true;
++        ImGui::RegisterUserTexture(tex);
++    }
++    if (tex) {
++        ImTextureRef ref; // a managed texture: ImTextureRef(tex) would take the pointer as a Vulkan handle
++        ref._TexData = tex;
++        d->AddImageRounded(ref, {ix, iy}, {ix + icon, iy + icon}, {0, 0}, {1, 1},
++                           Col({1, 1, 1, 1}, alpha), 9 * s);
++    } else {
++        d->AddRectFilled({ix, iy}, {ix + icon, iy + icon}, Col(look.dark, alpha), 9 * s);
++    }
++    d->AddRect({ix, iy}, {ix + icon, iy + icon}, Col(look.light, 0.9f * alpha), 9 * s, 0, 2.0f * s);
++
++    // Text: what happened, the trophy's name (shortened to fit), its grade.
++    ImFont* font = ImGui::GetFont();
++    // The emblem's widest orbit reaches 2.54 radii from its centre: kept inside the card.
++    const float er = 27.0f * s, ecx = p1.x - 18 * s - er * 2.6f;
++    const float tx = ix + icon + 18 * s, room = ecx - er * 2.7f - tx;
++    d->AddText(font, 15 * s, {tx, y + 20 * s}, Col(look.light, alpha), "TROPHY EARNED");
++    const float name_size = 25 * s;
++    auto width = [&](const std::string& text) {
++        return font->CalcTextSizeA(name_size, FLT_MAX, 0, text.c_str()).x;
++    };
++    std::string name = card.name;
++    if (width(name) > room) {
++        while (!name.empty() && width(name + "...") > room) {
++            name.pop_back();
++            while (!name.empty() && (static_cast<unsigned char>(name.back()) & 0xC0) == 0x80)
++                name.pop_back(); // never cut inside a UTF-8 character
++        }
++        name += "...";
++    }
++    d->AddText(font, name_size, {tx, y + 42 * s}, Col({1, 1, 1, 1}, alpha), name.c_str());
++    d->AddText(font, 15 * s, {tx, y + 78 * s}, Col({0.80f, 0.80f, 0.90f, 1}, 0.9f * alpha), look.label);
++
++    Emblem(d, {ecx, y + h * 0.5f}, er, look, card.grade, t, alpha);
++}
++
++void TrophyCards() {
++    if (trophy_cards.empty())
++        return;
++    const s64 now = NowMs();
++    TrophyCard& card = trophy_cards.front();
++    if (!card.start_ms)
++        card.start_ms = now;
++    if (now - card.start_ms > kCardIn + kCardHold + kCardOut) {
++        trophy_cards.pop_front();
++        trophy_pending = !trophy_cards.empty();
++        return;
++    }
++    TrophyCardBox(card, now);
 +}
 +
 +void FinishSaveList(int state) {
@@ -8755,7 +8972,7 @@ index 651b74e..c17d444 100644
  void FpsCounter() {
      const ImGuiViewport* viewport = ImGui::GetMainViewport();
      const float pad = 12.0f * base_scale;
-@@ -524,14 +497,19 @@ void FpsCounter() {
+@@ -524,14 +704,19 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -8783,7 +9000,7 @@ index 651b74e..c17d444 100644
      ImGui::End();
  }
  
-@@ -548,14 +526,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +733,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -8840,13 +9057,13 @@ index 651b74e..c17d444 100644
  
      ImFontConfig font_config;
      font_config.FontDataOwnedByAtlas = false;
-@@ -703,11 +721,188 @@ bool HandleEvent(const SDL_Event& event) {
+@@ -703,11 +928,201 @@ bool HandleEvent(const SDL_Event& event) {
  }
  
  bool Visible() {
 -    return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps);
 +    return initialized && (menu_open || text_entry_active || save_list_shown ||
-+                           NowMs() < notify_until_ms || BbSettings::Get().show_fps);
++                           NowMs() < notify_until_ms || trophy_pending || BbSettings::Get().show_fps);
  }
  
  bool CapturesInput() {
@@ -9016,22 +9233,35 @@ index 651b74e..c17d444 100644
 +    }
 +}
 +
++void Trophy(int id, const std::string& name, const std::string& grade, const unsigned char* png,
++            std::size_t png_size) {
++    TrophyCard card;
++    card.id = id;
++    card.name = name.empty() ? "Trophy " + std::to_string(id) : name;
++    card.grade = grade;
++    int w = 0, h = 0, channels = 0;
++    unsigned char* pixels =
++        png && png_size ? stbi_load_from_memory(png, int(png_size), &w, &h, &channels, 4) : nullptr;
++    if (pixels) {
++        card.rgba.assign(pixels, pixels + std::size_t(w) * std::size_t(h) * 4);
++        card.width = w;
++        card.height = h;
++        stbi_image_free(pixels);
++    }
++    std::scoped_lock lock{imgui_mutex};
++    if (trophy_cards.size() < 16)
++        trophy_cards.push_back(std::move(card));
++    trophy_pending = true;
++}
++
 +void Notify(const std::string& text) {
 +    std::scoped_lock lock{imgui_mutex};
 +    notify_text = text;
-+    notify_corner = false;
 +    notify_until_ms = NowMs() + 2500;
-+}
-+
-+void NotifyTrophy(const std::string& text) {
-+    std::scoped_lock lock{imgui_mutex};
-+    notify_text = text;
-+    notify_corner = true;
-+    notify_until_ms = NowMs() + 5000;
  }
  
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
-@@ -776,6 +971,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+@@ -776,6 +1191,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
      if (text_entry_active) {
          TextEntryBox();
      }
@@ -9041,11 +9271,12 @@ index 651b74e..c17d444 100644
 +    if (NowMs() < notify_until_ms) {
 +        NotifyBox();
 +    }
++    TrophyCards();
      ImGui::Render();
  
      const vk::RenderingAttachmentInfo attachment{
 diff --git a/gpu/shim/bbport_overlay.h b/gpu/shim/bbport_overlay.h
-index 86ef250..10bed9e 100644
+index 86ef250..a114c5c 100644
 --- a/gpu/shim/bbport_overlay.h
 +++ b/gpu/shim/bbport_overlay.h
 @@ -6,6 +6,7 @@
@@ -9056,7 +9287,7 @@ index 86ef250..10bed9e 100644
  #include "common/types.h"
  #include "video_core/renderer_vulkan/vk_common.h"
  
-@@ -42,4 +43,23 @@ bool CapturesInput();
+@@ -42,4 +43,24 @@ bool CapturesInput();
  /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text);
  
@@ -9076,8 +9307,9 @@ index 86ef250..10bed9e 100644
 +
 +/// A short message at the bottom of the screen for a few seconds ("Game saved").
 +void Notify(const std::string& text);
-+// A trophy unlock: top left as on a PS4, for 5 seconds.
-+void NotifyTrophy(const std::string& text);
++// A trophy unlock card: its name, grade ("bronze"... or ""), and its icon PNG (may be empty).
++void Trophy(int id, const std::string& name, const std::string& grade, const unsigned char* png,
++            std::size_t png_size);
 +
  } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
@@ -16555,7 +16787,7 @@ index 9a16a9a..9f6cbc3 100644
  void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
  
 diff --git a/src/runtime_services.c b/src/runtime_services.c
-index e75ed89..4ea061e 100644
+index e75ed89..2b2b160 100644
 --- a/src/runtime_services.c
 +++ b/src/runtime_services.c
 @@ -40,6 +40,8 @@
@@ -16816,12 +17048,13 @@ index e75ed89..4ea061e 100644
      if (!bbgpu_text_input_begin(start,prompt[0] ? prompt : "Text")) ime_complete(0,start);
      else printf("Runtime: ImeDialog opened: shown on screen; keyboard Enter or Cross accepts, Esc or Circle cancels\n");
      return 0;
-@@ -334,19 +538,45 @@ static ABI int32_t ime_result(uint32_t *result) {
+@@ -334,19 +538,92 @@ static ABI int32_t ime_result(uint32_t *result) {
  }
  static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
  
 -/* ---- Trophies: accepted locally, recorded in the log ---- */
 +/* ---- Trophies: kept locally (runtime_trophy.c), also recorded in the log ---- */
++static void trophy_popup(int32_t id);
  static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
 -    (void)user; (void)label; (void)options;
 +    (void)label; (void)options;
@@ -16829,28 +17062,74 @@ index e75ed89..4ea061e 100644
 -    *ctx=new_id(); return 0;
 +    *ctx=new_id();
 +    runtime_trophy_context(*ctx,user);
++    /* BB_TROPHY_TEST=0,1,24: shows those trophies' cards once (nothing is earned), to check
++     * how they look. */
++    static int tested;
++    const char *test=getenv("BB_TROPHY_TEST");
++    if (test && *test && !tested) {
++        tested=1;
++        for (const char *p=test;*p;) {
++            char *end;
++            long id=strtol(p,&end,10);
++            if (end==p) break;
++            if (id>=0 && id<RUNTIME_TROPHY_IDS) trophy_popup((int32_t)id);
++            p=*end==',' ? end+1 : end;
++        }
++    }
 +    return 0;
  }
  static ABI int32_t trophy_handle(int32_t *handle) { if (!handle) return TROPHY_INVALID; *handle=new_id(); return 0; }
  static ABI int32_t trophy_register(int32_t ctx,int32_t handle,uint64_t options) { (void)ctx; (void)handle; (void)options; return 0; }
-+/* The pop-up names the trophy from <user>/trophy-names.txt ("id<TAB>grade<TAB>name" lines,
++/* The trophy's icon, TROP<id>.PNG in the game's trophy file (sce_sys/trophy/trophy00.trp:
++ * big-endian header, then 0x40-byte entries of name, offset, size); NULL when not found. */
++static unsigned char *trophy_icon(int32_t id,size_t *size) {
++    char path[4200], want[16];
++    const char *app=runtime_file_app_dir();
++    *size=0;
++    if (!app || !*app) return NULL;
++    snprintf(path,sizeof(path),"%s/sce_sys/trophy/trophy00.trp",app);
++    snprintf(want,sizeof(want),"TROP%03d.PNG",(int)id);
++    FILE *f=fopen(path,"rb");
++    if (!f) return NULL;
++    unsigned char head[0x60], entry[0x40], *png=NULL;
++    if (fread(head,1,sizeof head,f)==sizeof head &&
++        head[0]==0xDC && head[1]==0xA2 && head[2]==0x4D && head[3]==0x00) {
++        const uint32_t count=(uint32_t)head[0x10]<<24|(uint32_t)head[0x11]<<16|(uint32_t)head[0x12]<<8|head[0x13];
++        const uint32_t esize=(uint32_t)head[0x14]<<24|(uint32_t)head[0x15]<<16|(uint32_t)head[0x16]<<8|head[0x17];
++        for (uint32_t i=0;i<count && i<4096 && esize>=0x30 && esize<=sizeof entry;++i) {
++            if (fseek(f,0x60+(long)i*(long)esize,SEEK_SET) || fread(entry,1,esize,f)!=esize) break;
++            if (strncmp((const char *)entry,want,32)) continue;
++            uint64_t off=0, len=0;
++            for (int k=0;k<8;++k) { off=off<<8|entry[32+k]; len=len<<8|entry[40+k]; }
++            if (len && len<(8u<<20) && (png=malloc((size_t)len)) &&
++                (fseek(f,(long)off,SEEK_SET) || fread(png,1,(size_t)len,f)!=(size_t)len)) { free(png); png=NULL; }
++            if (png) *size=(size_t)len;
++            break;
++        }
++    }
++    fclose(f);
++    return png;
++}
++/* The card names the trophy from <user>/trophy-names.txt ("id<TAB>grade<TAB>name" lines,
 + * written by the launcher: the game's own list is encrypted), else just its number. */
 +static void trophy_popup(int32_t id) {
-+    char path[600], line[512], text[600];
-+    snprintf(text,sizeof(text),"Trophy unlocked (#%d)",(int)id);
++    char path[600], line[512], name[400]="", grade[16]="";
 +    snprintf(path,sizeof(path),"%s/trophy-names.txt",runtime_file_user_dir());
 +    FILE *f=fopen(path,"r");
 +    while (f && fgets(line,sizeof(line),f)) {
-+        char *grade=strchr(line,'\t'), *name=grade ? strchr(grade+1,'\t') : NULL;
-+        if (!name || atoi(line)!=id) continue;
-+        *grade++=0; *name++=0;
-+        name[strcspn(name,"\r\n")]=0;
-+        if (*grade>='a' && *grade<='z') *grade=(char)(*grade-32);
-+        snprintf(text,sizeof(text),"Trophy unlocked: %s%s%s%s",name,*grade ? " (" : "",grade,*grade ? ")" : "");
++        char *g=strchr(line,'\t'), *n=g ? strchr(g+1,'\t') : NULL;
++        if (!n || atoi(line)!=id) continue;
++        *g++=0; *n++=0;
++        n[strcspn(n,"\r\n")]=0;
++        snprintf(grade,sizeof(grade),"%s",g);
++        snprintf(name,sizeof(name),"%s",n);
 +        break;
 +    }
 +    if (f) fclose(f);
-+    bbgpu_notify_trophy(text);
++    size_t size;
++    unsigned char *png=trophy_icon(id,&size);
++    bbgpu_trophy((int)id,name,grade,png,size);
++    free(png);
 +}
  static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *platinum) {
 -    (void)ctx; (void)handle;
@@ -16867,7 +17146,7 @@ index e75ed89..4ea061e 100644
          char path[600];
          snprintf(path,sizeof(path),"%s/trophies.log",runtime_file_user_dir());
          pthread_mutex_lock(&lock);
-@@ -355,7 +585,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
+@@ -355,7 +632,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
          pthread_mutex_unlock(&lock);
      }
      printf("Runtime: trophy %d unlocked\n",id);
@@ -16876,7 +17155,7 @@ index e75ed89..4ea061e 100644
      return 0;
  }
  static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
-@@ -364,8 +594,24 @@ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,voi
+@@ -364,8 +641,24 @@ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,voi
      if (data) { uint64_t size; memcpy(&size,data,8); memset((char *)data+8,0,size>8 && size<4096 ? size-8 : 0); }
      return 0;
  }
@@ -16902,7 +17181,7 @@ index e75ed89..4ea061e 100644
  }
  
  /* ---- PlayGo: fully installed package ---- */
-@@ -513,6 +759,58 @@ static const RuntimeExport exports[]={
+@@ -513,6 +806,58 @@ static const RuntimeExport exports[]={
      {"sceNpScoreGetRankingByNpIdPcId",np_signed_out}, {"sceNpScoreGetRankingByRange",np_signed_out},
      {"sceNpScoreRecordGameData",np_signed_out}, {"sceNpScoreRecordScore",np_signed_out},
      {"sceNpScoreSetPlayerCharacterId",ok_void},
@@ -16961,7 +17240,7 @@ index e75ed89..4ea061e 100644
      {"sceVoiceCreatePort",voice_port}, {"sceVoiceDeletePort",ok_void},
      {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
      {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
-@@ -527,6 +825,8 @@ static const RuntimeExport exports[]={
+@@ -527,6 +872,8 @@ static const RuntimeExport exports[]={
      {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
      {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
      {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},
