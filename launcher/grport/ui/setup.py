@@ -31,6 +31,9 @@ RESOLUTION_NOTE = ("Render: the size the game draws at, {size}, in every window 
                    "gets black bars. Pick your screen's size for a sharp picture, a bigger one for "
                    "supersampling; bigger sizes need a faster GPU and more video memory. The next "
                    "PLAY prepares the game again (about a minute).")
+# Render's buttons: the size steps of every aspect ratio (ultrawide starts at 1080p); the note
+# names the exact size (1080p is 1920x1200 on 16:10, 2584x1080 on 21:9).
+RENDER_STEPS = ("720p", "1080p", "2K", "4K")
 OLD_RESOLUTION_NOTE = (" Now {label}, chosen in an older GRport; it keeps working until you pick "
                        "a Render size.")
 # The in-game menu's picture settings (grport.ini, read by the runtime at start): key, label,
@@ -302,8 +305,8 @@ class SetupPage(tk.Frame):
         w, h = settings.window(s, g)
         self.size_choice.set(f"{h}p")
         self.window_note.configure(text=WINDOW_NOTE + " " + WINDOW_SIZE_NOTE.format(size=f"{w}x{h}"))
-        self.render_choice.set_choices([(p, "{}x{}".format(*resolution_size(p)))
-                                        for p in RENDER_GRID[aspect]])
+        steps = RENDER_STEPS[-len(RENDER_GRID[aspect]):]
+        self.render_choice.set_choices(list(zip(RENDER_GRID[aspect], steps)))
         self.render_choice.set(g.resolution)
         self.aspect_choice.set(aspect)
         note = RESOLUTION_NOTE.format(size="{}x{}".format(*resolution_size(g.resolution)),
