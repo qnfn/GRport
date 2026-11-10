@@ -9,7 +9,35 @@ _CMD = (
 )
 
 
+def _gpu_name_linux() -> "str | None":
+    """The first GPU vulkaninfo lists (the AppImage sets BB_VULKANINFO), else lspci's."""
+    import os
+    import re
+    tool = os.environ.get("BB_VULKANINFO") or "vulkaninfo"
+    try:
+        r = subprocess.run([tool, "--summary"], capture_output=True, text=True, timeout=10)
+        names = re.findall(r"deviceName\s*=\s*(.+)", r.stdout)
+        names = [n.strip() for n in names if "llvmpipe" not in n.lower()]
+        if names:
+            return names[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        r = subprocess.run(["lspci", "-mm"], capture_output=True, text=True, timeout=10)
+        for line in r.stdout.splitlines():
+            if "VGA" in line or "3D controller" in line or "Display controller" in line:
+                fields = re.findall(r'"([^"]*)"', line)
+                if len(fields) >= 3:
+                    return f"{fields[1]} {fields[2]}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def gpu_name() -> str | None:
+    import os
+    if os.name != "nt":
+        return _gpu_name_linux()
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",

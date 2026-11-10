@@ -1,5 +1,27 @@
+diff --git a/build.sh b/build.sh
+index 70c0c04..9baf58a 100644
+--- a/build.sh
++++ b/build.sh
+@@ -43,14 +43,14 @@ fi
+ if [[ -z ${CC:-} ]]; then echo 'Install GCC/Clang or set CC.' >&2; exit 1; fi
+ # Dependencies come from pkg-config (Vulkan loader/headers, SDL3). On NixOS the
+ # environment is provided by shell.nix; re-enter it automatically if needed.
+-if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
++if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 freetype2 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
+     if [[ -z ${BB_IN_NIX_SHELL:-} ]] && command -v nix-shell >/dev/null; then
+         exec env BB_IN_NIX_SHELL=1 nix-shell shell.nix --run "bash build.sh $*"
+     fi
+     echo 'Need pkg-config with vulkan and sdl3, cmake and ninja (see shell.nix).' >&2; exit 1
+ fi
+-read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3)"
+-read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3)"
++read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3 freetype2)"
++read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3 freetype2)"
+ # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libbbgpu.so.
+ # BB_PGO: generate (instrumented build that writes pgo/ while the game runs), use, off.
+ # Default: use the profile in pgo/ when there is one. BB_LTO=OFF disables link-time optimization.
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
-index 529ef05..e04e771 100644
+index 529ef05..5d46794 100644
 --- a/gpu/CMakeLists.txt
 +++ b/gpu/CMakeLists.txt
 @@ -111,6 +111,10 @@ function(add_host_shader FILENAME SHADER_NAME)
@@ -13,7 +35,29 @@ index 529ef05..e04e771 100644
  add_host_shader(ms_image_blit.frag ms_image_blit_frag)
  add_host_shader(ms_image_blit.frag ms_image_blit_msaa_frag SRC_MSAA=1)
  add_host_shader(fault_buffer_process.comp fault_buffer_process_comp)
-@@ -274,7 +278,9 @@ if (WIN32)
+@@ -200,15 +204,18 @@ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_Z
+ # verification failed" (error 10) for The Hunter's Dream on some PCs.
+ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+ target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
++# UPnP (net_upnp.cpp) on every system: static on Windows, the system's library on Linux.
++find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
++target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+ if (WIN32)
+     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
+     target_include_directories(bbnet PRIVATE third_party/wepoll)
+-    find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
+     find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
+-    target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+     target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
+-    target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
++else()
++    find_library(MINIUPNPC_LIBRARY NAMES miniupnpc REQUIRED)
+ endif()
++target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
+ target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
+ target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
+ target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
+@@ -274,7 +281,9 @@ if (WIN32)
              $<$<COMPILE_LANGUAGE:C>:-Wno-error=unused-but-set-global>)
      endif()
      target_include_directories(bb-probe PRIVATE .. ../src)
@@ -3840,7 +3884,7 @@ index dc4d978..f434ad6 100644
      /// GPU thread: whether passes are being looked at (armed or recording; cheap).
      static bool Active() {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
-index c276c2f..b03ff57 100644
+index c276c2f..76edc2e 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 @@ -39,8 +39,10 @@ vk::Format HudlessViewFormat(vk::Format storage, vk::Format requested) {
@@ -3856,6 +3900,15 @@ index c276c2f..b03ff57 100644
  
  int DlssMaxCount() {
      const Dlss* dlss = Dlss::Get();
+@@ -405,7 +407,7 @@ vk::ImageView FrameGenerator::Hudless(vk::Format format, vk::Extent2D& size) {
+     if (!hudless_captured || !captured || !hudless_image) {
+         return {};
+     }
+-    size = {hudless_width, hudless_height};
++    size = vk::Extent2D{hudless_width, hudless_height};
+     format = HudlessViewFormat(hudless_format, format);
+     for (const auto& view : hudless_views) {
+         if (view.format == format) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h
 index 3041663..775b196 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.h
@@ -6029,7 +6082,7 @@ index 0a2fea3..2f25121 100644
  
      for (vk::Semaphore& semaphore : image_acquired) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
-index 7c2da3f..6c50a33 100644
+index 7c2da3f..3440f78 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 @@ -7,6 +7,7 @@
@@ -6753,7 +6806,7 @@ index 7c2da3f..6c50a33 100644
 +    {
 +        std::array<vk::DescriptorBufferInfo, 3> buffers{};
 +        for (u32 i = 0; i < 3; ++i) {
-+            buffers[i] = {.buffer = inputs.buffers[i].buffer,
++            buffers[i] = vk::DescriptorBufferInfo{.buffer = inputs.buffers[i].buffer,
 +                          .offset = inputs.buffers[i].offset,
 +                          .range = inputs.buffers[i].size};
 +        }
@@ -10899,6 +10952,25 @@ iuSn(6=$o{+(f<!s#r{!M$V_$s0000<MNUMnLSTZcRT+r@
 literal 0
 HcmV?d00001
 
+diff --git a/shell.nix b/shell.nix
+index 3623918..707c7a9 100644
+--- a/shell.nix
++++ b/shell.nix
+@@ -2,9 +2,12 @@
+ { pkgs ? import <nixpkgs> {} }:
+ pkgs.mkShell {
+   packages = with pkgs; [
+-    gcc gnumake cmake ninja pkg-config python3 binutils
+-    vulkan-headers vulkan-loader sdl3
++    gcc gnumake cmake ninja pkg-config binutils
++    (python3.withPackages (ps: [ ps.pillow ])) # Pillow: the trophy pop-up's pictures (run.py)
++    vulkan-headers vulkan-loader sdl3 freetype
+     # GPU library (gpu/): shadPS4 video core dependencies
+     ffmpeg-headless boost fmt magic-enum robin-map xxhash vulkan-memory-allocator glslang spirv-cross xbyak zydis spirv-headers miniz libx11 libxcb xorgproto wayland
++    # Online (gpu/bbnet): shadNet's protobuf, HTTPS and gzip for cpp-httplib, JSON, UPnP
++    protobuf openssl zlib nlohmann_json miniupnpc
+   ];
+ }
 diff --git a/src/hevag_coefs.h b/src/hevag_coefs.h
 new file mode 100644
 index 0000000..72c73e3
@@ -12890,7 +12962,7 @@ index e9ffa16..4580ade 100644
                  static const unsigned char silence[2048*8*4];
                  SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)out_bytes ? low-queued : (int)out_bytes);
 diff --git a/src/runtime_content.c b/src/runtime_content.c
-index 045f3c0..4da5a08 100644
+index 045f3c0..0c83bbe 100644
 --- a/src/runtime_content.c
 +++ b/src/runtime_content.c
 @@ -1,6 +1,7 @@
@@ -13020,7 +13092,7 @@ index 045f3c0..4da5a08 100644
 +    uint32_t found=collect_labels(labels);
 +    int i=find_label(label,labels,found);
 +    if (i<0 || service) return ADDCONT_NOT_FOUND;
-+    char guest[16]; snprintf(guest,sizeof(guest),"/addcont%d",i);
++    char guest[24]; snprintf(guest,sizeof(guest),"/addcont%d",i);
 +    if (runtime_file_mount(guest,label_dirs[i])) return BUSY;
 +    memset(mount_point,0,16); memcpy(mount_point,guest,strlen(guest));
 +    printf("Runtime: AppContent add-on %s mounted at %s\n",labels[i],guest);
@@ -13705,10 +13777,10 @@ index 0000000..5446299
 +}
 diff --git a/src/runtime_fiber.c b/src/runtime_fiber.c
 new file mode 100644
-index 0000000..2763f87
+index 0000000..a85e4bf
 --- /dev/null
 +++ b/src/runtime_fiber.c
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,327 @@
 +/* PS4 fibers (libSceFiber): user-scheduled coroutines a thread starts with Run and that hand
 + * control to each other with Switch until one returns to the thread. Gravity Rush 2 runs its
 + * background jobs on them (the BGFiberWorker threads).
@@ -13724,6 +13796,9 @@ index 0000000..2763f87
 +#include <stdlib.h>
 +#include <string.h>
 +#include <pthread.h>
++#ifndef _WIN32
++#include <sys/mman.h>
++#endif
 +#ifdef _WIN32
 +#include <windows.h>
 +#endif
@@ -14105,10 +14180,10 @@ index c64c0f9..4bff266 100644
      struct stat s;
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
-index 0000000..62bea4f
+index 0000000..fdfc464
 --- /dev/null
 +++ b/src/runtime_font.c
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,341 @@
 +/* libSceFont on FreeType (Driveclub).
 + *
 + * The game opens its own TrueType/OpenType fonts from memory, sets a pixel scale and
@@ -14256,12 +14331,24 @@ index 0000000..62bea4f
 +    return 0;
 +}
 +
-+/* System font sets: the closest Windows font. */
++/* System font sets: BB_SYSTEM_FONT (the Linux AppImage names its bundled DejaVu Sans), else the
++ * closest font the system has. */
 +static ABI int32_t open_font_set(void *lib, uint32_t type, uint32_t mode, const void *params, Font **out) {
 +    (void)lib, (void)mode, (void)params;
 +    if (!out) return FONT_ERROR_INVALID_PARAMETER;
-+    static const char *const candidates[] = {"C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf"};
++    const char *const candidates[] = {
++        getenv("BB_SYSTEM_FONT"),
++#ifdef _WIN32
++        "C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf",
++#else
++        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
++        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
++        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
++        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
++#endif
++    };
 +    for (size_t i = 0; i < sizeof(candidates) / sizeof(*candidates); ++i) {
++        if (!candidates[i] || !*candidates[i]) continue;
 +        FILE *file = fopen(candidates[i], "rb");
 +        if (!file) continue;
 +        fseek(file, 0, SEEK_END);
@@ -14440,10 +14527,10 @@ index 0000000..62bea4f
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_image.c b/src/runtime_image.c
 new file mode 100644
-index 0000000..d622e84
+index 0000000..7eb96c6
 --- /dev/null
 +++ b/src/runtime_image.c
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,500 @@
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec on stb_image / stb_image_write.
 + *
 + * Gravity Rush 2's photo mode encodes each photo with sceJpegEncEncode and shows the
@@ -14456,8 +14543,23 @@ index 0000000..d622e84
 +#include <stdlib.h>
 +#include <string.h>
 +
++#ifdef __clang__
 +#pragma clang diagnostic push
 +#pragma clang diagnostic ignored "-Weverything"
++#else /* GCC (Linux): stb's own warnings under this build's -Wall -Wextra -Werror */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wunused-function"
++#pragma GCC diagnostic ignored "-Wunused-parameter"
++#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
++#pragma GCC diagnostic ignored "-Wsign-compare"
++#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
++#pragma GCC diagnostic ignored "-Wmisleading-indentation"
++#pragma GCC diagnostic ignored "-Wtype-limits"
++#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
++#pragma GCC diagnostic ignored "-Wstringop-overflow"
++#pragma GCC diagnostic ignored "-Wdouble-promotion"
++#pragma GCC diagnostic ignored "-Wcast-qual"
++#endif
 +#define STBI_ONLY_JPEG
 +#define STBI_ONLY_PNG
 +#define STBI_NO_STDIO
@@ -14466,7 +14568,11 @@ index 0000000..d622e84
 +#define STBI_WRITE_NO_STDIO
 +#define STB_IMAGE_WRITE_IMPLEMENTATION
 +#include "third_party/stb/stb_image_write.h"
++#ifdef __clang__
 +#pragma clang diagnostic pop
++#else
++#pragma GCC diagnostic pop
++#endif
 +
 +#define JPEG_DEC_INVALID_ADDR ((int32_t)0x80650001)
 +#define JPEG_DEC_INVALID_SIZE ((int32_t)0x80650002)
@@ -15174,10 +15280,10 @@ index 4978ec5..0fd517c 100644
      if (!strcmp(name,"BmMjYxmew1w#p#J")) return (uintptr_t)cond_timedwait;
 diff --git a/src/runtime_ngs2.c b/src/runtime_ngs2.c
 new file mode 100644
-index 0000000..fee7e46
+index 0000000..c258dbb
 --- /dev/null
 +++ b/src/runtime_ngs2.c
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,669 @@
 +/* libSceNgs2, GRport's own: systems, racks and voices, mixed into the buffers the game then
 + * gives to sceAudioOut. Sampler voices (rack 0x1000) decode ATRAC9, VAG ADPCM or PCM waveform blocks and
 + * feed submixers (0x2000) through their ports; mastering voices (0x3000) write the render
@@ -15193,6 +15299,9 @@ index 0000000..fee7e46
 +#include <stdlib.h>
 +#include <string.h>
 +#include <pthread.h>
++#ifndef _WIN32
++#include <sys/mman.h>
++#endif
 +
 +#define NGS2_ERROR_INVALID_HANDLE ((int32_t)0x804A0230)
 +#define NGS2_ERROR_INVALID_OUT ((int32_t)0x804A0053)
@@ -16300,10 +16409,10 @@ index 418035f..11a12b8 100644
      if (!strcmp(name,"Ox9i0c7L5w0#p#J")) return (uintptr_t)rw_read;
      if (!strcmp(name,"mqdNorrB+gI#p#J")) return (uintptr_t)rw_write;
 diff --git a/src/runtime_savedata.c b/src/runtime_savedata.c
-index 9a16a9a..f244de6 100644
+index 9a16a9a..9f6cbc3 100644
 --- a/src/runtime_savedata.c
 +++ b/src/runtime_savedata.c
-@@ -111,8 +111,28 @@ static int make_dirs(const char *path) {
+@@ -111,8 +111,29 @@ static int make_dirs(const char *path) {
      for (char *p=buffer+1;*p;++p) if (*p=='/') { *p=0; mkdir(buffer,0755); *p='/'; }
      return mkdir(buffer,0755) && errno!=EEXIST ? -1 : 0;
  }
@@ -16326,14 +16435,15 @@ index 9a16a9a..f244de6 100644
 +        if (is_dir(other)) {
 +            static int told;
 +            if (!told++) printf("Runtime: %s has no save folder; using the %s saves\n",id,driveclub_ids[i]);
-+            snprintf(out,size,"%s",other);
++            size_t length=strlen(other);
++            if (length<size) memcpy(out,other,length+1);
 +            return;
 +        }
 +    }
  }
  static int valid_name(const char *name, size_t max) {
      size_t n=strnlen(name,max);
-@@ -231,9 +251,11 @@ static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const
+@@ -231,9 +252,11 @@ static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const
      }
      write_param(slots[slot].meta,&p);
      pthread_mutex_unlock(&lock);
@@ -16345,7 +16455,7 @@ index 9a16a9a..f244de6 100644
      return ERR_PARAMETER;
  }
  static ABI int32_t save_icon(const MountPoint *point, const Icon *icon) {
-@@ -308,6 +330,7 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
+@@ -308,6 +331,7 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
          if (result->infos) { memset(&result->infos[i],0,sizeof(SearchInfo)); result->infos[i].blocks=32768; result->infos[i].free_blocks=16384; }
      }
      result->set_count=set;
@@ -16353,7 +16463,7 @@ index 9a16a9a..f244de6 100644
      free(entries);
      return 0;
  }
-@@ -364,5 +387,12 @@ static const RuntimeExport exports[]={
+@@ -364,5 +388,12 @@ static const RuntimeExport exports[]={
      {"sceSaveDataSetSaveDataMemory",memory_set},
  };
  uintptr_t runtime_savedata_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }

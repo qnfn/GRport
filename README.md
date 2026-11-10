@@ -1,6 +1,6 @@
 # GRport
 
-Gravity Rush Remastered and Gravity Rush 2 on Windows, from one launcher.
+Gravity Rush Remastered and Gravity Rush 2 on Windows (and, experimental, Linux), from one launcher.
 
 GRport runs your own PS4 copies of the games natively on Windows: its own runtime, its own
 audio, FSR 4 / DLSS anti-aliasing, Gravity Rush Remastered at up to 144 FPS and Gravity Rush 2
@@ -28,6 +28,18 @@ Unzip it anywhere (not inside Program Files), start `GRport.exe`, choose each ga
 folder (the one with `eboot.bin`) and press **PLAY**. The first PLAY prepares the game for
 GRport (about a minute). Later versions install from the launcher: it checks GitHub when it
 starts and the PLAY page offers a new version; your saves and settings stay.
+
+### Linux and Steam Deck (experimental)
+
+- `GRport-x86_64.AppImage`: the launcher, the runtime and Mesa's Vulkan drivers in one file
+  (NVIDIA cards use the system's own NVIDIA driver).
+
+Make it executable (`chmod +x GRport-x86_64.AppImage`, or Properties > Permissions) and start
+it. On Steam Deck, add it to Steam as a non-Steam game to play from Game Mode. Saves, settings
+and prepared games are in `~/.local/share/GRport`. A new version: download the new AppImage
+when the launcher says one is out. The Linux build is new; if something doesn't work, please
+open an issue with the LOG tab's **Copy for bug report**. The Windows build also runs through
+Proton.
 
 ## Supported games
 
@@ -88,6 +100,7 @@ If something goes wrong, use **LOG > Copy for bug report** in the launcher and o
 
 - `launcher/`: the launcher (Python, Tkinter); `bash build.sh` builds `GRport.exe`.
 - `prepare/`: the prepare step that links the game for the runtime (`gr-prepare.exe`).
+- `linux/`: the Linux AppImage (Nix), built by `.github/workflows/linux.yml`.
 - `runtime/`: the runtime's source, as a patch to the GPL runtime it is based on (see
   `runtime/README.md`).
 
@@ -98,8 +111,8 @@ More of my projects: [github.com/qnfn](https://github.com/qnfn)
 
 ## Credits
 
-- The Windows PS4 runtime by Supermedo and the shadPS4 project, on which GRport's runtime is
-  built (GPL).
+- The PS4 runtime by Supermedo and deadinside28 (bloodborne_pc) and the shadPS4 project, on
+  which GRport's runtime is built (GPL); the Linux AppImage follows their Linux packaging.
 - Junmin Lee: Gravity Rush 2 frame rate patches and crash fix (downloaded from his repository,
   not included).
 - AMD FidelityFX (FSR), NVIDIA DLSS SDK, LibAtrac9 and the other libraries listed in the

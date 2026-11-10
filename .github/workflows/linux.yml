@@ -1,0 +1,84 @@
+# Linux build: the runtime (bloodborne_pc 1.9.2 + runtime/grport-runtime.patch) built with Nix,
+# packaged with the launcher and gr-prepare as one AppImage (linux/default.nix).
+name: Linux
+
+on:
+  push:
+    branches: [linux]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: grport
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Runtime source (bloodborne_pc 1.9.2 + GRport patch)
+        run: |
+          git clone https://github.com/Supermedo/bloodborne_pc runtime
+          cd runtime
+          git checkout de2e38af
+          git submodule update --init --recursive
+          git apply --whitespace=nowarn ../grport/runtime/grport-runtime.patch
+
+      - name: Build runtime
+        working-directory: runtime
+        run: BB_LTO=OFF BB_PGO=off nix-shell shell.nix --run 'BB_IN_NIX_SHELL=1 BB_LTO=OFF BB_PGO=off bash build.sh'
+
+      - name: All compile errors on failure
+        if: failure()
+        working-directory: runtime
+        run: |
+          nix-shell shell.nix --run 'ninja -C out/gpu -k 0 bbgpu' > all.log 2>&1 || true
+          grep -E 'error:|FAILED|undefined reference' all.log | sort -u | head -300
+
+      - name: AppImage
+        run: bash grport/linux/appimage.sh runtime dist
+
+      # No GPU and no game here: the runtime's Vulkan self-test on Mesa's software driver,
+      # gr-prepare's Python, and the launcher on a virtual screen (screenshot in the artifact).
+      - name: Smoke test
+        run: |
+          sudo apt-get install -y -qq xvfb imagemagick >/dev/null
+          pkg=$(nix-build grport/linux --no-out-link)
+          lvp=$(nix-build '<nixpkgs>' -A mesa --no-out-link)/share/vulkan/icd.d/lvp_icd.x86_64.json
+          mkdir -p smoke
+          VK_DRIVER_FILES=$lvp timeout 120 "$pkg/share/grport/bin/GRport-runtime" --vulkan-only | tee smoke/runtime.txt
+          grep -q PASS smoke/runtime.txt
+          "$pkg/bin/gr-prepare" > smoke/prepare.txt 2>&1 || true
+          cat smoke/prepare.txt
+          ! grep -q -E "ModuleNotFoundError|ImportError" smoke/prepare.txt
+          export GRPORT_HOME=$PWD/smoke/home
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c "
+            '$pkg/bin/grport' > smoke/launcher.txt 2>&1 & pid=\$!
+            sleep 20
+            import -window root smoke/launcher.png
+            kill -0 \$pid && echo 'launcher: running after 20 s' >> smoke/launcher.txt
+            kill \$pid || true"
+          cat smoke/launcher.txt
+          grep -q 'running after 20 s' smoke/launcher.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: smoke/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GRport-linux
+          path: |
+            dist/*.AppImage
+            runtime/out/bb-probe
+            runtime/out/gpu/libbbgpu.so
+          if-no-files-found: warn

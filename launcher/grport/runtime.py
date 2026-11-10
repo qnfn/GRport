@@ -17,12 +17,20 @@ from .settings import LANGUAGES, LauncherSettings, window
 READBACKS = {"off": "0", "relaxed": "1", "precise": "2"}
 
 
+# Linux: the AppImage names its read-only copies (GRPORT_RUNTIME_EXE, GRPORT_PREPARE_EXE).
+_SUFFIX = ".exe" if os.name == "nt" else ""
+
+
 def exe(paths: AppPaths) -> Path:
-    return paths.root / "runtime" / "GRport-runtime.exe"
+    if os.environ.get("GRPORT_RUNTIME_EXE"):
+        return Path(os.environ["GRPORT_RUNTIME_EXE"])
+    return paths.root / "runtime" / f"GRport-runtime{_SUFFIX}"
 
 
 def prepare_exe(paths: AppPaths) -> Path:
-    return paths.root / "runtime" / "gr-prepare.exe"
+    if os.environ.get("GRPORT_PREPARE_EXE"):
+        return Path(os.environ["GRPORT_PREPARE_EXE"])
+    return paths.root / "runtime" / f"gr-prepare{_SUFFIX}"
 
 
 def data_dir(paths: AppPaths, key: str) -> Path:

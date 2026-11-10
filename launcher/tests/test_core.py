@@ -257,3 +257,24 @@ def test_version_problem_names_the_needed_update():
     assert patches.version_problem(games.GameFolder(Path("x"), gr2, "CUSA04934", "Europe", "01.11", "")) == ""
     assert patches.version_problem(games.GameFolder(Path("x"), gr1, "CUSA01113", "Europe", "01.00", "")) == ""
     assert patches.version_problem(games.GameFolder(Path("x"), gr2, "CUSA03694", "USA", "", "")) == ""
+
+
+def test_linux_desktop_entry_and_packaged_paths(tmp_path, monkeypatch):
+    """Linux AppImage: .desktop shortcuts start $APPIMAGE; the runtime comes from the package."""
+    from grport import shortcuts
+    paths = AppPaths.for_root(tmp_path / "home")
+    paths.root.mkdir()
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    with pytest.raises(OSError):
+        shortcuts._create_desktop_entry(paths, tmp_path / "apps")
+    monkeypatch.setenv("APPIMAGE", "/games/GRport-x86_64.AppImage")
+    entry = shortcuts._create_desktop_entry(paths, tmp_path / "apps").read_text(encoding="utf-8")
+    assert entry.startswith("[Desktop Entry]\n")
+    assert 'Exec="/games/GRport-x86_64.AppImage"\n' in entry
+    assert (paths.root / "grport.png").is_file()
+    monkeypatch.setenv("GRPORT_RUNTIME_EXE", "/pkg/bin/GRport-runtime")
+    monkeypatch.setenv("GRPORT_PREPARE_EXE", "/pkg/bin/gr-prepare")
+    assert runtime.exe(paths) == Path("/pkg/bin/GRport-runtime")
+    assert runtime.prepare_exe(paths) == Path("/pkg/bin/gr-prepare")
+    monkeypatch.setenv("GRPORT_HOME", str(tmp_path / "data"))
+    assert AppPaths.current().root == tmp_path / "data"

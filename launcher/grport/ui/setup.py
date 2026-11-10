@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
+import os
 import tkinter as tk
 
 from grport import games, ini, patches, runtime, settings, shortcuts
@@ -251,13 +252,15 @@ class SetupPage(tk.Frame):
         row = tk.Frame(links)
         app.paint(row, bg="panel")
         row.pack(fill="x")
-        for text, where in (("Add to desktop", "desktop"), ("Add to Start menu", "start")):
+        menu = "Start menu" if os.name == "nt" else "app menu"
+        for text, where in (("Add to desktop", "desktop"), (f"Add to {menu}", "start")):
             theme.PillButton(row, app, text, lambda w=where: self.add_shortcut(w),
                              kind="secondary", font=app.fonts["button"], height=app.px(36),
                              padx=app.px(18), bg_role="panel").pack(side="left",
                                                                     padx=(0, app.px(10)))
         self._note(links, "A GRport shortcut on your desktop, or in the Start menu so Windows "
-                          "search finds it.")
+                          "search finds it." if os.name == "nt" else
+                          "A GRport shortcut on your desktop, or in your desktop's app menu.")
 
         self.patch_choices = {}
         extra = self.board.add(4, 0, span=2, title="Patches")
@@ -365,7 +368,7 @@ class SetupPage(tk.Frame):
 
     def add_shortcut(self, where: str) -> None:
         folder = shortcuts.desktop_dir() if where == "desktop" else shortcuts.start_menu_dir()
-        place = "desktop" if where == "desktop" else "Start menu"
+        place = "desktop" if where == "desktop" else ("Start menu" if os.name == "nt" else "app menu")
 
         def done(_lnk, error):
             if error is not None:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Windows shortcuts to the launcher: on the Desktop and in the Start menu."""
+"""Shortcuts to the launcher: on the Desktop and in the Start menu (Windows .lnk), or on the
+desktop and in the applications menu (Linux .desktop, pointing at the AppImage)."""
 import ctypes
 import os
 import subprocess
@@ -52,6 +53,13 @@ def _known_folder(folder_id: str) -> Path:
 
 
 def desktop_dir() -> Path:
+    if os.name != "nt":
+        try:
+            found = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True,
+                                   timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            found = ""
+        return Path(found) if found else Path.home() / "Desktop"
     try:
         return _known_folder(FOLDERID_DESKTOP)
     except (AttributeError, OSError):
@@ -59,6 +67,9 @@ def desktop_dir() -> Path:
 
 
 def start_menu_dir() -> Path:
+    if os.name != "nt":
+        data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        return Path(data) / "applications"
     try:
         return _known_folder(FOLDERID_PROGRAMS)
     except (AttributeError, OSError):
@@ -73,8 +84,32 @@ def target(paths: AppPaths) -> Path:
     return paths.root / "GRport.exe"
 
 
+def _create_desktop_entry(paths: AppPaths, folder: Path) -> Path:
+    """Linux: folder/GRport.desktop starting the AppImage (its icon copied next to the data)."""
+    appimage = os.environ.get("APPIMAGE")
+    if not appimage:
+        raise OSError("shortcuts need GRport's AppImage (this is a source run)")
+    icon = paths.root / "grport.png"
+    try:
+        from .ui.theme import assets_dir
+        icon.write_bytes((assets_dir() / "grport.png").read_bytes())
+    except OSError:
+        icon = Path("grport.png")
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    entry = folder / "GRport.desktop"
+    entry.write_text("[Desktop Entry]\nType=Application\nName=GRport\n"
+                     "Comment=Gravity Rush Remastered and Gravity Rush 2\n"
+                     f'Exec="{appimage}"\nIcon={icon}\nTerminal=false\nCategories=Game;\n',
+                     encoding="utf-8")
+    entry.chmod(0o755)
+    return entry
+
+
 def create(paths: AppPaths, folder: Path) -> Path:
     """Writes folder/GRport.lnk to the launcher, replacing an older one."""
+    if os.name != "nt":
+        return _create_desktop_entry(paths, folder)
     exe = target(paths)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
