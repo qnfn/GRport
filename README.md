@@ -15,7 +15,7 @@ at up to 120 FPS.
 > **GRport is an unofficial, free fan project.** It is not affiliated with, endorsed by or
 > sponsored by Sony Interactive Entertainment. "Gravity Rush", "PlayStation" and "PS4" are
 > trademarks of their owners. **GRport contains no game files**: you need your own copy of the
-> games, dumped from your own PS4. Please don't ask for game files.
+> games, dumped from your own PS4 (or PS5: decrypted ELF dumps work too). Please don't ask for game files.
 
 ## Download
 

@@ -35,8 +35,15 @@ def unpack(fmt, data, offset):
 
 
 def parse_self(data):
+    """Return the plaintext ELF of a PS4 SELF, or of a plain ELF.
+
+    PS5 dumpers (also for PS4 discs) write the decrypted modules as plain ELF
+    files without the SELF wrapper; those are taken as they are."""
+    if span(data, 0, 4) == b'\x7fELF':
+        return parse_elf(data)
     if span(data, 0, 4) != b'O\x15=\x1d':
-        raise ValueError("expected PS4 SELF")
+        raise ValueError("expected a PS4 SELF or a decrypted ELF (this file is still encrypted "
+                         "or is not a game module)")
     count, = unpack('<H', data, 24)
     base = 32 + count * 32
     header = unpack('<16sHHIQQQIHHHHHH', data, base)
@@ -78,6 +85,34 @@ def parse_self(data):
             if p['type'] in (1, 2, 0x61000000, 0x61000010):
                 raise ValueError(f"required segment {i} is unavailable")
     return elf, header, ph, segments, missing
+
+
+def elf_header(data):
+    header = unpack('<16sHHIQQQIHHHHHH', data, 0)
+    if header[0][:7] != b'\x7fELF\x02\x01\x01' or header[2] != 62:
+        raise ValueError("expected little-endian x86-64 ELF")
+    if header[9] != 56 or not 0 < header[10] < 256:
+        raise ValueError("unsupported program headers")
+    ph = [dict(zip(('type', 'flags', 'offset', 'vaddr', 'paddr', 'filesz', 'memsz', 'align'),
+                   unpack('<IIQQQQQQ', data, header[5] + i * 56)))
+          for i in range(header[10])]
+    return header, ph
+
+
+def parse_elf(data):
+    header, ph = elf_header(data)
+    end = max(p['offset'] + p['filesz'] for p in ph)
+    if end > 512 * 1024 * 1024:
+        raise ValueError("probe image exceeds 512 MiB limit")
+    elf = bytearray(end)
+    elf[:min(end, len(data))] = data[:end]
+    missing = []
+    for i, p in enumerate(ph):
+        if p['filesz'] and p['offset'] + p['filesz'] > len(data):
+            missing.append(i)
+            if p['type'] in (1, 2, 0x61000000, 0x61000010):
+                raise ValueError(f"required segment {i} is unavailable (the file is cut short)")
+    return elf, header, ph, [], missing
 
 
 def sfo(data):
