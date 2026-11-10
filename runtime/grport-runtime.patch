@@ -12962,7 +12962,7 @@ index e9ffa16..4580ade 100644
                  static const unsigned char silence[2048*8*4];
                  SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)out_bytes ? low-queued : (int)out_bytes);
 diff --git a/src/runtime_content.c b/src/runtime_content.c
-index 045f3c0..4da5a08 100644
+index 045f3c0..0c83bbe 100644
 --- a/src/runtime_content.c
 +++ b/src/runtime_content.c
 @@ -1,6 +1,7 @@
@@ -13092,7 +13092,7 @@ index 045f3c0..4da5a08 100644
 +    uint32_t found=collect_labels(labels);
 +    int i=find_label(label,labels,found);
 +    if (i<0 || service) return ADDCONT_NOT_FOUND;
-+    char guest[16]; snprintf(guest,sizeof(guest),"/addcont%d",i);
++    char guest[24]; snprintf(guest,sizeof(guest),"/addcont%d",i);
 +    if (runtime_file_mount(guest,label_dirs[i])) return BUSY;
 +    memset(mount_point,0,16); memcpy(mount_point,guest,strlen(guest));
 +    printf("Runtime: AppContent add-on %s mounted at %s\n",labels[i],guest);
@@ -13777,10 +13777,10 @@ index 0000000..5446299
 +}
 diff --git a/src/runtime_fiber.c b/src/runtime_fiber.c
 new file mode 100644
-index 0000000..2763f87
+index 0000000..a85e4bf
 --- /dev/null
 +++ b/src/runtime_fiber.c
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,327 @@
 +/* PS4 fibers (libSceFiber): user-scheduled coroutines a thread starts with Run and that hand
 + * control to each other with Switch until one returns to the thread. Gravity Rush 2 runs its
 + * background jobs on them (the BGFiberWorker threads).
@@ -13796,6 +13796,9 @@ index 0000000..2763f87
 +#include <stdlib.h>
 +#include <string.h>
 +#include <pthread.h>
++#ifndef _WIN32
++#include <sys/mman.h>
++#endif
 +#ifdef _WIN32
 +#include <windows.h>
 +#endif
@@ -14524,10 +14527,10 @@ index 0000000..fdfc464
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_image.c b/src/runtime_image.c
 new file mode 100644
-index 0000000..d622e84
+index 0000000..7eb96c6
 --- /dev/null
 +++ b/src/runtime_image.c
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,500 @@
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec on stb_image / stb_image_write.
 + *
 + * Gravity Rush 2's photo mode encodes each photo with sceJpegEncEncode and shows the
@@ -14540,8 +14543,23 @@ index 0000000..d622e84
 +#include <stdlib.h>
 +#include <string.h>
 +
++#ifdef __clang__
 +#pragma clang diagnostic push
 +#pragma clang diagnostic ignored "-Weverything"
++#else /* GCC (Linux): stb's own warnings under this build's -Wall -Wextra -Werror */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wunused-function"
++#pragma GCC diagnostic ignored "-Wunused-parameter"
++#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
++#pragma GCC diagnostic ignored "-Wsign-compare"
++#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
++#pragma GCC diagnostic ignored "-Wmisleading-indentation"
++#pragma GCC diagnostic ignored "-Wtype-limits"
++#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
++#pragma GCC diagnostic ignored "-Wstringop-overflow"
++#pragma GCC diagnostic ignored "-Wdouble-promotion"
++#pragma GCC diagnostic ignored "-Wcast-qual"
++#endif
 +#define STBI_ONLY_JPEG
 +#define STBI_ONLY_PNG
 +#define STBI_NO_STDIO
@@ -14550,7 +14568,11 @@ index 0000000..d622e84
 +#define STBI_WRITE_NO_STDIO
 +#define STB_IMAGE_WRITE_IMPLEMENTATION
 +#include "third_party/stb/stb_image_write.h"
++#ifdef __clang__
 +#pragma clang diagnostic pop
++#else
++#pragma GCC diagnostic pop
++#endif
 +
 +#define JPEG_DEC_INVALID_ADDR ((int32_t)0x80650001)
 +#define JPEG_DEC_INVALID_SIZE ((int32_t)0x80650002)
@@ -15258,10 +15280,10 @@ index 4978ec5..0fd517c 100644
      if (!strcmp(name,"BmMjYxmew1w#p#J")) return (uintptr_t)cond_timedwait;
 diff --git a/src/runtime_ngs2.c b/src/runtime_ngs2.c
 new file mode 100644
-index 0000000..fee7e46
+index 0000000..c258dbb
 --- /dev/null
 +++ b/src/runtime_ngs2.c
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,669 @@
 +/* libSceNgs2, GRport's own: systems, racks and voices, mixed into the buffers the game then
 + * gives to sceAudioOut. Sampler voices (rack 0x1000) decode ATRAC9, VAG ADPCM or PCM waveform blocks and
 + * feed submixers (0x2000) through their ports; mastering voices (0x3000) write the render
@@ -15277,6 +15299,9 @@ index 0000000..fee7e46
 +#include <stdlib.h>
 +#include <string.h>
 +#include <pthread.h>
++#ifndef _WIN32
++#include <sys/mman.h>
++#endif
 +
 +#define NGS2_ERROR_INVALID_HANDLE ((int32_t)0x804A0230)
 +#define NGS2_ERROR_INVALID_OUT ((int32_t)0x804A0053)
@@ -16384,10 +16409,10 @@ index 418035f..11a12b8 100644
      if (!strcmp(name,"Ox9i0c7L5w0#p#J")) return (uintptr_t)rw_read;
      if (!strcmp(name,"mqdNorrB+gI#p#J")) return (uintptr_t)rw_write;
 diff --git a/src/runtime_savedata.c b/src/runtime_savedata.c
-index 9a16a9a..f244de6 100644
+index 9a16a9a..9f6cbc3 100644
 --- a/src/runtime_savedata.c
 +++ b/src/runtime_savedata.c
-@@ -111,8 +111,28 @@ static int make_dirs(const char *path) {
+@@ -111,8 +111,29 @@ static int make_dirs(const char *path) {
      for (char *p=buffer+1;*p;++p) if (*p=='/') { *p=0; mkdir(buffer,0755); *p='/'; }
      return mkdir(buffer,0755) && errno!=EEXIST ? -1 : 0;
  }
@@ -16410,14 +16435,15 @@ index 9a16a9a..f244de6 100644
 +        if (is_dir(other)) {
 +            static int told;
 +            if (!told++) printf("Runtime: %s has no save folder; using the %s saves\n",id,driveclub_ids[i]);
-+            snprintf(out,size,"%s",other);
++            size_t length=strlen(other);
++            if (length<size) memcpy(out,other,length+1);
 +            return;
 +        }
 +    }
  }
  static int valid_name(const char *name, size_t max) {
      size_t n=strnlen(name,max);
-@@ -231,9 +251,11 @@ static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const
+@@ -231,9 +252,11 @@ static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const
      }
      write_param(slots[slot].meta,&p);
      pthread_mutex_unlock(&lock);
@@ -16429,7 +16455,7 @@ index 9a16a9a..f244de6 100644
      return ERR_PARAMETER;
  }
  static ABI int32_t save_icon(const MountPoint *point, const Icon *icon) {
-@@ -308,6 +330,7 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
+@@ -308,6 +331,7 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
          if (result->infos) { memset(&result->infos[i],0,sizeof(SearchInfo)); result->infos[i].blocks=32768; result->infos[i].free_blocks=16384; }
      }
      result->set_count=set;
@@ -16437,7 +16463,7 @@ index 9a16a9a..f244de6 100644
      free(entries);
      return 0;
  }
-@@ -364,5 +387,12 @@ static const RuntimeExport exports[]={
+@@ -364,5 +388,12 @@ static const RuntimeExport exports[]={
      {"sceSaveDataSetSaveDataMemory",memory_set},
  };
  uintptr_t runtime_savedata_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
