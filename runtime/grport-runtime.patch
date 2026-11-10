@@ -16027,10 +16027,10 @@ index 687bfb5..138e671 100644
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
 diff --git a/src/runtime_photo.c b/src/runtime_photo.c
 new file mode 100644
-index 0000000..a300b94
+index 0000000..ef50a7e
 --- /dev/null
 +++ b/src/runtime_photo.c
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,283 @@
 +/* Gravity Rush 2's photo album: libSceContentExport, libSceContentSearch and libSceContentDelete
 + * on a host folder, "Capture Gallery/Gravity Rush 2" in the user folder, one <id>.jpg per photo.
 + * The guest sees it at /screenshot. Adapted from GR2fork (github.com/junminlee2004/GR2fork,
@@ -16053,9 +16053,10 @@ index 0000000..a300b94
 +
 +#define PHOTO_SIZE 1024        /* the game renders a photo into a target of this size */
 +/* The game's album holds 999 photos and it stops taking more there (issue #10). Every photo
-+ * stays in the folder; the game is shown the newest SHOWN_PHOTOS, so it always has room for
-+ * new ones (the slack covers the photos taken before it lists the album again). */
-+#define SHOWN_PHOTOS 950
++ * stays in the folder; the game is shown the newest SHOWN_PHOTOS, so it has room for new ones.
++ * It counts each photo it takes and lists the album again only now and then: with 950 shown,
++ * burst shots filled the 49 left in seconds and R1 only opened message dialogs. */
++#define SHOWN_PHOTOS 500
 +#define ID_LEN 24
 +#define GUEST_DIR "/screenshot"
 +#define EXPORT_NOTACCEPT ((int32_t)0x809D3002)
@@ -16502,7 +16503,7 @@ index 9a16a9a..9f6cbc3 100644
  void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
  
 diff --git a/src/runtime_services.c b/src/runtime_services.c
-index e75ed89..056ecb3 100644
+index e75ed89..bfc5908 100644
 --- a/src/runtime_services.c
 +++ b/src/runtime_services.c
 @@ -57,7 +57,7 @@ static ABI int32_t user_list(int32_t *ids) {
@@ -16572,12 +16573,40 @@ index e75ed89..056ecb3 100644
  static ABI int32_t np_compare(const void *a,const void *b) {
      if (!a || !b) return NP_INVALID_ARGUMENT;
      return memcmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
-@@ -259,7 +301,139 @@ static int32_t dialog_term(int i) {
+@@ -259,7 +301,167 @@ static int32_t dialog_term(int i) {
      static ABI int32_t tag##_open(const void *p) { (void)p; return dialog_open(i); } \
      static ABI int32_t tag##_status(void) { return dialog_status(i); } \
      static ABI int32_t tag##_term(void) { return dialog_term(i); }
 -DIALOG(msg,1) DIALOG(save,2) DIALOG(profile,3) DIALOG(commerce,4)
-+DIALOG(msg,1) DIALOG(profile,3) DIALOG(commerce,4)
++DIALOG(profile,3) DIALOG(commerce,4)
++/* MsgDialog: the log names what the game wanted to say, once per message (#10: the camera stopped
++ * after 1000 photos behind a stream of dialogs that only said "opened"). OrbisMsgDialogParam:
++ * mode at 0x38, then user message, progress bar and system message parameters. */
++static ABI int32_t msg_init(void) { return dialog_init(1); }
++static ABI int32_t msg_status(void) { return dialog_status(1); }
++static ABI int32_t msg_term(void) { return dialog_term(1); }
++static ABI int32_t msg_open(const uint8_t *p) {
++    if (!dialogs[1].initialized) return DIALOG_NOT_INITIALIZED;
++    char what[200]="";
++    if (p) {
++        uint32_t mode; memcpy(&mode,p+0x38,4);
++        const uint8_t *user=NULL,*bar=NULL,*sys=NULL;
++        memcpy(&user,p+0x40,8); memcpy(&bar,p+0x48,8); memcpy(&sys,p+0x50,8);
++        const char *text=NULL; uint32_t type=0;
++        if (mode==1 && user) { memcpy(&type,user,4); memcpy(&text,user+8,8); }
++        else if (mode==2 && bar) { memcpy(&type,bar,4); memcpy(&text,bar+8,8); }
++        else if (mode==3 && sys) memcpy(&type,sys,4);
++        if (text) snprintf(what,sizeof(what),"mode %u, type %u: \"%.160s\"",mode,type,text);
++        else snprintf(what,sizeof(what),"mode %u, type %u",mode,type);
++    }
++    static char last[200];
++    pthread_mutex_lock(&lock);
++    const int repeated=!strcmp(last,what);
++    if (!repeated) snprintf(last,sizeof(last),"%s",what);
++    pthread_mutex_unlock(&lock);
++    if (!repeated) printf("Runtime: MsgDialog (%s) completed immediately (no dialog UI yet)\n",what);
++    dialogs[1].status=3; return 0;
++}
 +/* GRport: SaveDataDialog. A list is shown in the overlay (bbgpu_save_list_*): the player picks
 + * a save, "New save" (an empty dir name: the game makes the next one) or backs out. Without a
 + * window it answers like a player who confirms, picking the save the game focuses (or its
@@ -16713,7 +16742,7 @@ index e75ed89..056ecb3 100644
  static ABI int32_t profile_result(void *result) { if (result) memset(result,0,4); return 0; }
  /* ImeDialog: text typed on the keyboard into the game window (title bar shows it).
   * OrbisImeDialogParam: user, type, languages(8), enter label, method, filter,
-@@ -311,10 +485,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
+@@ -311,10 +513,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
      utf16_to_utf8(param->title,128,prompt,sizeof(prompt));
      const char *preset=getenv("BB_IME_TEXT");
      if (preset) { ime_complete(0,preset); return 0; }
@@ -16726,7 +16755,7 @@ index e75ed89..056ecb3 100644
      if (!bbgpu_text_input_begin(start,prompt[0] ? prompt : "Text")) ime_complete(0,start);
      else printf("Runtime: ImeDialog opened: shown on screen; keyboard Enter or Cross accepts, Esc or Circle cancels\n");
      return 0;
-@@ -513,6 +687,58 @@ static const RuntimeExport exports[]={
+@@ -513,6 +715,58 @@ static const RuntimeExport exports[]={
      {"sceNpScoreGetRankingByNpIdPcId",np_signed_out}, {"sceNpScoreGetRankingByRange",np_signed_out},
      {"sceNpScoreRecordGameData",np_signed_out}, {"sceNpScoreRecordScore",np_signed_out},
      {"sceNpScoreSetPlayerCharacterId",ok_void},
@@ -16785,7 +16814,7 @@ index e75ed89..056ecb3 100644
      {"sceVoiceCreatePort",voice_port}, {"sceVoiceDeletePort",ok_void},
      {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
      {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
-@@ -527,6 +753,8 @@ static const RuntimeExport exports[]={
+@@ -527,6 +781,8 @@ static const RuntimeExport exports[]={
      {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
      {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
      {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},

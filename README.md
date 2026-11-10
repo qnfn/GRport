@@ -86,7 +86,7 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   "Game saved" / "Game loaded" when done; Continue and Gallery; **language** of menus and
   subtitles; keyboard, mouse and controllers; FPS counter.
 - **Gravity Rush 2 photo album**: every photo is kept in `user/gr2/Capture Gallery`; past the
-  game's 999-photo limit the album shows the newest 950, so the camera keeps working.
+  game's 999-photo limit the in-game album shows the newest 500, so the camera keeps working (also in burst mode).
 
 ## Known problems
 
