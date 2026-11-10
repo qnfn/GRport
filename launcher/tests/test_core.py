@@ -223,6 +223,20 @@ def test_ps4_pro_mode_reaches_only_gravity_rush_2(paths, tmp_path):
     assert load_settings(paths).games["gr2"].ps4_pro is False
 
 
+def test_skybox_fix_reaches_the_runtime_for_both_games(paths, tmp_path):
+    gr2 = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    gr1 = games.inspect(make_game(tmp_path / "CUSA01130", "CUSA01130", "01.00"))
+    s = LauncherSettings()
+    assert runtime.env(paths, s, gr2, base={})["BB_CUBE_SEAMLESS"] == "1"  # on by default
+    s.games["gr1"].skybox_fix = False
+    assert runtime.env(paths, s, gr1, base={})["BB_CUBE_SEAMLESS"] == "0"
+    assert runtime.env(paths, s, gr2, base={})["BB_CUBE_SEAMLESS"] == "1"  # per game
+    save_settings(paths, s)
+    assert load_settings(paths).games["gr1"].skybox_fix is False
+    paths.settings_json.write_text(json.dumps({"games": {"gr1": {"skybox_fix": "off"}}}))
+    assert load_settings(paths).games["gr1"].skybox_fix is True
+
+
 def test_camera_roll_reaches_gr2_only_and_bad_values_reset(paths, tmp_path):
     gr2 = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
     gr1 = games.inspect(make_game(tmp_path / "CUSA01130", "CUSA01130", "01.00"))

@@ -131,6 +131,7 @@ class GameSettings:
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
     photo_roll: str = PHOTO_ROLL_DEFAULT  # Gravity Rush 2 only: PHOTO_ROLLS
+    skybox_fix: bool = True     # the runtime's BB_CUBE_SEAMLESS: seamless cube sampling
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
     resolution: str = ""        # RESOLUTIONS: a resolution patch prefix; "" the game's 1080p
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults

@@ -108,6 +108,9 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
     # SETUP > PS4 Pro mode (Gravity Rush 2, experimental): the game sees a PS4 Pro and takes
     # its own Pro render path; the runtime adds the Pro's 512 MiB to the direct memory pool.
+    # SETUP > Skybox seam fix: seamless cube sampling (skies, reflections) costs bigger shaders;
+    # Off for older GPUs. Switching it rebuilds the shader cache once.
+    out["BB_CUBE_SEAMLESS"] = "1" if g.skybox_fix else "0"
     # SETUP > Camera Roll (Gravity Rush 2): how many of the newest photos the game is shown.
     if info.game.key == "gr2":
         out["BB_PHOTO_ROLL"] = str(PHOTO_ROLLS[g.photo_roll])

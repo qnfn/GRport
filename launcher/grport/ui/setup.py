@@ -65,7 +65,7 @@ PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloade
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
 # Every _row label on the page: the label column fits the longest one.
 ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
-              "Threading", "Frame rate", "PS4 Pro mode", "Stick dead zone", "Camera Roll",
+              "Threading", "Frame rate", "Skybox seam fix", "PS4 Pro mode", "Stick dead zone", "Camera Roll",
               *(label for _, label, _, _ in PICTURE))
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
 THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
@@ -74,6 +74,10 @@ DEADZONE_NOTE = ("Stick dead zone: how far a controller stick moves before the g
                  "for sticks that drift or wobble (the character walks on its own). Raise it "
                  "until the drift stops; 0% turns it off. Both sticks, keyboard and mouse "
                  "unaffected.")
+SKYBOX_NOTE = ("Skybox seam fix: removes the lines where the sky's faces meet (also in reflections). "
+               "Its shaders are bigger: on an older GPU (GTX 1050 Ti class), or if the game "
+               "crashes or stutters in busy places, try Off. On by default; the first start "
+               "after a change builds the shaders again.")
 PHOTO_ROLL_CHOICES = (("999", "999 photos"), ("unlimited", "No limit"))
 PHOTO_ROLL_NOTE = ("Camera Roll: 999 photos is the game's own limit, as on the PS4: the camera "
                    "stops taking photos when the Camera Roll is full. No limit: keep taking "
@@ -222,6 +226,11 @@ class SetupPage(tk.Frame):
                                           self.set_fps)
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
+        row = self._row(gfx, "Skybox seam fix")
+        self.skybox_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")),
+                                             self.set_skybox_fix)
+        self.skybox_choice.pack(side="left")
+        self._note(gfx, SKYBOX_NOTE)
         self.pro_choice = None
         if self.key == "gr2":
             row = self._row(gfx, "PS4 Pro mode")
@@ -343,6 +352,7 @@ class SetupPage(tk.Frame):
         self.resolution_note.configure(text=note)
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
+        self.skybox_choice.set(g.skybox_fix)
         values = self._picture()
         for name, _, choices, default in PICTURE:
             value = values.get(name, default)
@@ -444,6 +454,10 @@ class SetupPage(tk.Frame):
 
     def set_threading(self, value: str) -> None:
         self.g.threading = value
+        self._saved()
+
+    def set_skybox_fix(self, on: bool) -> None:
+        self.g.skybox_fix = bool(on)
         self._saved()
 
     def set_ps4_pro(self, on: bool) -> None:
