@@ -278,3 +278,37 @@ def test_linux_desktop_entry_and_packaged_paths(tmp_path, monkeypatch):
     assert runtime.prepare_exe(paths) == Path("/pkg/bin/gr-prepare")
     monkeypatch.setenv("GRPORT_HOME", str(tmp_path / "data"))
     assert AppPaths.current().root == tmp_path / "data"
+
+
+def _psarc(path: Path, files: list, cut: int = 0) -> None:
+    """A small zlib PSARC: each file is given as its compressed block lengths (0 = 64 KiB)."""
+    entries, table, offset, first = b"", b"", 0, 0
+    toc_length = 32 + 30 * len(files) + 2 * sum(len(f) for f in files)
+    offset = toc_length
+    for blocks in files:
+        length = 65536 * len(blocks)
+        entries += (b"\0" * 16 + struct.pack(">I", first) + length.to_bytes(5, "big") +
+                    offset.to_bytes(5, "big"))
+        table += b"".join(struct.pack(">H", b) for b in blocks)
+        offset += sum(b or 65536 for b in blocks)
+        first += len(blocks)
+    head = b"PSAR" + struct.pack(">I4sIIIII", 0x10004, b"zlib", toc_length, 30, len(files), 65536, 0)
+    data = head + entries + table
+    path.write_bytes(data + b"\x55" * (offset - len(data) - cut))
+
+
+def test_damaged_archives_are_named(tmp_path):
+    """#18: a Gravity Rush 2 copy with cut-off archives opened no fonts and crashed at the start."""
+    (tmp_path / "eboot.bin").write_bytes(b"\x7fELF")
+    (tmp_path / "arc").mkdir()
+    _psarc(tmp_path / "Gravite2_Chunk0.psarc", [[1000, 0, 7], [300]])
+    _psarc(tmp_path / "arc" / "arc_0.psarc", [[0, 0]])
+    assert games.psarc_missing_bytes(tmp_path / "Gravite2_Chunk0.psarc") == 0
+    assert games.damaged_archives(tmp_path) == ""
+    _psarc(tmp_path / "Gravite2_Chunk0.psarc", [[1000, 0, 7], [300]], cut=200)
+    assert games.psarc_missing_bytes(tmp_path / "Gravite2_Chunk0.psarc") == 200
+    problem = games.damaged_archives(tmp_path)
+    assert problem.startswith("Gravite2_Chunk0.psarc is cut short") and "copy the game" in problem
+    _psarc(tmp_path / "Gravite2_Chunk0.psarc", [[1000, 0, 7], [300]])
+    (tmp_path / "arc" / "arc_0.psarc").write_bytes(b"\0" * 4096)
+    assert games.damaged_archives(tmp_path).startswith("arc/arc_0.psarc is damaged")

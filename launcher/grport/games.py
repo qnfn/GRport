@@ -148,7 +148,65 @@ def inspect(folder: "Path | str") -> GameFolder:
     problem = ""
     if not (folder / "eboot.bin").is_file():
         problem = "eboot.bin is missing. Extract the whole game into this folder."
+    else:
+        problem = damaged_archives(folder)
     return GameFolder(folder, game, serial, region, version, problem)
+
+
+def psarc_missing_bytes(path: Path) -> int:
+    """How many bytes a .psarc archive is short of what its own table of contents says it holds
+    (0 when complete). ValueError when it is not a PSARC at all (zeros, still encrypted)."""
+    with open(path, "rb") as f:
+        head = f.read(32)
+        if len(head) < 32 or head[:4] != b"PSAR":
+            raise ValueError("not a PSARC archive")
+        toc_length, entry_size, entries, block = struct.unpack(">IIII", head[12:28])
+        if entry_size < 30 or block == 0 or toc_length < 32 + entries * entry_size:
+            raise ValueError("bad PSARC header")
+        toc = f.read(toc_length - 32)
+        size = f.seek(0, 2)
+    if len(toc) < toc_length - 32:
+        return toc_length - len(toc) - 32
+    width = 2 if block <= 0x10000 else 3 if block <= 0x1000000 else 4
+    table = toc[entries * entry_size:]
+    blocks = [int.from_bytes(table[i:i + width], "big") for i in range(0, len(table) - width + 1, width)]
+    end = 0
+    for i in range(entries):
+        e = toc[i * entry_size:(i + 1) * entry_size]
+        first = int.from_bytes(e[16:20], "big")
+        length = int.from_bytes(e[20:25], "big")
+        offset = int.from_bytes(e[25:30], "big")
+        count = (length + block - 1) // block
+        if first + count > len(blocks):
+            raise ValueError("bad PSARC block table")
+        end = max(end, offset + sum(blocks[j] or block for j in range(first, first + count)))
+    return max(0, end - size)
+
+
+_archive_checks: dict = {}
+
+
+def damaged_archives(folder: Path) -> str:
+    """Why the game's .psarc data archives cannot work ('' when they look whole). A copy through
+    a FAT32 drive cuts files at 4 GB, and Gravity Rush 2's two biggest are 10 and 16 GB (#18:
+    every font failed to open, then a crash at the start with "code 3")."""
+    for path in sorted(list(folder.glob("*.psarc")) + list(folder.glob("*/*.psarc"))):
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_size, stat.st_mtime_ns)
+            if key not in _archive_checks:
+                try:
+                    missing = psarc_missing_bytes(path)
+                    _archive_checks[key] = (f"is cut short ({missing / 2**30:.1f} GB missing)"
+                                            if missing else "")
+                except ValueError:
+                    _archive_checks[key] = "is damaged"
+            why = _archive_checks[key]
+        except OSError as e:
+            why = f"cannot be read ({e.strerror or e})"
+        if why:
+            return f"{path.relative_to(folder).as_posix()} {why}: copy the game files again."
+    return ""
 
 
 def find_games(base: Path, depth: int = 3) -> dict:
