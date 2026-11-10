@@ -27,7 +27,7 @@ WINDOW_MODES = ("fullscreen", "borderless", "window")
 # Frame rates: Gravity Rush 2 runs at 30 (60/90/120 with the FPS patches); Gravity Rush
 # Remastered at 60, and faster with a faster vblank (its game speed follows the clock).
 FPS_CHOICES = {"gr1": (60, 90, 120, 144), "gr2": (30, 60, 90, 120)}
-# SETUP > Render resolution: (Junmin Lee's "No upscaling" patch name prefix, label). The same
+# SETUP > Display > Resolution: (Junmin Lee's "No upscaling" patch name prefix, label). The same
 # names in both games' patch files; "" is the game's own 1920x1080 (no patch).
 RESOLUTIONS = (
     ("Resolution 1280x720", "1280x720 (16:9)"),

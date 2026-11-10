@@ -51,7 +51,7 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 - **Patches** (launcher SETUP), also by Junmin Lee: Gravity Rush 2 motion blur off, ambient
   occlusion trail fix, auto-exposure fix, skip intro, Cross confirms, cheats and unlocks;
   Gravity Rush Remastered skip intro.
-- **Render resolution** (launcher SETUP, per game): the size the game draws at, no upscaling,
+- **Resolution** (launcher SETUP > Display, per game): the size the game draws at, no upscaling,
   from 1280x720 to 4K: 16:9 (incl. 2560x1440 and native 3840x2160), 16:10, 4:3, 5:4, 3:2,
   21:9, 2.39:1, 21:10, 32:9 and 32:10. Junmin Lee's resolution patches; the 4:3, 5:4, 3:2 and
   1440x900 sizes are made by GRport from his 16:10 patches. With anti-aliasing Off, 3840x2160

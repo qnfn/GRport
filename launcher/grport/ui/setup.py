@@ -6,7 +6,9 @@ from grport import games, ini, patches, runtime, shortcuts
 from grport.settings import DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RESOLUTIONS, resolution_label
 from grport.ui import theme
 
-WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160")
+WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160",
+                "1280x800", "1440x900", "1680x1050", "1920x1200", "2560x1600",
+                "2560x1080", "3440x1440", "1024x768", "1440x1080")
 READBACK_CHOICES = (("off", "Off"), ("relaxed", "Relaxed"), ("precise", "Precise"))
 IN_GAME_NOTE = ("The Picture settings below are also in GRport's in-game menu: Insert (or "
                 "L3+R3 on a controller) changes them while you play.")
@@ -23,7 +25,8 @@ FPS_NOTES = {
             "speed; Junmin Lee's gravity kick camera fix is added (downloaded at the first "
             "PLAY). A display with that refresh rate shows all frames."),
 }
-RESOLUTION_NOTE = ("The size the game draws at (Junmin Lee's resolution patches, no upscaling). "
+RESOLUTION_NOTE = ("The size the game draws at, in every window mode (Junmin Lee's resolution "
+                   "patches, no upscaling). "
                    "Pick your screen's size for a sharp picture, 2K/4K for supersampling; 16:10 "
                    "and ultrawide sizes widen the view. Higher sizes need a faster GPU and more "
                    "video memory. The next PLAY prepares the game again (about a minute).")
@@ -47,7 +50,9 @@ PICTURE_NOTE = ("The same settings as GRport's in-game menu (Insert / L3+R3), pe
                 "with sharp edges.")
 WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
 WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window covering it; "
-               "Window has a title bar and the size below.")
+               "Window has a title bar and the Window size below.")
+WINDOW_SIZE_NOTE = ("Only the size of the window in Window mode; Fullscreen and Borderless use "
+                    "the whole monitor. The game's own resolution is Resolution above.")
 PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
                 "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
@@ -157,7 +162,12 @@ class SetupPage(tk.Frame):
         self.game_choice.set(self.key)
 
         display = self.board.add(0, 0, title="Display")
-        row = self._row(display, "Window", first=True)
+        row = self._row(display, "Resolution", first=True)
+        self.resolution_box = theme.Dropdown(row, app, lambda: self._popup(
+            self.resolution_box, RESOLUTIONS, self.g.resolution, self.set_resolution), width=290)
+        self.resolution_box.pack(side="left")
+        self._note(display, RESOLUTION_NOTE)
+        row = self._row(display, "Window")
         self.window_choice = theme.Segmented(row, app, WINDOW_CHOICES, self.set_window_mode)
         self.window_choice.pack(side="left")
         self._note(display, WINDOW_NOTE)
@@ -165,7 +175,7 @@ class SetupPage(tk.Frame):
         self.size_box = theme.Dropdown(row, app, lambda: self._popup(
             self.size_box, WINDOW_SIZES, self.app.settings.window_size, self.set_window_size))
         self.size_box.pack(side="left")
-        self._note(display, "Window size is used when Window is chosen.")
+        self._note(display, WINDOW_SIZE_NOTE)
         row = self._row(display, "Language")
         self.language_box = theme.Dropdown(row, app, lambda: self._popup(
             self.language_box, [(key, name) for key, name, _ in LANGUAGES],
@@ -188,11 +198,6 @@ class SetupPage(tk.Frame):
                                           self.set_fps)
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
-        row = self._row(gfx, "Render resolution")
-        self.resolution_box = theme.Dropdown(row, app, lambda: self._popup(
-            self.resolution_box, RESOLUTIONS, self.g.resolution, self.set_resolution), width=290)
-        self.resolution_box.pack(side="left")
-        self._note(gfx, RESOLUTION_NOTE)
         self.pro_choice = None
         if self.key == "gr2":
             row = self._row(gfx, "PS4 Pro mode")
