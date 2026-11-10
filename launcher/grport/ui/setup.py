@@ -2,13 +2,14 @@
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import tkinter as tk
 
-from grport import games, ini, patches, runtime, shortcuts
-from grport.settings import DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RESOLUTIONS, resolution_label
+from grport import games, ini, patches, runtime, settings, shortcuts
+from grport.settings import (ASPECTS, DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RENDER_GRID,
+                             WINDOW_HEIGHTS, WINDOW_HEIGHTS_16_10, aspect_of, resolution_label, resolution_size)
 from grport.ui import theme
 
-WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160",
-                "1280x800", "1440x900", "1680x1050", "1920x1200", "2560x1600",
-                "2560x1080", "3440x1440", "1024x768", "1440x1080")
+def window_size_choices(aspect: str) -> list:
+    heights = WINDOW_HEIGHTS_16_10 if aspect == "16:10" else WINDOW_HEIGHTS
+    return [(f"{h}p", "4K" if h == 2160 else f"{h}p") for h in heights]
 READBACK_CHOICES = (("off", "Off"), ("relaxed", "Relaxed"), ("precise", "Precise"))
 IN_GAME_NOTE = ("The Picture settings below are also in GRport's in-game menu: Insert (or "
                 "L3+R3 on a controller) changes them while you play.")
@@ -25,11 +26,14 @@ FPS_NOTES = {
             "speed; Junmin Lee's gravity kick camera fix is added (downloaded at the first "
             "PLAY). A display with that refresh rate shows all frames."),
 }
-RESOLUTION_NOTE = ("The size the game draws at, in every window mode (Junmin Lee's resolution "
-                   "patches, no upscaling). "
-                   "Pick your screen's size for a sharp picture, 2K/4K for supersampling; 16:10 "
-                   "and ultrawide sizes widen the view. Higher sizes need a faster GPU and more "
-                   "video memory. The next PLAY prepares the game again (about a minute).")
+RESOLUTION_NOTE = ("Render: the size the game draws at, {size}, in every window mode (Junmin "
+                   "Lee's resolution patches, no upscaling{own}). Aspect ratio: pick your screen's "
+                   "shape; 16:10 and wider show more of the view, and a screen of another shape "
+                   "gets black bars. Pick your screen's size for a sharp picture, a bigger one for "
+                   "supersampling; bigger sizes need a faster GPU and more video memory. The next "
+                   "PLAY prepares the game again (about a minute).")
+OLD_RESOLUTION_NOTE = (" Now {label}, chosen in an older GRport; it keeps working until you pick "
+                       "a Render size.")
 # The in-game menu's picture settings (grport.ini, read by the runtime at start): key, label,
 # choices, default when the file does not have it yet.
 ON_OFF = (("1", "On"), ("0", "Off"))
@@ -51,8 +55,8 @@ PICTURE_NOTE = ("The same settings as GRport's in-game menu (Insert / L3+R3), pe
 WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
 WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window covering it; "
                "Window has a title bar and the Window size below.")
-WINDOW_SIZE_NOTE = ("Only the size of the window in Window mode; Fullscreen and Borderless use "
-                    "the whole monitor. The game's own resolution is Resolution above.")
+WINDOW_SIZE_NOTE = ("Window size: only the window, in Window mode ({size}, the shape of Render); "
+                    "Fullscreen and Borderless use the whole monitor.")
 PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
                 "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
@@ -162,20 +166,20 @@ class SetupPage(tk.Frame):
         self.game_choice.set(self.key)
 
         display = self.board.add(0, 0, title="Display")
-        row = self._row(display, "Resolution", first=True)
-        self.resolution_box = theme.Dropdown(row, app, lambda: self._popup(
-            self.resolution_box, RESOLUTIONS, self.g.resolution, self.set_resolution), width=290)
-        self.resolution_box.pack(side="left")
-        self._note(display, RESOLUTION_NOTE)
-        row = self._row(display, "Window")
+        row = self._row(display, "Window", first=True)
         self.window_choice = theme.Segmented(row, app, WINDOW_CHOICES, self.set_window_mode)
         self.window_choice.pack(side="left")
-        self._note(display, WINDOW_NOTE)
         row = self._row(display, "Window size")
-        self.size_box = theme.Dropdown(row, app, lambda: self._popup(
-            self.size_box, WINDOW_SIZES, self.app.settings.window_size, self.set_window_size))
-        self.size_box.pack(side="left")
-        self._note(display, WINDOW_SIZE_NOTE)
+        self.size_choice = theme.Segmented(row, app, (), self.set_window_size)
+        self.size_choice.pack(side="left")
+        self.window_note = self._note(display, "")
+        row = self._row(display, "Render")
+        self.render_choice = theme.Segmented(row, app, (), self.set_resolution)
+        self.render_choice.pack(side="left")
+        row = self._row(display, "Aspect ratio")
+        self.aspect_choice = theme.Segmented(row, app, [(a, a) for a in ASPECTS], self.set_aspect)
+        self.aspect_choice.pack(side="left")
+        self.resolution_note = self._note(display, "")
         row = self._row(display, "Language")
         self.language_box = theme.Dropdown(row, app, lambda: self._popup(
             self.language_box, [(key, name) for key, name, _ in LANGUAGES],
@@ -292,10 +296,26 @@ class SetupPage(tk.Frame):
     def refresh(self) -> None:
         g, s = self.g, self.app.settings
         self.window_choice.set(s.window_mode)
-        self.size_box.set(s.window_size, enabled=s.window_mode == "window")
+        aspect = aspect_of(g.resolution)
+        windowed = s.window_mode == "window"
+        sizes = window_size_choices(aspect)
+        self.size_choice.set_choices(sizes)
+        for value, _ in sizes:
+            self.size_choice.set_enabled(value, windowed)
+        w, h = settings.window(s, g)
+        self.size_choice.set(f"{h}p")
+        self.window_note.configure(text=WINDOW_NOTE + " " + WINDOW_SIZE_NOTE.format(size=f"{w}x{h}"))
+        self.render_choice.set_choices([(p, "{}x{}".format(*resolution_size(p)))
+                                        for p in RENDER_GRID[aspect]])
+        self.render_choice.set(g.resolution)
+        self.aspect_choice.set(aspect)
+        note = RESOLUTION_NOTE.format(size="{}x{}".format(*resolution_size(g.resolution)),
+                                      own=", 1920x1080 is the game's own" if aspect == "16:9" else "")
+        if g.resolution not in RENDER_GRID[aspect]:
+            note += OLD_RESOLUTION_NOTE.format(label=resolution_label(g.resolution))
+        self.resolution_note.configure(text=note)
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
-        self.resolution_box.set(resolution_label(g.resolution))
         values = self._picture()
         for name, _, choices, default in PICTURE:
             value = values.get(name, default)
@@ -377,6 +397,17 @@ class SetupPage(tk.Frame):
             self.flash(f"Could not save grport.ini: {e.strerror or e}", "bad")
             return
         self.refresh()
+
+    def set_aspect(self, aspect: str) -> None:
+        """The same size step (small, 1080p-ish, 1440p-ish, 4K) in the new shape."""
+        old = RENDER_GRID.get(aspect_of(self.g.resolution), ())
+        step = old.index(self.g.resolution) if self.g.resolution in old else 1
+        new = RENDER_GRID[aspect]
+        if aspect in ("21:9", "32:9") and len(old) == 4:
+            step -= 1
+        elif aspect not in ("21:9", "32:9") and len(old) == 3:
+            step += 1
+        self.set_resolution(new[max(0, min(step, len(new) - 1))])
 
     def set_resolution(self, prefix: str) -> None:
         self.g.resolution = prefix

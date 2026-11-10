@@ -56,6 +56,7 @@ RESOLUTIONS = (
     ("Super ultrawide 32:10 4608x1440", "4608x1440 (32:10)"),
     ("Super ultrawide 32:10 6912x2160", "6912x2160 (32:10, 4K)"),
     # Made by GRport from the author's 16:10 patches (respatch.py).
+    ("GRport 4:3 960x720", "960x720 (4:3)"),
     ("GRport 16:10 1440x900", "1440x900 (16:10)"),
     ("GRport 4:3 1024x768", "1024x768 (4:3)"),
     ("GRport 4:3 1280x960", "1280x960 (4:3)"),
@@ -74,6 +75,41 @@ RESOLUTIONS = (
 
 def resolution_label(prefix: str) -> str:
     return dict(RESOLUTIONS).get(prefix, "1920x1080")
+
+
+# SETUP > Display: Render and Aspect ratio pick one of RESOLUTIONS. Per aspect ratio, its sizes
+# from small to 4K (21:9 is the 2.39:1 of 2560x1080 / 3440x1440 monitors). Other RESOLUTIONS
+# entries (chosen in older GRports) still work; the page then shows no Render choice.
+ASPECTS = ("4:3", "16:10", "16:9", "21:9", "32:9")
+RENDER_GRID = {
+    "4:3": ("GRport 4:3 960x720", "GRport 4:3 1440x1080", "GRport 4:3 1920x1440",
+            "GRport 4:3 2880x2160"),
+    "16:10": ("16:10 1280x800", "16:10 1920x1200", "16:10 2560x1600", "16:10 3840x2400"),
+    "16:9": ("Resolution 1280x720", "", "Resolution 2560x1440", "Resolution 3840x2160"),
+    "21:9": ("Ultrawide 2.39:1 2584x1080", "Ultrawide 2.39:1 3440x1440",
+             "Ultrawide 2.39:1 5160x2160"),
+    "32:9": ("Super ultrawide 32:9 3840x1080", "Super ultrawide 32:9 5120x1440",
+             "Super ultrawide 32:9 7680x2160"),
+}
+# SETUP > Window size, by aspect ratio: heights; the width follows the render shape.
+WINDOW_HEIGHTS = (720, 900, 1080, 1440, 2160)
+WINDOW_HEIGHTS_16_10 = (800, 900, 1050, 1200, 1600, 2400)
+
+
+def resolution_size(prefix: str) -> tuple:
+    """(width, height) the game draws at with this RESOLUTIONS entry."""
+    w, h = resolution_label(prefix).split()[0].split("x")
+    return int(w), int(h)
+
+
+def aspect_of(prefix: str) -> str:
+    """The ASPECTS entry of a RESOLUTIONS entry: its own, or the nearest by shape."""
+    for aspect, prefixes in RENDER_GRID.items():
+        if prefix in prefixes:
+            return aspect
+    w, h = resolution_size(prefix)
+    num = lambda a: int(a.split(":")[0]) / int(a.split(":")[1])
+    return min(ASPECTS, key=lambda a: abs(num(a if a != "21:9" else "43:18") - w / h))
 # The console language the games see (menus, subtitles; the voices are the games' own
 # invented language): key, name, PS4 language code.
 LANGUAGES = (("en", "English", 1), ("ja", "Japanese", 0), ("fr", "French", 2),
@@ -98,17 +134,23 @@ class GameSettings:
 class LauncherSettings:
     theme: str = "dark"
     window_mode: str = "borderless"  # WINDOW_MODES
-    window_size: str = "1920x1080"
+    window_size: str = "1080p"  # "<height>p" in the render shape, or "WxH"
     language: str = "en"        # LANGUAGES
     selected: str = "gr2"
     games: dict = field(default_factory=lambda: {key: GameSettings(fps=FPS_CHOICES[key][0])
                                                  for key in GAMES})
 
 
-def window(s: LauncherSettings) -> tuple:
-    """The window size as (width, height), at least 640x360; 1920x1080 when unreadable."""
+def window(s: LauncherSettings, g: "GameSettings | None" = None) -> tuple:
+    """The window size as (width, height), at least 640x360; 1920x1080 when unreadable.
+    "1080p" is that height in the shape of the game's render resolution (16:9 without g)."""
     try:
-        w, h = (int(v) for v in s.window_size.lower().split("x"))
+        size = s.window_size.lower()
+        if size.endswith("p"):
+            h = int(size[:-1])
+            rw, rh = resolution_size(g.resolution) if g is not None else (16, 9)
+            return max(640, round(h * rw / rh / 2) * 2), max(360, h)
+        w, h = (int(v) for v in size.split("x"))
         return max(640, w), max(360, h)
     except ValueError:
         return 1920, 1080

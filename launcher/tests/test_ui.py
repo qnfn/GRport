@@ -88,8 +88,31 @@ def test_render_resolution_choice_is_saved_and_patched(app):
     page = app.pages["setup"]
     page.set_resolution("16:10 1920x1200")
     assert load_settings(app.paths).games["gr2"].resolution == "16:10 1920x1200"
-    assert page.resolution_box.text.startswith("1920x1200")
+    assert page.aspect_choice.value == "16:10" and page.render_choice.value == "16:10 1920x1200"
+    assert "1920x1200" in page.resolution_note.cget("text")
     assert patches.wanted(30, "gr2", [], "16:10 1920x1200")[-1] == "16:10 1920x1200"
+
+
+def test_aspect_ratio_keeps_the_size_step_and_shapes_the_window(app):
+    from grport.settings import window
+    app.settings.selected = "gr2"
+    app.show("setup")
+    page = app.pages["setup"]
+    assert page.aspect_choice.value == "16:9" and page.render_choice.value == ""  # 1080p
+    page.set_resolution("Resolution 2560x1440")
+    page.set_aspect("16:10")
+    assert app.settings.games["gr2"].resolution == "16:10 2560x1600"
+    page.set_aspect("21:9")
+    assert app.settings.games["gr2"].resolution == "Ultrawide 2.39:1 3440x1440"
+    page.set_aspect("4:3")
+    assert app.settings.games["gr2"].resolution == "GRport 4:3 1920x1440"
+    page.set_window_mode("window")
+    page.set_window_size("900p")
+    assert page.size_choice.value == "900p"
+    assert window(load_settings(app.paths), app.settings.games["gr2"]) == (1200, 900)
+    # an older GRport's choice keeps working and is named
+    page.set_resolution("GRport 5:4 1280x1024")
+    assert page.aspect_choice.value == "4:3" and "1280x1024" in page.resolution_note.cget("text")
 
 
 def test_picture_settings_write_that_games_grport_ini(app):

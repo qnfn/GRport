@@ -88,7 +88,7 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         "BB_PREP_WORKERS": "0",
         "BB_WINDOW_MODE": s.window_mode,
         "BB_FULLSCREEN": "0" if s.window_mode == "window" else "1",
-        "BB_WINDOW_SIZE": "{}x{}".format(*window(s)),
+        "BB_WINDOW_SIZE": "{}x{}".format(*window(s, g)),
         "BB_DMEM_MB": "5056",
         "BB_USER_NAME": "Kat",
         "BB_FPS_LOG": "1",

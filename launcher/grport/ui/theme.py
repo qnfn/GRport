@@ -712,6 +712,14 @@ class Segmented(tk.Canvas):
             self._value = value
             self.redraw()
 
+    def set_choices(self, options) -> None:
+        """New (value, label) choices, e.g. sizes that depend on another choice."""
+        options = list(options)
+        if options != self._choices:
+            self._choices = options
+            self._hover = None
+            self.redraw()
+
     def set_enabled(self, value, enabled: bool) -> None:
         was = value not in self._disabled
         if enabled:
