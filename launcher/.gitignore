@@ -4,3 +4,4 @@ build/
 dist/
 *.spec
 assets/version.txt
+tests/data/

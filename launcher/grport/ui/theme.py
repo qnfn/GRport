@@ -98,8 +98,8 @@ def assets_dir() -> Path:
 
 
 def default_controls() -> Path:
-    """The controls defaults, bundled like the icon (build: --add-data "input-default.ini;.")."""
-    return resource_dir() / "input-default.ini"
+    """The controls defaults, bundled like the icon (in assets/)."""
+    return assets_dir() / "input-default.ini"
 
 
 def style_title_bar(window: tk.Misc, pal: dict, dark: bool) -> None:
@@ -515,9 +515,9 @@ class Dropdown(tk.Canvas):
     """The current choice in a rounded box with a chevron; clicking calls command()."""
 
     def __init__(self, master, app, command, *, height: "int | None" = None,
-                 bg_role: str = "panel"):
+                 bg_role: str = "panel", width: int = 160):
         super().__init__(master, highlightthickness=0, bd=0, height=height or app.px(36),
-                         width=app.px(160), cursor="hand2")
+                         width=app.px(width), cursor="hand2")
         self.app = app
         self._command = command
         self._bg_role = bg_role

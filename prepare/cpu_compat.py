@@ -329,6 +329,12 @@ def patch_image(image, segments, main, modules, relocations, *, plan=None, activ
     try:
         if plan is None:
             path = Path(__file__).resolve().parent.parent / 'tools/legacy-cpu-plan.json'
+            if not path.is_file():
+                # No translation plan ships for this game: link it untranslated. A CPU that
+                # really lacks BMI1/MOVBE/LZCNT gets the runtime's own CPU message at start.
+                report.update(enabled=False, experimental=False, skipped='no Legacy CPU plan for this game')
+                print('CPU compatibility: no Legacy CPU plan for this game; image left untranslated')
+                return bytearray(image), list(segments), report
             raw_plan = path.read_bytes()
             plan = json.loads(raw_plan, object_pairs_hook=_unique_fields)
         else:

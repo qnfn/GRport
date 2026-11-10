@@ -28,10 +28,10 @@ def test_games_next_to_the_launcher_are_found(app):
 
 
 def test_every_page_builds_for_both_games(app):
-    assert set(app.pages) == {"play", "setup", "log"}
+    assert set(app.pages) == {"play", "setup", "controls", "log"}
     for key in ("gr1", "gr2"):
         app.settings.selected = key
-        for tab in ("play", "setup", "log"):
+        for tab in ("play", "setup", "controls", "log"):
             app.show(tab)
             app.update()
 
@@ -65,3 +65,42 @@ def test_bug_report_names_the_runtime(app):
     text = app.pages["log"].report_text()
     assert text.startswith("GRport ") and "runtime" in text.splitlines()[0]
     assert "Stick dead zone: 10%" in text
+
+
+def test_controls_rebind_writes_that_games_input_ini(app):
+    app.show("controls")
+    page = app.pages["controls"]
+    page.select_game("gr2")
+    ini = app.paths.root / "user" / "gr2" / "input.ini"
+    assert ini.is_file()  # created from the bundled defaults
+    page.start_rebind("cross")
+    assert page.press_key("x")
+    assert "cross = x" in ini.read_text(encoding="utf-8")
+    assert not (app.paths.root / "user" / "gr1" / "input.ini").exists()
+    assert page.set_controller("cross", "circle")
+    assert "cross = circle" in ini.read_text(encoding="utf-8")
+
+
+def test_render_resolution_choice_is_saved_and_patched(app):
+    from grport import patches
+    app.settings.selected = "gr2"
+    app.show("setup")
+    page = app.pages["setup"]
+    page.set_resolution("16:10 1920x1200")
+    assert load_settings(app.paths).games["gr2"].resolution == "16:10 1920x1200"
+    assert page.resolution_box.text.startswith("1920x1200")
+    assert patches.wanted(30, "gr2", [], "16:10 1920x1200")[-1] == "16:10 1920x1200"
+
+
+def test_picture_settings_write_that_games_grport_ini(app):
+    from grport import ini
+    app.settings.selected = "gr1"
+    app.show("setup")
+    page = app.pages["setup"]
+    page.select_game("gr1")
+    page.set_picture("upscaler", "off")
+    page.set_picture("sharpness", "0.50")
+    values = ini.read_ini(app.paths.root / "user" / "gr1" / "grport.ini")
+    assert values["upscaler"] == "off" and values["sharpness"] == "0.50"
+    assert page.picture_choices["upscaler"].value == "off"
+    assert not (app.paths.root / "user" / "gr2" / "grport.ini").exists()

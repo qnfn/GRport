@@ -9,6 +9,7 @@ import hashlib
 import os
 from pathlib import Path
 
+from . import patches
 from .games import GameFolder
 from .paths import AppPaths
 from .settings import LANGUAGES, LauncherSettings, window
@@ -108,6 +109,11 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     out["BB_GR_UPSCALE"] = "1"
     # Both games pace themselves by the vblank: Gravity Rush 2 at its FPS patch's rate,
     # Gravity Rush Remastered (60 on the PS4) at any rate, its game speed following the clock.
+    # SETUP > Render resolution: the bigger ones need more direct memory (the patch notes say how much).
+    if g.resolution and info.game.key in patches.APP_VERSIONS:
+        extra = patches.extra_dmem_mb(patches.source(paths, info.game.key), g.resolution,
+                                      patches.APP_VERSIONS[info.game.key])
+        out["BB_DMEM_MB"] = str(5056 + extra)
     if (info.game.key == "gr2" and g.fps != 30) or (info.game.key == "gr1" and g.fps != 60):
         out["BB_VBLANK_HZ"] = str(g.fps)
     return out

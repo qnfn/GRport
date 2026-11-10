@@ -51,6 +51,16 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 - **Patches** (launcher SETUP), also by Junmin Lee: Gravity Rush 2 motion blur off, ambient
   occlusion trail fix, auto-exposure fix, skip intro, Cross confirms, cheats and unlocks;
   Gravity Rush Remastered skip intro.
+- **Render resolution** (launcher SETUP, per game): the size the game draws at, no upscaling,
+  from 1280x720 to 4K: 16:9 (incl. 2560x1440 and native 3840x2160), 16:10, 4:3, 5:4, 3:2,
+  21:9, 2.39:1, 21:10, 32:9 and 32:10. Junmin Lee's resolution patches; the 4:3, 5:4, 3:2 and
+  1440x900 sizes are made by GRport from his 16:10 patches. With anti-aliasing Off, 3840x2160
+  is native 4K without any anti-aliasing. The FPS counter shows the size the game draws at.
+- **Picture settings in the launcher** (SETUP > Picture, per game): anti-aliasing, sharpening,
+  FSR 1, FPS counter, mute in background, the same as the in-game menu.
+- **Controls** (launcher CONTROLS tab, per game): change any keyboard key or controller button.
+- **Start a game directly**: `GRport.exe --gr1` or `GRport.exe --gr2` (for a shortcut or Steam);
+  the launcher waits minimized and closes with the game.
 - **Window**: Fullscreen (exclusive), Borderless (best for streaming / screen sharing) or
   Window.
 - **Threading** (Auto, On, Off per game) and **desktop / Start menu shortcuts** (launcher
@@ -62,6 +72,8 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 - **Save slots**: Save and Load show a list of your saves to pick from (or a new one), and
   "Game saved" / "Game loaded" when done; Continue and Gallery; **language** of menus and
   subtitles; keyboard, mouse and controllers; FPS counter.
+- **Gravity Rush 2 photo album**: every photo is kept in `user/gr2/Capture Gallery`; past the
+  game's 999-photo limit the album shows the newest 950, so the camera keeps working.
 
 ## Known problems
 

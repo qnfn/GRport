@@ -2,14 +2,14 @@
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import tkinter as tk
 
-from grport import games, patches, shortcuts
-from grport.settings import DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES
+from grport import games, ini, patches, runtime, shortcuts
+from grport.settings import DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RESOLUTIONS, resolution_label
 from grport.ui import theme
 
 WINDOW_SIZES = ("1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160")
 READBACK_CHOICES = (("off", "Off"), ("relaxed", "Relaxed"), ("precise", "Precise"))
-IN_GAME_NOTE = ("Graphics and the upscaler are set in the game: open GRport's in-game "
-                "menu with Insert (or L3+R3 on a controller).")
+IN_GAME_NOTE = ("The Picture settings below are also in GRport's in-game menu: Insert (or "
+                "L3+R3 on a controller) changes them while you play.")
 RUNTIME_NOTE = ("The first PLAY prepares the game for GRport's runtime (about a minute). "
                 "Experimental: both games play their openings; some starts still crash in the "
                 "first seconds (press PLAY again).")
@@ -23,6 +23,28 @@ FPS_NOTES = {
             "speed; Junmin Lee's gravity kick camera fix is added (downloaded at the first "
             "PLAY). A display with that refresh rate shows all frames."),
 }
+RESOLUTION_NOTE = ("The size the game draws at (Junmin Lee's resolution patches, no upscaling). "
+                   "Pick your screen's size for a sharp picture, 2K/4K for supersampling; 16:10 "
+                   "and ultrawide sizes widen the view. Higher sizes need a faster GPU and more "
+                   "video memory. The next PLAY prepares the game again (about a minute).")
+# The in-game menu's picture settings (grport.ini, read by the runtime at start): key, label,
+# choices, default when the file does not have it yet.
+ON_OFF = (("1", "On"), ("0", "Off"))
+PICTURE = (
+    ("upscaler", "Anti-aliasing", (("off", "Off"), ("fsr3", "FSR 3.1"), ("fsr4", "FSR 4"),
+                                   ("taa", "TAA"), ("dlss", "DLSS")), "fsr3"),
+    ("sharpen", "Sharpening", ON_OFF, "1"),
+    ("fsr1", "FSR 1 to the screen", ON_OFF, "1"),
+    ("show_fps", "FPS counter", ON_OFF, "1"),
+    ("mute_unfocused", "Mute in background", ON_OFF, "0"),
+)
+SHARPNESS = tuple(f"{v / 10:.2f}" for v in range(11))
+PICTURE_NOTE = ("The same settings as GRport's in-game menu (Insert / L3+R3), per game. "
+                "Anti-aliasing: FSR and DLSS smooth edges using earlier frames (FSR 4 needs a GPU "
+                "with fast INT8 math, DLSS an NVIDIA RTX card; without one the game falls back "
+                "to FSR 3.1). Off keeps the game's own picture: with a 4K render resolution that "
+                "is native 4K without any anti-aliasing. FSR 1 scales the picture to the window "
+                "with sharp edges.")
 WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
 WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window covering it; "
                "Window has a title bar and the size below.")
@@ -166,6 +188,11 @@ class SetupPage(tk.Frame):
                                           self.set_fps)
         self.fps_choice.pack(side="left")
         self._note(gfx, FPS_NOTES[self.key])
+        row = self._row(gfx, "Render resolution")
+        self.resolution_box = theme.Dropdown(row, app, lambda: self._popup(
+            self.resolution_box, RESOLUTIONS, self.g.resolution, self.set_resolution), width=290)
+        self.resolution_box.pack(side="left")
+        self._note(gfx, RESOLUTION_NOTE)
         self.pro_choice = None
         if self.key == "gr2":
             row = self._row(gfx, "PS4 Pro mode")
@@ -174,7 +201,23 @@ class SetupPage(tk.Frame):
             self.pro_choice.pack(side="left")
             self._note(gfx, PRO_NOTE)
 
-        controls = self.board.add(2, 0, span=2, title="Controller")
+        picture = self.board.add(2, 0, span=2, title="Picture")
+        self.picture_choices = {}
+        for i, (name, label, choices, _) in enumerate(PICTURE):
+            row = self._row(picture, label, first=i == 0)
+            choice = theme.Segmented(row, app, choices, lambda v, n=name: self.set_picture(n, v))
+            choice.pack(side="left")
+            self.picture_choices[name] = choice
+            if name == "sharpen":
+                theme.text_label(row, app, "Sharpness", font="body").pack(
+                    side="left", padx=(app.px(16), app.px(8)))
+                self.sharpness_box = theme.Dropdown(row, app, lambda: self._popup(
+                    self.sharpness_box, SHARPNESS, self._picture().get("sharpness", "0.30"),
+                    lambda v: self.set_picture("sharpness", v)))
+                self.sharpness_box.pack(side="left")
+        self._note(picture, PICTURE_NOTE)
+
+        controls = self.board.add(3, 0, span=2, title="Controller")
         row = self._row(controls, "Stick dead zone", first=True)
         self.deadzone_box = theme.Dropdown(row, app, lambda: self._popup(
             self.deadzone_box, [(v, f"{v}%") for v in DEADZONE_CHOICES], self.g.stick_deadzone,
@@ -182,7 +225,7 @@ class SetupPage(tk.Frame):
         self.deadzone_box.pack(side="left")
         self._note(controls, DEADZONE_NOTE)
 
-        links = self.board.add(4, 0, span=2, title="Shortcuts")
+        links = self.board.add(5, 0, span=2, title="Shortcuts")
         row = tk.Frame(links)
         app.paint(row, bg="panel")
         row.pack(fill="x")
@@ -195,7 +238,7 @@ class SetupPage(tk.Frame):
                           "search finds it.")
 
         self.patch_choices = {}
-        extra = self.board.add(3, 0, span=2, title="Patches")
+        extra = self.board.add(4, 0, span=2, title="Patches")
         for i, (prefix, label, _, note) in enumerate(patches.OPTIONAL.get(self.key, ())):
             row = tk.Frame(extra)
             app.paint(row, bg="panel")
@@ -247,6 +290,15 @@ class SetupPage(tk.Frame):
         self.size_box.set(s.window_size, enabled=s.window_mode == "window")
         self.readback_choice.set(g.readbacks)
         self.fps_choice.set(g.fps)
+        self.resolution_box.set(resolution_label(g.resolution))
+        values = self._picture()
+        for name, _, choices, default in PICTURE:
+            value = values.get(name, default)
+            self.picture_choices[name].set(value if value in dict(choices) else default)
+        try:
+            self.sharpness_box.set(f"{float(values.get('sharpness', '0.3')):.2f}")
+        except ValueError:
+            self.sharpness_box.set("0.30")
         self.threading_choice.set(g.threading)
         if self.pro_choice is not None:
             self.pro_choice.set(g.ps4_pro)
@@ -305,6 +357,24 @@ class SetupPage(tk.Frame):
 
     def set_fps(self, fps: int) -> None:
         self.g.fps = fps
+        self._saved()
+
+    def _ini(self):
+        return runtime.user_dir(self.app.paths, self.key) / "grport.ini"
+
+    def _picture(self) -> dict:
+        return ini.read_ini(self._ini())
+
+    def set_picture(self, name: str, value: str) -> None:
+        try:
+            ini.update_ini(self._ini(), {name: value})
+        except OSError as e:
+            self.flash(f"Could not save grport.ini: {e.strerror or e}", "bad")
+            return
+        self.refresh()
+
+    def set_resolution(self, prefix: str) -> None:
+        self.g.resolution = prefix
         self._saved()
 
     def set_threading(self, value: str) -> None:

@@ -17,13 +17,14 @@ from grport.paths import AppPaths
 from grport.process import RUNNER
 from grport.settings import load_settings, save_settings
 from grport.ui import dialogs, theme
+from grport.ui.controls import ControlsPage
 from grport.ui.home import HomePage
 from grport.ui.log import LogPage
 from grport.ui.setup import SetupPage
 
-TABS = ("play", "setup", "log")
+TABS = ("play", "setup", "controls", "log")
 KOFI_URL = "https://ko-fi.com/qnfn1"
-PAGES = {"play": HomePage, "setup": SetupPage, "log": LogPage}
+PAGES = {"play": HomePage, "setup": SetupPage, "controls": ControlsPage, "log": LogPage}
 
 
 def _lookup_gpu(results: "queue.Queue") -> None:
@@ -34,7 +35,7 @@ def _lookup_gpu(results: "queue.Queue") -> None:
 
 
 class App(tk.Tk):
-    def __init__(self, paths: AppPaths):
+    def __init__(self, paths: AppPaths, autoplay: "str | None" = None):
         theme.enable_dpi_awareness()
         super().__init__(className="GRport")
         self.paths = paths
@@ -83,6 +84,24 @@ class App(tk.Tk):
             updater.clean_up(self.paths.root)
             threading.Thread(target=self._check_update, daemon=True).start()
         self.after(150, self._poll)
+        # GRport.exe --gr1 / --gr2: start that game at once; the launcher waits minimized and
+        # closes with the game (it comes back on screen if the game cannot start).
+        self.autoplay = autoplay
+        if autoplay:
+            self.after(50, self._autoplay)
+
+    def _autoplay(self) -> None:
+        error = self.play(self.autoplay) if self.autoplay in self.settings.games else "Unknown game."
+        if error:
+            self.autoplay = None
+            self.pages["play"].flash(error, "bad")
+            return
+        self.iconify()
+
+    def _autoplay_failed(self) -> None:
+        if self.autoplay:
+            self.autoplay = None
+            self.deiconify()
 
     def _check_update(self) -> None:
         try:
@@ -476,6 +495,7 @@ class App(tk.Tk):
                                      f"{info.game.title}: it runs unpatched.", "bad" if error else "warn")
             if error:
                 self._phase_changed()
+                self._autoplay_failed()
             return
         patch = patches.patch_file(self.paths, key) if key else None
         if code == 0 and info is not None and runtime.is_prepared(
@@ -484,8 +504,10 @@ class App(tk.Tk):
             if error:
                 self.pages["play"].flash(error, "bad")
                 self._phase_changed()
+                self._autoplay_failed()
             return
         self._phase_changed()
+        self._autoplay_failed()
         self.pages["play"].flash("The game could not be prepared. See LOG for details.", "bad")
 
     def stop(self) -> None:
@@ -495,6 +517,8 @@ class App(tk.Tk):
     def _finished(self) -> None:
         self.phase, self.playing = "idle", None
         self._phase_changed()
+        if self.autoplay:
+            self.after(100, self._on_close)
 
     def _phase_changed(self) -> None:
         for page in self.pages.values():

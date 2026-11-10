@@ -221,3 +221,27 @@ def test_ps4_pro_mode_reaches_only_gravity_rush_2(paths, tmp_path):
     assert load_settings(paths).games["gr2"].ps4_pro is True
     paths.settings_json.write_text(json.dumps({"games": {"gr2": {"ps4_pro": "yes"}}}))
     assert load_settings(paths).games["gr2"].ps4_pro is False
+
+
+def test_autoplay_key():
+    from grport.__main__ import autoplay_key
+    assert autoplay_key([]) is None
+    assert autoplay_key(["--gr1"]) == "gr1"
+    assert autoplay_key(["-GR2"]) == "gr2"
+    assert autoplay_key(["/gr2"]) == "gr2"
+    assert autoplay_key(["--play", "gr1"]) == "gr1"
+    assert autoplay_key(["--play", "x"]) is None
+
+
+def test_resolution_patch_extra_dmem(tmp_path):
+    from grport import patches
+    xml = tmp_path / "p.xml"
+    xml.write_text('<Patch><Metadata Name="Resolution 3840x2160 (2160p, 16:9) (READ NOTES)" '
+                   'AppVer="01.11" Note="3840x2160. Needs Additional DMem Allocation 128 '
+                   '(extra_dmem_in_mbytes)."><PatchList/></Metadata>'
+                   '<Metadata Name="16:10 1920x1200" AppVer="01.11" Note="1920x1200, 16:10.">'
+                   '<PatchList/></Metadata></Patch>', encoding="utf-8")
+    assert patches.extra_dmem_mb(xml, "Resolution 3840x2160", "01.11") == 128
+    assert patches.extra_dmem_mb(xml, "16:10 1920x1200", "01.11") == 0
+    assert patches.extra_dmem_mb(xml, "", "01.11") == 0
+    assert patches.extra_dmem_mb(tmp_path / "missing.xml", "Resolution 3840x2160", "01.11") == 0

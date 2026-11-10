@@ -10,11 +10,13 @@ compiled file goes to the prepare step (its writes keep their bytes) and to the 
 (--patches).
 """
 import hashlib
+import re
 import struct
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from . import respatch
 from .games import GameFolder
 from .paths import AppPaths
 from .settings import FPS_CHOICES, LauncherSettings
@@ -87,7 +89,7 @@ def download(paths: AppPaths, key: str = "gr2") -> Path:
     return path
 
 
-def wanted(fps: int, key: str = "gr2", extras=()) -> list:
+def wanted(fps: int, key: str = "gr2", extras=(), resolution: str = "") -> list:
     """Name prefixes of the patches for a game, frame rate and optional choices. Gravity Rush 2:
     the crash fix and Unlock All DLC always, the FPS patch above 30. Gravity Rush Remastered:
     the gravity kick fix above 60."""
@@ -99,7 +101,8 @@ def wanted(fps: int, key: str = "gr2", extras=()) -> list:
         out += [CRASH_FIX, DLC_UNLOCK]
     elif key == "gr1" and fps > 60:
         out.append(GR1_KICK_FIX)
-    return out + [prefix for prefix in known if prefix in extras]
+    out += [prefix for prefix in known if prefix in extras]
+    return out + ([resolution] if resolution else [])
 
 
 _INTS = {"bytes16": "<H", "bytes32": "<I", "bytes64": "<Q"}
@@ -124,6 +127,11 @@ def compile_patches(xml: Path, prefixes: list, app_version: str = APP_VERSIONS["
     root = ET.parse(xml).getroot()
     writes = []
     for prefix in prefixes:
+        size = respatch.parse(prefix)
+        if size is not None:  # a size made from the author's 16:10 patches
+            writes += [(addr - GOLDHEN_BASE, data)
+                       for addr, data in respatch.generate(root, app_version, *size)]
+            continue
         metas = [m for m in root.iter("Metadata") if (m.get("Name") or "").startswith(prefix)
                  and m.get("AppVer") == app_version]
         if not metas:
@@ -135,6 +143,26 @@ def compile_patches(xml: Path, prefixes: list, app_version: str = APP_VERSIONS["
     for offset, data in writes:
         blob += struct.pack("<QQ", offset, len(data)) + data
     return blob
+
+
+def extra_dmem_mb(xml: Path, prefix: str, app_version: str) -> int:
+    """The extra direct memory (MiB) a patch's notes ask for ("Needs Additional DMem Allocation
+    N"): the bigger resolutions' render targets do not fit the PS4's 5056 MiB."""
+    if not prefix:
+        return 0
+    size = respatch.parse(prefix)
+    if size is not None:
+        prefix = respatch.big_dmem_patch(size[0], size[1]) or ""
+        if not prefix:
+            return 0
+    try:
+        root = ET.parse(xml).getroot()
+    except (OSError, ET.ParseError):
+        return 0
+    metas = [m for m in root.iter("Metadata") if (m.get("Name") or "").startswith(prefix)
+             and m.get("AppVer") == app_version]
+    found = re.search(r"DMem Allocation (\d+)", metas[-1].get("Note") or "") if metas else None
+    return int(found.group(1)) if found else 0
 
 
 def patch_file(paths: AppPaths, key: str) -> Path:
@@ -175,7 +203,7 @@ def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | Non
     key = info.game.key
     path = patch_file(paths, key)
     g = s.games[key]
-    names = wanted(g.fps, key, extras(s, key))
+    names = wanted(g.fps, key, extras(s, key), g.resolution)
     if key not in FILES or info.version != APP_VERSIONS[key] or not names:
         path.unlink(missing_ok=True)
         return None

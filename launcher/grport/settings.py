@@ -27,6 +27,53 @@ WINDOW_MODES = ("fullscreen", "borderless", "window")
 # Frame rates: Gravity Rush 2 runs at 30 (60/90/120 with the FPS patches); Gravity Rush
 # Remastered at 60, and faster with a faster vblank (its game speed follows the clock).
 FPS_CHOICES = {"gr1": (60, 90, 120, 144), "gr2": (30, 60, 90, 120)}
+# SETUP > Render resolution: (Junmin Lee's "No upscaling" patch name prefix, label). The same
+# names in both games' patch files; "" is the game's own 1920x1080 (no patch).
+RESOLUTIONS = (
+    ("Resolution 1280x720", "1280x720 (16:9)"),
+    ("Resolution 1600x900", "1600x900 (16:9)"),
+    ("", "1920x1080 (16:9, the game's own)"),
+    ("Resolution 2560x1440", "2560x1440 (16:9, 2K)"),
+    ("Resolution 3840x2160", "3840x2160 (16:9, 4K)"),
+    ("16:10 1280x800", "1280x800 (16:10)"),
+    ("16:10 1600x1000", "1600x1000 (16:10)"),
+    ("16:10 1920x1200", "1920x1200 (16:10)"),
+    ("16:10 2560x1600", "2560x1600 (16:10)"),
+    ("16:10 3840x2400", "3840x2400 (16:10, 4K)"),
+    ("Ultrawide 21:9 (7:3) 2520x1080", "2520x1080 (21:9)"),
+    ("Ultrawide 21:9 (7:3) 3360x1440", "3360x1440 (21:9)"),
+    ("Ultrawide 21:9 (7:3) 5040x2160", "5040x2160 (21:9, 4K)"),
+    ("Ultrawide 2.39:1 2584x1080", "2584x1080 (2.39:1)"),
+    ("Ultrawide 2.39:1 3440x1440", "3440x1440 (2.39:1)"),
+    ("Ultrawide 2.39:1 5160x2160", "5160x2160 (2.39:1, 4K)"),
+    ("Ultrawide 21:10 2272x1080", "2272x1080 (21:10)"),
+    ("Ultrawide 21:10 3024x1440", "3024x1440 (21:10)"),
+    ("Ultrawide 21:10 4536x2160", "4536x2160 (21:10, 4K)"),
+    ("Super ultrawide 32:9 3840x1080", "3840x1080 (32:9)"),
+    ("Super ultrawide 32:9 5120x1440", "5120x1440 (32:9)"),
+    ("Super ultrawide 32:9 7680x2160", "7680x2160 (32:9, 4K)"),
+    ("Super ultrawide 32:10 3456x1080", "3456x1080 (32:10)"),
+    ("Super ultrawide 32:10 4608x1440", "4608x1440 (32:10)"),
+    ("Super ultrawide 32:10 6912x2160", "6912x2160 (32:10, 4K)"),
+    # Made by GRport from the author's 16:10 patches (respatch.py).
+    ("GRport 16:10 1440x900", "1440x900 (16:10)"),
+    ("GRport 4:3 1024x768", "1024x768 (4:3)"),
+    ("GRport 4:3 1280x960", "1280x960 (4:3)"),
+    ("GRport 4:3 1440x1080", "1440x1080 (4:3)"),
+    ("GRport 4:3 1600x1200", "1600x1200 (4:3)"),
+    ("GRport 4:3 1920x1440", "1920x1440 (4:3)"),
+    ("GRport 4:3 2880x2160", "2880x2160 (4:3, 4K)"),
+    ("GRport 5:4 1280x1024", "1280x1024 (5:4)"),
+    ("GRport 5:4 1800x1440", "1800x1440 (5:4)"),
+    ("GRport 5:4 2700x2160", "2700x2160 (5:4, 4K)"),
+    ("GRport 3:2 1620x1080", "1620x1080 (3:2)"),
+    ("GRport 3:2 2160x1440", "2160x1440 (3:2)"),
+    ("GRport 3:2 3240x2160", "3240x2160 (3:2, 4K)"),
+)
+
+
+def resolution_label(prefix: str) -> str:
+    return dict(RESOLUTIONS).get(prefix, "1920x1080")
 # The console language the games see (menus, subtitles; the voices are the games' own
 # invented language): key, name, PS4 language code.
 LANGUAGES = (("en", "English", 1), ("ja", "Japanese", 0), ("fr", "French", 2),
@@ -43,6 +90,7 @@ class GameSettings:
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
+    resolution: str = ""        # RESOLUTIONS: a resolution patch prefix; "" the game's 1080p
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
 
 
@@ -92,6 +140,8 @@ def _load_game(key: str, raw) -> GameSettings:
         g.fps = FPS_CHOICES[key][0]
     if not 0 <= g.stick_deadzone <= DEADZONE_MAX:
         g.stick_deadzone = DEADZONE_DEFAULT
+    if g.resolution not in dict(RESOLUTIONS):
+        g.resolution = ""
     return g
 
 

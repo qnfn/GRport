@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 
 from grport import __version__, patches
+from grport.settings import resolution_label
 from grport.ui import theme
 
 TAIL_LINES = 6000
@@ -218,6 +219,7 @@ class LogPage(tk.Frame):
             f"GPU: {app.gpu or 'unknown'}",
             f"Window: {s.window_mode}" + (f" {s.window_size}" if s.window_mode == "window" else ""),
             f"Frame rate: {g.fps} FPS",
+            f"Render resolution: {resolution_label(g.resolution)}",
             f"Patches: {', '.join(patches.extras(s, key)) or 'none'}",
             f"GPU readbacks: {g.readbacks}",
             f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",

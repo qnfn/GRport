@@ -34,6 +34,17 @@ def _restart_if_borrowed() -> bool:
     return True
 
 
+def autoplay_key(argv: list) -> "str | None":
+    """The game to start straight away: --gr1 / --gr2 (also -gr1, gr1 or --play gr1)."""
+    args = [a.lower().lstrip("-/") for a in argv]
+    for i, arg in enumerate(args):
+        if arg in ("gr1", "gr2"):
+            return arg
+        if arg == "play" and i + 1 < len(args) and args[i + 1] in ("gr1", "gr2"):
+            return args[i + 1]
+    return None
+
+
 def main(argv: list) -> int:
     if _restart_if_borrowed():
         return 0
@@ -41,7 +52,7 @@ def main(argv: list) -> int:
     paths = AppPaths.current()
     _taskbar_identity()
     from grport.ui.app import App
-    App(paths).mainloop()
+    App(paths, autoplay=autoplay_key(argv)).mainloop()
     return 0
 
 
