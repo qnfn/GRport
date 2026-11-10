@@ -4,7 +4,7 @@ import tkinter as tk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from grport import games, runtime
+from grport import games, patches, runtime
 from grport.ui import theme
 
 ART_HEIGHT = 240  # the least; the art takes whatever height the card has left
@@ -121,6 +121,8 @@ class GameCard:
             self.detail.configure(text=f"{version}  ·  GRport runtime (experimental)")
             if not info.ok:
                 self.status.configure(text=info.problem, fg=app.palette["bad"])
+            elif patches.version_problem(info):
+                self.status.configure(text=patches.version_problem(info), fg=app.palette["warn"])
             elif runtime.missing(app.paths):
                 self.status.configure(text=runtime.missing(app.paths), fg=app.palette["bad"])
             elif not runtime.is_prepared(app.paths, info):
@@ -150,7 +152,12 @@ class GameCard:
             self.app.stop()
             return
         error = self.app.play(self.game.key)
-        self.page.flash(error or f"Starting {self.game.title}…", "bad" if error else "ok")
+        info = self.app.infos.get(self.game.key)
+        problem = patches.version_problem(info) if info and not error else ""
+        if problem:
+            self.page.flash(f"Starting {self.game.title} unpatched. {problem}", "warn")
+        else:
+            self.page.flash(error or f"Starting {self.game.title}…", "bad" if error else "ok")
 
     def on_folder(self) -> None:
         error = self.app.choose_folder(self.game.key)

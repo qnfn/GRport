@@ -188,6 +188,18 @@ def mark_mismatch(paths: AppPaths, info: GameFolder) -> None:
     patch.unlink(missing_ok=True)
 
 
+def version_problem(info: GameFolder) -> str:
+    """Why the patches cannot apply to this dump ('' when they can): the author's patches are
+    made for one version of each game (APP_VERSIONS), and another one runs unpatched (#17:
+    Gravity Rush 2 v01.00 stayed at 30 FPS and 1080p whatever SETUP said)."""
+    key = info.game.key if info.game else None
+    wanted_version = APP_VERSIONS.get(key or "")
+    if not wanted_version or not info.version or info.version == wanted_version:
+        return ""
+    return (f"Needs update {wanted_version} for GRport's patches: until it is added, no "
+            "60 FPS, no resolution change.")
+
+
 def mismatched(paths: AppPaths, info: GameFolder, blob: bytes) -> bool:
     try:
         return _mismatch_file(paths, info.game.key).read_text(encoding="utf-8") == _stamp(info, blob)

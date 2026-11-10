@@ -245,3 +245,15 @@ def test_resolution_patch_extra_dmem(tmp_path):
     assert patches.extra_dmem_mb(xml, "16:10 1920x1200", "01.11") == 0
     assert patches.extra_dmem_mb(xml, "", "01.11") == 0
     assert patches.extra_dmem_mb(tmp_path / "missing.xml", "Resolution 3840x2160", "01.11") == 0
+
+
+def test_version_problem_names_the_needed_update():
+    """#17: Gravity Rush 2 v01.00 got no patches (30 FPS, 1080p) without a word."""
+    from grport import patches
+    gr2, gr1 = games.GAMES["gr2"], games.GAMES["gr1"]
+    old = games.GameFolder(Path("x"), gr2, "CUSA04943", "Europe", "01.00", "")
+    problem = patches.version_problem(old)
+    assert "01.11" in problem and "60 FPS" in problem
+    assert patches.version_problem(games.GameFolder(Path("x"), gr2, "CUSA04934", "Europe", "01.11", "")) == ""
+    assert patches.version_problem(games.GameFolder(Path("x"), gr1, "CUSA01113", "Europe", "01.00", "")) == ""
+    assert patches.version_problem(games.GameFolder(Path("x"), gr2, "CUSA03694", "USA", "", "")) == ""
