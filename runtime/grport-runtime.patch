@@ -23402,7 +23402,7 @@ index 0000000..6d4d62c
 +    std::puts("PASS: empty decoder queue wakes on EOF, packet arrival, and cancellation");
 +}
 diff --git a/tests/test_pad.c b/tests/test_pad.c
-index a477ea9..74c9863 100644
+index a477ea9..761d1c5 100644
 --- a/tests/test_pad.c
 +++ b/tests/test_pad.c
 @@ -3,6 +3,13 @@
@@ -23446,7 +23446,7 @@ index a477ea9..74c9863 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -493,7 +500,71 @@ static void test_reload_on_f8(void) {
+@@ -493,7 +500,73 @@ static void test_reload_on_f8(void) {
      puts("PASS: F8 reloads input.ini live (AC-018)");
  }
  
@@ -23485,8 +23485,10 @@ index a477ea9..74c9863 100644
 +    assert(pad_set_motion(0,1)==ERR_INVALID_HANDLE);
 +    assert(pad_reset_orientation(0)==ERR_INVALID_HANDLE);
 +    assert(pad_set_motion(1,1)==0);
-+    assert(SDL_GamepadSensorEnabled(gamepad,SDL_SENSOR_GYRO));
-+    assert(SDL_GamepadSensorEnabled(gamepad,SDL_SENSOR_ACCEL));
++    assert(motion_gamepad && motion_gamepad!=gamepad);
++    assert(SDL_GamepadHasSensor(motion_gamepad,SDL_SENSOR_GYRO));
++    assert(SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
++    assert(SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_ACCEL));
 +    const float gyro[]={0.5f,-1.0f,0.25f};
 +    const float accel[]={0.0f,SDL_STANDARD_GRAVITY,0.0f};
 +    assert(SDL_SendJoystickVirtualSensorData(joystick,SDL_SENSOR_GYRO,SDL_GetTicksNS(),gyro,3));
@@ -23508,9 +23510,9 @@ index a477ea9..74c9863 100644
 +    assert(pad_read_state(1,&d)==0 && d.angular_velocity[0]==0 && d.acceleration[1]==0);
 +    capture=0;
 +    assert(pad_set_motion(1,0)==0);
-+    assert(!SDL_GamepadSensorEnabled(gamepad,SDL_SENSOR_GYRO));
++    assert(!SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
 +    assert(pad_read_state(1,&d)==0 && d.angular_velocity[0]==0 && d.orientation[3]==1.0f);
-+    puts("PASS: motion sensors, acceleration units, quaternion, reset, disable and overlay capture");
++    puts("PASS: gyro-capable SDL pad discovery, sensor enablement, units, quaternion, reset and overlay capture");
 +}
 +
  int main(void) {
@@ -23518,7 +23520,7 @@ index a477ea9..74c9863 100644
      test_binding_evaluation();
      test_combos();
      test_prompt_texts();
-@@ -502,7 +573,7 @@ int main(void) {
+@@ -502,7 +575,7 @@ int main(void) {
      test_mouse_to_axis();
      test_mouse_buttons_and_wheel();
  
@@ -23527,25 +23529,78 @@ index a477ea9..74c9863 100644
      int fd=mkstemp(path);
      assert(fd>=0);
      close(fd);
-@@ -537,6 +608,10 @@ int main(void) {
-     desc.name="bbport test controller";
+@@ -534,18 +607,43 @@ int main(void) {
+     desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
+     desc.button_mask=(1u<<SDL_GAMEPAD_BUTTON_COUNT)-1;
+     desc.axis_mask=(1u<<SDL_GAMEPAD_AXIS_COUNT)-1;
+-    desc.name="bbport test controller";
      desc.vendor_id=0x1d50;
      desc.product_id=0x6189;
-+    SDL_VirtualJoystickSensorDesc sensors[]={{SDL_SENSOR_GYRO,250.0f},{SDL_SENSOR_ACCEL,250.0f}};
-+    desc.nsensors=2;
-+    desc.sensors=sensors;
-+    desc.SetSensorsEnabled=sensors_enabled;
      desc.ntouchpads=1;
      desc.touchpads=&touch;
-     SDL_JoystickID id=SDL_AttachVirtualJoystick(&desc);
-@@ -560,6 +635,7 @@ int main(void) {
+-    SDL_JoystickID id=SDL_AttachVirtualJoystick(&desc);
++    desc.name="bbport primary without sensors";
++    SDL_JoystickID primary_id=SDL_AttachVirtualJoystick(&desc);
++    assert(primary_id!=0);
++    SDL_Joystick *primary_joystick=SDL_OpenJoystick(primary_id);
++    assert(primary_joystick);
++    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
++
++    SDL_VirtualJoystickSensorDesc accel_only[]={{SDL_SENSOR_ACCEL,250.0f}};
++    SDL_VirtualJoystickDesc accel_desc=desc;
++    accel_desc.name="bbport accelerometer only";
++    accel_desc.nsensors=1;
++    accel_desc.sensors=accel_only;
++    SDL_JoystickID accel_id=SDL_AttachVirtualJoystick(&accel_desc);
++    assert(accel_id!=0);
++    SDL_Joystick *accel_joystick=SDL_OpenJoystick(accel_id);
++    assert(accel_joystick);
++    SDL_UpdateJoysticks(); SDL_UpdateGamepads();
++
++    SDL_VirtualJoystickSensorDesc sensors[]={{SDL_SENSOR_GYRO,250.0f},{SDL_SENSOR_ACCEL,250.0f}};
++    SDL_VirtualJoystickDesc motion_desc=desc;
++    motion_desc.name="bbport gyro test controller";
++    motion_desc.nsensors=2;
++    motion_desc.sensors=sensors;
++    motion_desc.SetSensorsEnabled=sensors_enabled;
++    motion_desc.ntouchpads=1;
++    motion_desc.touchpads=&touch;
++    SDL_JoystickID id=SDL_AttachVirtualJoystick(&motion_desc);
+     assert(id!=0);
+     SDL_Joystick *joystick=SDL_OpenJoystick(id);
+     assert(joystick);
+-    assert(SDL_SetJoystickVirtualTouchpad(joystick,0,0,true,0.75f,0.5f,1.0f));
+-    assert(SDL_SetJoystickVirtualTouchpad(joystick,0,1,true,0.25f,1.0f,1.0f));
+-    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_TOUCHPAD,true));
++    assert(SDL_SetJoystickVirtualTouchpad(primary_joystick,0,0,true,0.75f,0.5f,1.0f));
++    assert(SDL_SetJoystickVirtualTouchpad(primary_joystick,0,1,true,0.25f,1.0f,1.0f));
++    assert(SDL_SetJoystickVirtualButton(primary_joystick,SDL_GAMEPAD_BUTTON_TOUCHPAD,true));
+     SDL_UpdateJoysticks();
+     SDL_UpdateGamepads();
+     assert(pad_read_state(1,&data)==0);
+@@ -555,14 +653,20 @@ int main(void) {
+     capture=1;
+     assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
+     capture=0;
+-    assert(SDL_SetJoystickVirtualTouchpad(joystick,0,0,false,0,0,0));
+-    assert(SDL_SetJoystickVirtualTouchpad(joystick,0,1,false,0,0,0));
++    assert(SDL_SetJoystickVirtualTouchpad(primary_joystick,0,0,false,0,0,0));
++    assert(SDL_SetJoystickVirtualTouchpad(primary_joystick,0,1,false,0,0,0));
      SDL_UpdateJoysticks();
      SDL_UpdateGamepads();
      assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==480);
 +    test_motion(joystick);
++    assert(pad_close(1)==0);
      SDL_CloseJoystick(joystick);
++    SDL_CloseJoystick(accel_joystick);
++    SDL_CloseJoystick(primary_joystick);
      if (gamepad) SDL_CloseGamepad(gamepad);
      gamepad=NULL;
++    assert(SDL_DetachVirtualJoystick(primary_id));
++    assert(SDL_DetachVirtualJoystick(accel_id));
+     assert(SDL_DetachVirtualJoystick(id));
+     SDL_Quit();
+     unlink(path);
 diff --git a/tests/test_prompt_icons.cpp b/tests/test_prompt_icons.cpp
 index a5edf37..9b9e6a3 100644
 --- a/tests/test_prompt_icons.cpp
