@@ -6,7 +6,7 @@ import platform
 import tkinter as tk
 from pathlib import Path
 
-from grport import __version__, patches
+from grport import __version__, patches, sysinfo
 from grport.settings import resolution_label
 from grport.ui import theme
 
@@ -216,6 +216,7 @@ class LogPage(tk.Frame):
             f"GRport {__version__}, GRport runtime",
             f"Game: {info.game.title if info and info.game else key}"
             + (f" ({info.serial}, {info.region}, v{info.version})" if info else ""),
+            f"CPU: {sysinfo.cpu_name() or 'unknown'}",
             f"GPU: {app.gpu or 'unknown'}",
             f"Window: {s.window_mode}" + (f" {s.window_size}" if s.window_mode == "window" else ""),
             f"Frame rate: {g.fps} FPS",
@@ -226,10 +227,14 @@ class LogPage(tk.Frame):
             f"GPU readbacks: {g.readbacks}",
             f"Threading: {dict(auto='auto', **{'1': 'on', '0': 'off'})[g.threading]}",
             f"Stick dead zone: {g.stick_deadzone}%",
+            f"Temporal output: {g.temporal_output or 'render size (AA)'}",
+            f"Controller speaker: {'on' if g.pad_speaker else 'off'}",
+            f"Low-gravity warning: {'on' if g.low_gravity_beep else 'off'}",
+            f"Performance log: {'on' if g.performance_log else 'off'}",
         ]
         if key == "gr2":
             lines.append(f"PS4 Pro mode: {'on' if g.ps4_pro else 'off'}")
-        lines.append(f"Windows: {platform.version()}")
+        lines.append(f"{platform.system()}: {platform.version()}")
         try:
             tail = read_tail(path, REPORT_LINES)
         except OSError:

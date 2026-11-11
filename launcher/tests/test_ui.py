@@ -145,3 +145,112 @@ def test_setup_row_labels_fit(app):
             assert w.winfo_reqwidth() >= w.nametowidget(w).tk.call("font", "measure", w.cget("font"), text), text
             seen += 1
     assert seen >= 10
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_folder_chooser_has_readable_text_and_restores_theme(app, monkeypatch, cancel):
+    from grport.ui import app as app_module, theme
+    before = app.style.theme_use()
+    foreground = app.style.lookup("TEntry", "foreground")
+    def choose(**kwargs):
+        assert app.style.theme_use() == "default"
+        assert app.winfo_rgb(app.style.lookup("TEntry", "foreground")) == (0, 0, 0)
+        assert kwargs["mustexist"] is True
+        if cancel:
+            return ""
+        return app.settings.games["gr2"].folder
+    monkeypatch.setattr(app_module.filedialog, "askdirectory", choose)
+    assert app.choose_folder("gr2") is None
+    assert app.style.theme_use() == before
+    assert app.style.lookup("TEntry", "foreground") == foreground
+    with pytest.raises(RuntimeError):
+        with theme.file_dialog_theme(app.style):
+            raise RuntimeError("dialog failed")
+    assert app.style.theme_use() == before
+
+
+def test_deck_preset_keeps_other_game_and_enables_intro_workaround(app):
+    app.settings.selected = "gr2"
+    before = app.settings.games["gr1"].resolution
+    page = app.pages["setup"]
+    page.apply_deck_preset()
+    saved = load_settings(app.paths)
+    assert saved.games["gr2"].resolution == "16:10 1280x800"
+    assert saved.games["gr2"].fps == 30
+    assert saved.games["gr2"].readbacks == "relaxed"
+    assert not saved.games["gr2"].ps4_pro
+    assert "Skip Intro" in saved.games["gr2"].extras
+    assert saved.games["gr1"].resolution == before
+    assert saved.window_mode == "borderless"
+    page.apply_deck_preset()
+    assert load_settings(app.paths).games["gr2"].extras.count("Skip Intro") == 1
+
+
+def test_all_touchpad_regions_can_be_bound(app):
+    page = app.pages["controls"]
+    page.select_game("gr2")
+    for action, key in (("touchpad_left", "t"), ("touchpad_center", "y"), ("touchpad_right", "u")):
+        page.start_rebind(action)
+        assert page.press_key(key)
+    text = (app.paths.root / "user/gr2/input.ini").read_text()
+    assert "touchpad_left = t" in text
+    assert "touchpad_center = y" in text
+    assert "touchpad_right = u" in text
+
+
+def test_performance_deck_mode_reduces_render_and_uses_spatial_upscaler(app):
+    from grport import ini, patches
+    app.settings.selected = "gr2"
+    page = app.pages["setup"]
+    page.apply_deck_preset("performance")
+    saved = load_settings(app.paths)
+    assert saved.games["gr2"].resolution == "GRport 16:10 960x600"
+    assert page.render_choice.value == "GRport 16:10 960x600"
+    values = ini.read_ini(page._ini())
+    assert values["upscaler"] == "fsr4" and values["fsr1"] == "0"
+    assert saved.games["gr2"].temporal_output == "1280x800"
+    assert "GRport 16:10 960x600" in patches.wanted(30, "gr2", [], saved.games["gr2"].resolution)
+    page.set_aspect("16:9")
+    assert app.settings.games["gr2"].resolution == "Resolution 1280x720"
+    page.set_aspect("16:10")
+    assert app.settings.games["gr2"].resolution == "16:10 1280x800"
+
+
+def test_controller_speaker_setting_is_per_game_and_reaches_runtime(app):
+    from grport import runtime
+    app.settings.selected = "gr2"
+    page = app.pages["setup"]
+    page.set_pad_speaker(False)
+    saved = load_settings(app.paths)
+    assert not saved.games["gr2"].pad_speaker and saved.games["gr1"].pad_speaker
+    assert runtime.env(app.paths, saved, app.infos["gr2"], base={})["BB_PAD_SPEAKER"] == "0"
+
+
+def test_performance_logging_and_output_are_in_bug_report(app):
+    from grport import runtime
+    app.settings.selected = "gr2"
+    page = app.pages["setup"]
+    page.set_performance_log(True)
+    page.set_temporal_output("1280x800")
+    saved = load_settings(app.paths)
+    env = runtime.env(app.paths, saved, app.infos["gr2"], base={})
+    assert env["BB_GPU_PROFILE"] == "1" and env["BB_FRAME_STATS"] == "1"
+    assert env["BB_GR_OUTPUT_RES"] == "1280x800"
+    report = app.pages["log"].report_text()
+    assert "CPU: " in report
+    assert "Performance log: on" in report
+    assert "Temporal output: 1280x800" in report
+
+
+def test_hdr_output_is_opt_in_per_game_and_has_sdr_mapping_parameters(app):
+    from grport import runtime
+    app.settings.selected = "gr2"
+    page = app.pages["setup"]
+    assert not app.settings.games["gr2"].hdr_output
+    page.set_hdr_output(True)
+    page.set_hdr_white(300)
+    saved = load_settings(app.paths)
+    env = runtime.env(app.paths, saved, app.infos["gr2"], base={})
+    assert env["BB_HDR"] == "1" and env["BB_SDR_HDR"] == "1"
+    assert env["BB_HDR_PAPER_WHITE"] == "300"
+    assert not saved.games["gr1"].hdr_output

@@ -12,7 +12,7 @@ from grport.ui import theme
 LABELS = dict(ACTIONS)
 GROUPS = (
     ("Buttons", ("cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3",
-                 "options", "touchpad_left")),
+                 "options", "touchpad_left", "touchpad_center", "touchpad_right")),
     ("D-pad and sticks", ("pad_up", "pad_down", "pad_left", "pad_right",
                           "axis_left_x_minus", "axis_left_x_plus", "axis_left_y_minus",
                           "axis_left_y_plus", "axis_right_x_minus", "axis_right_x_plus",

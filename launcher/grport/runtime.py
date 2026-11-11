@@ -106,6 +106,13 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     out["BB_THREADED_RECORDING"] = "0" if g.threading == "0" else "1"
     # SETUP > Stick dead zone: radial, on both controller sticks; 0 is off.
     out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
+    out["BB_PAD_SPEAKER"] = "1" if g.pad_speaker else "0"
+    out["BB_LOW_GRAVITY_BEEP"] = "1" if g.low_gravity_beep else "0"
+    out["BB_GPU_PROFILE"] = "1" if g.performance_log else "0"
+    out["BB_FRAME_STATS"] = "1" if g.performance_log else "0"
+    out["BB_HDR"] = "1" if g.hdr_output else "0"
+    out["BB_SDR_HDR"] = "1" if g.hdr_output else "0"
+    out["BB_HDR_PAPER_WHITE"] = str(g.hdr_paper_white)
     # SETUP > PS4 Pro mode (Gravity Rush 2, experimental): the game sees a PS4 Pro and takes
     # its own Pro render path; the runtime adds the Pro's 512 MiB to the direct memory pool.
     # SETUP > Skybox seam fix: seamless cube sampling (skies, reflections) costs bigger shaders;
@@ -123,6 +130,10 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     # FSR / DLSS anti-aliasing on the scene before the tonemap (the in-game menu); Gravity
     # Rush 2's motion comes from its own velocity target.
     out["BB_GR_UPSCALE"] = "1"
+    if g.temporal_output:
+        out["BB_GR_OUTPUT_RES"] = g.temporal_output
+    else:
+        out.pop("BB_GR_OUTPUT_RES", None)
     # Both games pace themselves by the vblank: Gravity Rush 2 at its FPS patch's rate,
     # Gravity Rush Remastered (60 on the PS4) at any rate, its game speed following the clock.
     # SETUP > Display > Resolution: the bigger ones need more direct memory (the patch notes say how much).

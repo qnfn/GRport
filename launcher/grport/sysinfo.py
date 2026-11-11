@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 import subprocess
+import os
+from pathlib import Path
 
 _CMD = (
     "Get-CimInstance Win32_VideoController | "
@@ -81,3 +83,24 @@ def screen_size() -> "tuple[int, int] | None":
     except (AttributeError, OSError, ValueError):
         pass
     return None
+
+
+def cpu_name() -> str | None:
+    """Read a CPU model locally without launching a shell or requiring WMI."""
+    import platform
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                               r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+                return winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
+        except OSError:
+            pass
+    else:
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+    return platform.processor() or None

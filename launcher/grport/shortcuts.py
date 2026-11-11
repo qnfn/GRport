@@ -10,6 +10,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from .paths import AppPaths
+from .games import GAMES
 
 FOLDERID_DESKTOP = "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
 FOLDERID_PROGRAMS = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"  # the user's Start menu programs
@@ -22,6 +23,7 @@ _LNK_PS = (
     "$l = $s.CreateShortcut($env:GRPORT_LNK); "
     "$l.TargetPath = $env:GRPORT_TARGET; "
     "$l.WorkingDirectory = $env:GRPORT_WORKDIR; "
+    "$l.Arguments = $env:GRPORT_ARGS; "
     "$l.IconLocation = $env:GRPORT_ICON; "
     "$l.Description = 'Gravity Rush Remastered and Gravity Rush 2'; "
     "$l.Save()"
@@ -84,7 +86,7 @@ def target(paths: AppPaths) -> Path:
     return paths.root / "GRport.exe"
 
 
-def _create_desktop_entry(paths: AppPaths, folder: Path) -> Path:
+def _create_desktop_entry(paths: AppPaths, folder: Path, key: str | None = None) -> Path:
     """Linux: folder/GRport.desktop starting the AppImage (its icon copied next to the data)."""
     appimage = os.environ.get("APPIMAGE")
     if not appimage:
@@ -97,26 +99,39 @@ def _create_desktop_entry(paths: AppPaths, folder: Path) -> Path:
         icon = Path("grport.png")
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    entry = folder / "GRport.desktop"
-    entry.write_text("[Desktop Entry]\nType=Application\nName=GRport\n"
+    name = GAMES[key].title if key else "GRport"
+    args = f" --{key}" if key else ""
+    entry = folder / (f"GRport-{key}.desktop" if key else "GRport.desktop")
+    entry.write_text(f"[Desktop Entry]\nType=Application\nName={name}\n"
                      "Comment=Gravity Rush Remastered and Gravity Rush 2\n"
-                     f'Exec="{appimage}"\nIcon={icon}\nTerminal=false\nCategories=Game;\n',
+                     f'Exec={desktop_exec(appimage)}{args}\nIcon={icon}\nTerminal=false\nCategories=Game;\n',
                      encoding="utf-8")
     entry.chmod(0o755)
     return entry
 
 
-def create(paths: AppPaths, folder: Path) -> Path:
+def desktop_exec(value: str) -> str:
+    """Quote one Desktop Entry Exec argument, including literal percent field codes."""
+    value = value.replace("%", "%%")
+    for character in ("\\", '"', "`", "$"):
+        value = value.replace(character, "\\" + character)
+    return '"' + value.replace("\\", "\\\\") + '"'
+
+
+def create(paths: AppPaths, folder: Path, key: str | None = None) -> Path:
     """Writes folder/GRport.lnk to the launcher, replacing an older one."""
+    if key is not None and key not in GAMES:
+        raise ValueError("Unknown game")
     if os.name != "nt":
-        return _create_desktop_entry(paths, folder)
+        return _create_desktop_entry(paths, folder, key)
     exe = target(paths)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    lnk = folder / NAME
+    lnk = folder / (f"{GAMES[key].title}.lnk" if key else NAME)
     lnk.unlink(missing_ok=True)
     env = dict(os.environ, GRPORT_LNK=str(lnk), GRPORT_TARGET=str(exe),
-               GRPORT_WORKDIR=str(exe.parent), GRPORT_ICON=f"{exe},0")
+               GRPORT_WORKDIR=str(exe.parent), GRPORT_ICON=f"{exe},0",
+               GRPORT_ARGS=f"--{key}" if key else "")
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
                         "-Command", _LNK_PS], env=env, capture_output=True, text=True,
                        creationflags=_NO_WINDOW)

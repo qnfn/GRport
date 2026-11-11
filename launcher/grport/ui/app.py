@@ -458,9 +458,12 @@ class App(tk.Tk):
         game = games.GAMES[key]
         current = self.settings.games[key].folder
         initial = current if current and Path(current).is_dir() else str(self.paths.root.parent)
-        chosen = filedialog.askdirectory(
-            parent=self, initialdir=initial, mustexist=True,
-            title=f"Choose your {game.title} folder (the one with eboot.bin)")
+        # Tk's Unix chooser paints parts of its file list white. The launcher's dark
+        # ttk foreground otherwise becomes white text on white (Steam Deck, issue #20).
+        with theme.file_dialog_theme(self.style):
+            chosen = filedialog.askdirectory(
+                parent=self, initialdir=initial, mustexist=True,
+                title=f"Choose your {game.title} folder (the one with eboot.bin)")
         if not chosen:
             return None
         info = games.inspect(chosen)

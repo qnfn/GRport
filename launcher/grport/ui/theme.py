@@ -2,6 +2,7 @@
 """Colours, fonts and Pillow drawing helpers for the launcher window."""
 
 import ctypes
+from contextlib import contextmanager
 import math
 import sys
 import tkinter as tk
@@ -180,6 +181,22 @@ def style_ttk(style, pal: dict, fonts: dict) -> None:
                     bordercolor=pal["line"], lightcolor=pal["panel"], darkcolor=pal["panel"],
                     selectbackground=pal["accent"], selectforeground=pal["on_accent"],
                     insertcolor=pal["text"], font=fonts["body"])
+
+
+@contextmanager
+def file_dialog_theme(style):
+    """Keep Tk's stock file chooser readable, restoring the launcher even on cancel/error.
+
+    The stock chooser mixes classic white canvases and ttk widgets. A separate built-in
+    theme prevents the launcher's dark global foreground leaking into those canvases.
+    Native Windows/macOS dialogs ignore ttk, so they keep their system appearance.
+    """
+    previous = style.theme_use()
+    style.theme_use("default")
+    try:
+        yield
+    finally:
+        style.theme_use(previous)
 
 
 # ---------------------------------------------------------------- drawing

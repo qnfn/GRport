@@ -27,6 +27,7 @@ DEADZONE_MAX = 90
 # Value: the runtime's BB_PHOTO_ROLL (how many of the newest photos the game is shown).
 PHOTO_ROLLS = {"999": 999, "unlimited": 500}
 PHOTO_ROLL_DEFAULT = "999"
+TEMPORAL_OUTPUTS = ("", "1280x800", "1280x720", "1920x1080", "2560x1440", "3840x2160")
 # fullscreen: exclusive (the monitor's own mode); borderless: a window covering the monitor;
 # window: a real window with a title bar, kept inside the desktop.
 WINDOW_MODES = ("fullscreen", "borderless", "window")
@@ -41,6 +42,7 @@ RESOLUTIONS = (
     ("", "1920x1080 (16:9, the game's own)"),
     ("Resolution 2560x1440", "2560x1440 (16:9, 2K)"),
     ("Resolution 3840x2160", "3840x2160 (16:9, 4K)"),
+    ("GRport 16:10 960x600", "960x600 (16:10, Steam Deck Performance)"),
     ("16:10 1280x800", "1280x800 (16:10)"),
     ("16:10 1600x1000", "1600x1000 (16:10)"),
     ("16:10 1920x1200", "1920x1200 (16:10)"),
@@ -90,7 +92,7 @@ ASPECTS = ("4:3", "16:10", "16:9", "21:9", "32:9")
 RENDER_GRID = {
     "4:3": ("GRport 4:3 960x720", "GRport 4:3 1440x1080", "GRport 4:3 1920x1440",
             "GRport 4:3 2880x2160"),
-    "16:10": ("16:10 1280x800", "16:10 1920x1200", "16:10 2560x1600", "16:10 3840x2400"),
+    "16:10": ("GRport 16:10 960x600", "16:10 1280x800", "16:10 1920x1200", "16:10 2560x1600", "16:10 3840x2400"),
     "16:9": ("Resolution 1280x720", "", "Resolution 2560x1440", "Resolution 3840x2160"),
     "21:9": ("Ultrawide 2.39:1 2584x1080", "Ultrawide 2.39:1 3440x1440",
              "Ultrawide 2.39:1 5160x2160"),
@@ -131,6 +133,12 @@ class GameSettings:
     fps: int = 30               # FPS_CHOICES; the lowest when not one of them
     stick_deadzone: int = DEADZONE_DEFAULT  # percent, 0-DEADZONE_MAX
     photo_roll: str = PHOTO_ROLL_DEFAULT  # Gravity Rush 2 only: PHOTO_ROLLS
+    hdr_output: bool = False    # experimental SDR-to-HDR10 mapping
+    hdr_paper_white: int = 200  # SDR reference white in nits
+    performance_log: bool = False  # opt-in GPU timestamps and frame pacing diagnostics
+    temporal_output: str = ""   # separate temporal reconstruction output
+    pad_speaker: bool = True    # audio routed to the controller speaker
+    low_gravity_beep: bool = True  # the energy-empty warning sound
     skybox_fix: bool = True     # the runtime's BB_CUBE_SEAMLESS: seamless cube sampling
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
     resolution: str = ""        # RESOLUTIONS: a resolution patch prefix; "" the game's 1080p
@@ -189,6 +197,10 @@ def _load_game(key: str, raw) -> GameSettings:
         g.fps = FPS_CHOICES[key][0]
     if not 0 <= g.stick_deadzone <= DEADZONE_MAX:
         g.stick_deadzone = DEADZONE_DEFAULT
+    if not 80 <= g.hdr_paper_white <= 1000:
+        g.hdr_paper_white = 200
+    if g.temporal_output not in TEMPORAL_OUTPUTS:
+        g.temporal_output = ""
     if g.photo_roll not in PHOTO_ROLLS:
         g.photo_roll = PHOTO_ROLL_DEFAULT
     if g.resolution not in dict(RESOLUTIONS):

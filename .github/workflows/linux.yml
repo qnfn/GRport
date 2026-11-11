@@ -2,6 +2,9 @@
 # packaged with the launcher and gr-prepare as one AppImage (linux/default.nix).
 name: Linux
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [linux]
@@ -34,6 +37,10 @@ jobs:
       - name: Build runtime
         working-directory: runtime
         run: BB_LTO=OFF BB_PGO=off nix-shell shell.nix --run 'BB_IN_NIX_SHELL=1 BB_LTO=OFF BB_PGO=off bash build.sh'
+
+      - name: Controller, prompt and audio regressions
+        working-directory: runtime
+        run: nix-shell shell.nix --run 'bash tests/run-grport-tests.sh'
 
       - name: All compile errors on failure
         if: failure()
@@ -82,3 +89,12 @@ jobs:
             runtime/out/bb-probe
             runtime/out/gpu/libbbgpu.so
           if-no-files-found: warn
+
+      - name: Attach Linux AppImage to tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/GRport-x86_64.AppImage \
+            --title "GRport $GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/GRport-x86_64.AppImage --clobber

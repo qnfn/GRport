@@ -3,7 +3,7 @@
 import os
 import tkinter as tk
 
-from grport import games, ini, patches, runtime, settings, shortcuts
+from grport import games, ini, patches, runtime, settings, shortcuts, steam
 from grport.settings import (ASPECTS, DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RENDER_GRID,
                              WINDOW_HEIGHTS, aspect_of, resolution_label, resolution_size)
 from grport.ui import theme
@@ -34,7 +34,7 @@ RESOLUTION_NOTE = ("Render: the size the game draws at, {size}, in every window 
                    "PLAY prepares the game again (about a minute).")
 # Render's buttons: the size steps of every aspect ratio (ultrawide starts at 1080p); the note
 # names the exact size (1080p is 1920x1200 on 16:10, 2584x1080 on 21:9).
-RENDER_STEPS = ("720p", "1080p", "2K", "4K")
+RENDER_STEPS = ("600p", "720p", "1080p", "2K", "4K")
 OLD_RESOLUTION_NOTE = (" Now {label}, chosen in an older GRport; it keeps working until you pick "
                        "a Render size.")
 # The in-game menu's picture settings (grport.ini, read by the runtime at start): key, label,
@@ -47,13 +47,18 @@ PICTURE = (
     ("fsr1", "FSR 1 to the screen", ON_OFF, "1"),
     ("show_fps", "FPS counter", ON_OFF, "1"),
     ("mute_unfocused", "Mute in background", ON_OFF, "0"),
+    ("button_prompts", "Button prompts", (("playstation", "PlayStation"), ("xbox", "Xbox"),
+                                           ("switch", "Switch")), "playstation"),
+    ("xbox_buttons", "Xbox look", (("0", "Xbox 360"), ("1", "Xbox One")), "0"),
+    ("playstation_buttons", "PlayStation look", (("0", "PS4"), ("1", "PS5")), "0"),
 )
 SHARPNESS = tuple(f"{v / 10:.2f}" for v in range(11))
 PICTURE_NOTE = ("The same settings as GRport's in-game menu (Insert / L3+R3), per game. "
                 "Anti-aliasing: FSR and DLSS smooth edges using earlier frames (FSR 4 needs a GPU "
                 "with fast INT8 math, DLSS an NVIDIA RTX card; without one the game falls back "
                 "to FSR 3.1). Off keeps the game's own picture: with a 4K render resolution that "
-                "is native 4K without any anti-aliasing. FSR 1 scales the picture to the window "
+                "is native 4K without any anti-aliasing. Button prompt changes need a game restart. "
+                "FSR 1 scales the picture to the window "
                 "with sharp edges.")
 WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
 WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window covering it; "
@@ -65,7 +70,7 @@ PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloade
                 "1.11. A change prepares the game again at the next PLAY (about a minute).")
 # Every _row label on the page: the label column fits the longest one.
 ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
-              "Threading", "Frame rate", "Skybox seam fix", "PS4 Pro mode", "Stick dead zone", "Camera Roll",
+              "Threading", "Frame rate", "Skybox seam fix", "PS4 Pro mode", "Stick dead zone", "Controller speaker", "Camera Roll", "Temporal output", "Performance log", "HDR10 output", "HDR white (nits)",
               *(label for _, label, _, _ in PICTURE))
 THREADING_CHOICES = (("auto", "Auto"), ("1", "On"), ("0", "Off"))
 THREADING_NOTE = ("Threading: the game's GPU work is prepared on extra threads, for much more FPS. "
@@ -134,6 +139,8 @@ class SetupPage(tk.Frame):
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
         self.canvas.bind_all("<MouseWheel>", self._wheel, add="+")
+        self.canvas.bind_all("<Button-4>", lambda e: self._wheel_units(-1), add="+")
+        self.canvas.bind_all("<Button-5>", lambda e: self._wheel_units(1), add="+")
         self.build()
 
     # ------------------------------------------------------------ helpers
@@ -153,6 +160,10 @@ class SetupPage(tk.Frame):
     def _wheel(self, event) -> None:
         if self.app.current == "setup" and self.winfo_ismapped():
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _wheel_units(self, units: int) -> None:
+        if self.app.current == "setup" and self.winfo_ismapped():
+            self.canvas.yview_scroll(units, "units")
 
     def _wrapping(self, label: tk.Label, master: tk.Misc) -> tk.Label:
         master.bind("<Configure>", lambda e: label.configure(wraplength=max(1, e.width)),
@@ -188,6 +199,22 @@ class SetupPage(tk.Frame):
         self.board = theme.CardBoard(self.inner, app, columns=2)
         self.board.pack(fill="x")
         self.game_choice.set(self.key)
+
+        preset = self.board.add(6, 0, span=2, title="Steam Deck")
+        preset_row = tk.Frame(preset)
+        app.paint(preset_row, bg="panel")
+        preset_row.pack(fill="x")
+        for name, mode in (("Quality: 1280x800", "quality"), ("Performance: 960x600 + FSR 4", "performance")):
+            theme.PillButton(preset_row, app, name, lambda m=mode: self.apply_deck_preset(m),
+                             kind="secondary", font=app.fonts["button"], height=app.px(36),
+                             padx=app.px(18), bg_role="panel").pack(side="left", padx=(0, app.px(10)))
+        self._note(preset, "Quality draws at the Deck's native 1280x800. Performance draws at 960x600 "
+                          "and uses FSR 4 INT8 to reconstruct 1280x800 (FSR 3.1 fallback). "
+                          "Choose DLSS under Anti-aliasing on NVIDIA RTX; DLSS is unavailable on Steam Deck. "
+                          "Both modes use borderless, relaxed GPU readbacks and PS4 Pro mode off. "
+                          "Gravity Rush 2: 30 FPS and Skip intro enabled as a workaround for "
+                          "the reported intro black screen (requires game update 1.11). "
+                          "Touchpad actions can be assigned in CONTROLS.")
 
         display = self.board.add(0, 0, title="Display")
         row = self._row(display, "Window", first=True)
@@ -253,7 +280,31 @@ class SetupPage(tk.Frame):
                     self.sharpness_box, SHARPNESS, self._picture().get("sharpness", "0.30"),
                     lambda v: self.set_picture("sharpness", v)))
                 self.sharpness_box.pack(side="left")
-        self._note(picture, PICTURE_NOTE)
+        row = self._row(picture, "HDR10 output")
+        self.hdr_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")), self.set_hdr_output)
+        self.hdr_choice.pack(side="left")
+        row = self._row(picture, "HDR white (nits)")
+        self.hdr_white_box = theme.Dropdown(row, app, lambda: self._popup(
+            self.hdr_white_box, [(v, str(v)) for v in (100, 150, 200, 250, 300, 400)],
+            self.g.hdr_paper_white, self.set_hdr_white))
+        self.hdr_white_box.pack(side="left")
+        self._note(picture, "Experimental SDR-to-HDR10 mapping. Enable HDR in the operating system "
+                          "and use an HDR display. This preserves the game's SDR grade and cannot "
+                          "restore clipped highlights. SDR fallback when unsupported. Restart to apply.")
+        row = self._row(picture, "Temporal output")
+        self.output_box = theme.Dropdown(row, app, lambda: self._popup(
+            self.output_box, [(value, value or "Render size (AA)") for value in settings.TEMPORAL_OUTPUTS],
+            self.g.temporal_output, self.set_temporal_output))
+        self.output_box.pack(side="left")
+        row = self._row(picture, "Performance log")
+        self.profile_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")), self.set_performance_log)
+        self.profile_choice.pack(side="left")
+        self._note(picture, "Performance log records GPU pass times, submission idle time and frame pacing "
+                          "to help diagnose slow scenes. GPU idle can mean CPU work or a frame cap. "
+                          "Off by default; restart the game to apply.")
+        self._note(picture, PICTURE_NOTE + " Temporal output reconstructs a smaller render to the chosen "
+                          "size with FSR 3.1, FSR 4 INT8 or DLSS. Render size (AA) filters at the "
+                          "game's own resolution. Restart the game after changing Temporal output.")
 
         controls = self.board.add(3, 0, span=2, title="Controller" if self.key != "gr2"
                                   else "Controller and camera")
@@ -263,6 +314,17 @@ class SetupPage(tk.Frame):
             self.set_deadzone))
         self.deadzone_box.pack(side="left")
         self._note(controls, DEADZONE_NOTE)
+        row = self._row(controls, "Controller speaker")
+        self.speaker_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")), self.set_pad_speaker)
+        self.speaker_choice.pack(side="left")
+        self._note(controls, "Off silences sounds routed to the controller speaker. Main game audio is unaffected. "
+                             "Restart the game to apply.")
+        row = self._row(controls, "Low-gravity warning")
+        self.beep_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")),
+                                            self.set_low_gravity_beep)
+        self.beep_choice.pack(side="left")
+        self._note(controls, "Turn off the low-gravity warning beep in both the game mix and controller speaker. "
+                             "Restart the game to apply.")
         self.roll_choice = None
         if self.key == "gr2":
             row = self._row(controls, "Camera Roll")
@@ -280,9 +342,11 @@ class SetupPage(tk.Frame):
                              kind="secondary", font=app.fonts["button"], height=app.px(36),
                              padx=app.px(18), bg_role="panel").pack(side="left",
                                                                     padx=(0, app.px(10)))
-        self._note(links, "A GRport shortcut on your desktop, or in the Start menu so Windows "
-                          "search finds it." if os.name == "nt" else
-                          "A GRport shortcut on your desktop, or in your desktop's app menu.")
+        theme.PillButton(row, app, "Add to Steam", self.add_to_steam,
+                         kind="secondary", font=app.fonts["button"], height=app.px(36),
+                         padx=app.px(18), bg_role="panel").pack(side="left")
+        self._note(links, f"Start {games.GAMES[self.key].title} directly, including from Steam Game Mode. "
+                          "Each game gets its own shortcut. Exit Steam before adding it.")
 
         self.patch_choices = {}
         extra = self.board.add(4, 0, span=2, title="Patches")
@@ -365,6 +429,12 @@ class SetupPage(tk.Frame):
         if self.pro_choice is not None:
             self.pro_choice.set(g.ps4_pro)
         self.deadzone_box.set(f"{g.stick_deadzone}%")
+        self.speaker_choice.set(g.pad_speaker)
+        self.beep_choice.set(g.low_gravity_beep)
+        self.output_box.set(g.temporal_output or "Render size (AA)")
+        self.profile_choice.set(g.performance_log)
+        self.hdr_choice.set(g.hdr_output)
+        self.hdr_white_box.set(str(g.hdr_paper_white))
         if self.roll_choice is not None:
             self.roll_choice.set(g.photo_roll)
         chosen = patches.extras(s, self.key)
@@ -400,7 +470,36 @@ class SetupPage(tk.Frame):
                 self.flash(f"Could not add the shortcut: {error}", "bad")
             else:
                 self.flash(f"GRport is now in your {place}.", "muted")
-        self.app.run_task(lambda: shortcuts.create(self.app.paths, folder), done)
+        key = self.key
+        self.app.run_task(lambda: shortcuts.create(self.app.paths, folder, key), done)
+
+    def add_to_steam(self) -> None:
+        key = self.key
+        def done(result, error):
+            if error is not None:
+                self.flash(f"Could not add to Steam: {error}", "bad")
+            else:
+                self.flash(f"{games.GAMES[key].title} added. Start Steam to see it in your library.", "muted")
+        self.app.run_task(lambda: steam.add_game(self.app.paths, key), done)
+
+    def apply_deck_preset(self, mode: str = "quality") -> None:
+        if mode not in ("quality", "performance"):
+            raise ValueError("Unknown Steam Deck mode")
+        self.g.resolution = "16:10 1280x800" if mode == "quality" else "GRport 16:10 960x600"
+        self.g.temporal_output = "1280x800" if mode == "performance" else ""
+        ini.update_ini(self._ini(), {"upscaler": "fsr4", "fsr1": "0", "sharpen": "1", "sharpness": "0.30"})
+        self.g.readbacks = "relaxed"
+        self.g.fps = FPS_CHOICES[self.key][0]
+        self.g.ps4_pro = False
+        self.app.settings.window_mode = "borderless"
+        self.app.settings.window_size = "800p"
+        if self.key == "gr2":
+            chosen = patches.extras(self.app.settings, self.key)
+            self.g.extras = chosen if "Skip Intro" in chosen else chosen + ["Skip Intro"]
+        self.app.save_settings()
+        self.build()
+        self.app.refresh_pages()
+        self.flash("Steam Deck preset applied. GPU-heavy scenes may still fall below the target frame rate.", "muted")
 
     def set_window_mode(self, mode: str) -> None:
         self.app.settings.window_mode = mode
@@ -440,13 +539,11 @@ class SetupPage(tk.Frame):
     def set_aspect(self, aspect: str) -> None:
         """The same size step (small, 1080p-ish, 1440p-ish, 4K) in the new shape."""
         old = RENDER_GRID.get(aspect_of(self.g.resolution), ())
-        step = old.index(self.g.resolution) if self.g.resolution in old else 1
+        # Preserve the size tier counted down from 4K. This also works when one
+        # aspect has an extra small tier (Steam Deck's 600p) or fewer tiers (ultrawide).
+        tier = len(old) - old.index(self.g.resolution) - 1 if self.g.resolution in old else 2
         new = RENDER_GRID[aspect]
-        if aspect in ("21:9", "32:9") and len(old) == 4:
-            step -= 1
-        elif aspect not in ("21:9", "32:9") and len(old) == 3:
-            step += 1
-        self.set_resolution(new[max(0, min(step, len(new) - 1))])
+        self.set_resolution(new[max(0, min(len(new) - 1, len(new) - tier - 1))])
 
     def set_resolution(self, prefix: str) -> None:
         self.g.resolution = prefix
@@ -462,6 +559,30 @@ class SetupPage(tk.Frame):
 
     def set_ps4_pro(self, on: bool) -> None:
         self.g.ps4_pro = bool(on)
+        self._saved()
+
+    def set_hdr_output(self, on: bool) -> None:
+        self.g.hdr_output = bool(on)
+        self._saved()
+
+    def set_hdr_white(self, nits: int) -> None:
+        self.g.hdr_paper_white = nits
+        self._saved()
+
+    def set_performance_log(self, on: bool) -> None:
+        self.g.performance_log = bool(on)
+        self._saved()
+
+    def set_temporal_output(self, value: str) -> None:
+        self.g.temporal_output = value
+        self._saved()
+
+    def set_pad_speaker(self, on: bool) -> None:
+        self.g.pad_speaker = bool(on)
+        self._saved()
+
+    def set_low_gravity_beep(self, on: bool) -> None:
+        self.g.low_gravity_beep = bool(on)
         self._saved()
 
     def set_photo_roll(self, value: str) -> None:
