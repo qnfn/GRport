@@ -21766,10 +21766,10 @@ index 0000000..55b8594
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..0dc9cd8 100644
+index 687bfb5..a79b33a 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
-@@ -64,7 +64,106 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
+@@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
  
  static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
  static int initialized, opened, sdl_ready;
@@ -21779,11 +21779,26 @@ index 687bfb5..0dc9cd8 100644
 +static int motion_enabled;
 +static float motion_orientation[4]={0,0,0,1};
 +static uint64_t motion_sample_us;
++static uint64_t motion_report_ms;
 +
 +static void reset_motion(void) {
 +    memset(motion_orientation,0,sizeof(motion_orientation));
 +    motion_orientation[3]=1.0f;
 +    motion_sample_us=0;
++    motion_report_ms=0;
++}
++static void report_motion_capabilities(SDL_Gamepad *g,const char *when) {
++    if (!g) {
++        printf("Runtime: motion %s: no SDL gamepad selected\n",when);
++        return;
++    }
++    const int gyro=SDL_GamepadHasSensor(g,SDL_SENSOR_GYRO);
++    const int accel=SDL_GamepadHasSensor(g,SDL_SENSOR_ACCEL);
++    const char *name=SDL_GetGamepadName(g);
++    printf("Runtime: motion %s: %s; gyro available=%d enabled=%d, accel available=%d enabled=%d\n",
++           when,name ? name : "unnamed gamepad",gyro,
++           gyro && SDL_GamepadSensorEnabled(g,SDL_SENSOR_GYRO),accel,
++           accel && SDL_GamepadSensorEnabled(g,SDL_SENSOR_ACCEL));
 +}
 +static void configure_motion(SDL_Gamepad *g) {
 +    if (!g) return;
@@ -21797,11 +21812,10 @@ index 687bfb5..0dc9cd8 100644
 +}
 +
 +static int gamepad_has_motion(SDL_Gamepad *g) {
-+    return g && (SDL_GamepadHasSensor(g,SDL_SENSOR_GYRO) ||
-+                 SDL_GamepadHasSensor(g,SDL_SENSOR_ACCEL));
++    return g && SDL_GamepadHasSensor(g,SDL_SENSOR_GYRO);
 +}
 +/* Prefer the control gamepad when it has sensors. Otherwise use the first SDL gamepad that
-+ * reports a gyro or accelerometer; its buttons can still be mapped independently. */
++ * reports a gyro; its buttons can still be mapped independently. Acceleration is optional. */
 +static SDL_Gamepad *current_motion_gamepad(SDL_Gamepad *preferred) {
 +    if (gamepad_has_motion(preferred)) {
 +        if (motion_gamepad) {
@@ -21847,13 +21861,23 @@ index 687bfb5..0dc9cd8 100644
 +static void sample_motion(SDL_Gamepad *g, PadData *d) {
 +    if (!motion_enabled || !g) { motion_sample_us=0; return; }
 +    float gyro[3]={0}, accel[3]={0};
-+    if (SDL_GamepadSensorEnabled(g,SDL_SENSOR_GYRO) &&
-+        SDL_GetGamepadSensorData(g,SDL_SENSOR_GYRO,gyro,3)) {
++    const int gyro_enabled=SDL_GamepadSensorEnabled(g,SDL_SENSOR_GYRO);
++    const int accel_enabled=SDL_GamepadSensorEnabled(g,SDL_SENSOR_ACCEL);
++    const int gyro_read=gyro_enabled && SDL_GetGamepadSensorData(g,SDL_SENSOR_GYRO,gyro,3);
++    const int accel_read=accel_enabled && SDL_GetGamepadSensorData(g,SDL_SENSOR_ACCEL,accel,3);
++    if (gyro_read) {
 +        for (int i=0;i<3;++i) d->angular_velocity[i]=isfinite(gyro[i]) ? gyro[i] : 0;
 +    }
-+    if (SDL_GamepadSensorEnabled(g,SDL_SENSOR_ACCEL) &&
-+        SDL_GetGamepadSensorData(g,SDL_SENSOR_ACCEL,accel,3)) {
++    if (accel_read) {
 +        for (int i=0;i<3;++i) d->acceleration[i]=isfinite(accel[i]) ? accel[i]/SDL_STANDARD_GRAVITY : 0;
++    }
++    const uint64_t report_ms=SDL_GetTicks();
++    if (report_ms-motion_report_ms>=5000) {
++        motion_report_ms=report_ms;
++        const char *name=SDL_GetGamepadName(g);
++        printf("Runtime: motion sample %s: gyro enabled=%d read=%d (%.3f, %.3f, %.3f), accel enabled=%d read=%d (%.3f, %.3f, %.3f)\n",
++               name ? name : "unnamed gamepad",gyro_enabled,gyro_read,gyro[0],gyro[1],gyro[2],
++               accel_enabled,accel_read,accel[0],accel[1],accel[2]);
 +    }
 +    if (motion_sample_us && d->timestamp>motion_sample_us) {
 +        float dt=(float)(d->timestamp-motion_sample_us)/1000000.0f;
@@ -21877,7 +21901,7 @@ index 687bfb5..0dc9cd8 100644
  static size_t reads;
  static uint8_t connected_count;
  static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
-@@ -85,13 +184,13 @@ static void touch_click(PadData *d, int right) {
+@@ -85,13 +208,13 @@ static void touch_click(PadData *d, int right) {
  static SDL_Gamepad *current_gamepad(void) {
      if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
      if (sdl_ready<0) return NULL;
@@ -21889,11 +21913,11 @@ index 687bfb5..0dc9cd8 100644
          if (ids && count>0) {
              gamepad=SDL_OpenGamepad(ids[0]);
 -            if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
-+            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
++            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); }
          }
          SDL_free(ids);
      }
-@@ -369,6 +468,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -369,6 +492,33 @@ static int apply_deadzone(int value, int inner, int outer) {
      return value<0 ? -(int)scaled : (int)scaled;
  }
  
@@ -21927,7 +21951,7 @@ index 687bfb5..0dc9cd8 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -554,7 +680,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +704,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -21937,7 +21961,7 @@ index 687bfb5..0dc9cd8 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,6 +744,8 @@ static void sample_host(PadData *d) {
+@@ -617,6 +768,8 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -21946,7 +21970,7 @@ index 687bfb5..0dc9cd8 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
-@@ -846,7 +975,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +999,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -21963,7 +21987,7 @@ index 687bfb5..0dc9cd8 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1022,23 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1046,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -21979,15 +22003,21 @@ index 687bfb5..0dc9cd8 100644
 +    pthread_mutex_lock(&lock);
 +    motion_enabled=enabled!=0;
 +    reset_motion();
-+    if (motion_enabled) configure_motion(current_motion_gamepad(current_gamepad()));
-+    else { configure_motion(gamepad); configure_motion(motion_gamepad); }
++    if (motion_enabled) {
++        SDL_Gamepad *g=current_motion_gamepad(current_gamepad());
++        configure_motion(g);
++        report_motion_capabilities(g,"enabled by game");
++    } else {
++        configure_motion(gamepad); configure_motion(motion_gamepad);
++        report_motion_capabilities(gamepad,"disabled by game");
++    }
 +    pthread_mutex_unlock(&lock);
 +    return 0;
 +}
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1046,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1076,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
