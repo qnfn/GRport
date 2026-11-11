@@ -18650,10 +18650,10 @@ index 773ee79..4065c76 100644
 +uintptr_t runtime_font_resolve(const char *name);
  #endif
 diff --git a/src/runtime_audio.c b/src/runtime_audio.c
-index e9ffa16..fd5423e 100644
+index e9ffa16..260daa0 100644
 --- a/src/runtime_audio.c
 +++ b/src/runtime_audio.c
-@@ -3,8 +3,12 @@
+@@ -3,12 +3,17 @@
   * reads 256-frame slots out of its mixer's 512-frame ring, and returning in
   * bursts (whenever the device pulls a quantum) lets it overtake the mixer and
   * play stale halves - a click every 10.7 ms. The lowest SDL queue level of
@@ -18668,7 +18668,12 @@ index e9ffa16..fd5423e 100644
   * ports only follow the clock. */
  #define _GNU_SOURCE
  #include "runtime.h"
-@@ -32,6 +36,7 @@
+ #include "gpu/bbgpu.h"
++#include <ctype.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -32,6 +37,7 @@
  
  typedef struct {
      int used, type, channels, out_channels, is_float, frames, sample_bytes, std_layout;
@@ -18676,7 +18681,7 @@ index e9ffa16..fd5423e 100644
      int32_t volume[8];
      SDL_AudioStream *stream;
      uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
-@@ -52,6 +57,7 @@ static int initialized, sdl_ready=-1;
+@@ -52,6 +58,7 @@ static int initialized, sdl_ready=-1;
  static size_t buffers_out, ports_opened;
  static int device_channels; /* >0 playback channels, <0 query failed */
  static float master_gain=1.f;
@@ -18684,7 +18689,45 @@ index e9ffa16..fd5423e 100644
  
  /* SDL's 7.1->stereo matrix multiplies the front pair by ~0.21 so a full 8ch
   * sum stays at 1. The game's mix lives in the fronts, so a stereo PC sounds
-@@ -136,6 +142,8 @@ static ABI int32_t audio_init(void) {
+@@ -113,6 +120,37 @@ static int sdl_audio(void) {
+     }
+     return sdl_ready;
+ }
++static int name_contains_case(const char *text,const char *needle) {
++    if (!text || !needle || !needle[0]) return 0;
++    for (const unsigned char *p=(const unsigned char *)text;*p;++p) {
++        const unsigned char *a=p,*b=(const unsigned char *)needle;
++        while (*a && *b && tolower(*a)==tolower(*b)) { ++a; ++b; }
++        if (!*b) return 1;
++    }
++    return 0;
++}
++/* SDL exposes controller audio as a separate playback device on some USB connections, but
++ * SDL 3.4 cannot link that endpoint to the opened gamepad. Match the OS-provided name. */
++static SDL_AudioDeviceID pad_speaker_device(int *found) {
++    int count=0;
++    SDL_AudioDeviceID *devices=SDL_GetAudioPlaybackDevices(&count);
++    SDL_AudioDeviceID result=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
++    *found=0;
++    for (int i=0;devices && i<count;++i) {
++        const char *name=SDL_GetAudioDeviceName(devices[i]);
++        if (name_contains_case(name,"dualsense") || name_contains_case(name,"dualshock") ||
++            name_contains_case(name,"wireless controller")) {
++            result=devices[i];
++            *found=1;
++            printf("Runtime: controller speaker playback endpoint: %s\n",name);
++            break;
++        }
++    }
++    SDL_free(devices);
++    if (!*found)
++        printf("Runtime: no DualSense/DualShock playback endpoint found among %d SDL audio devices\n",count);
++    return result;
++}
+ static int port_range(int type, int *first, int *last) {
+     switch (type) {
+     case 0: *first=0; *last=7; return 1;      /* main */
+@@ -136,6 +174,8 @@ static ABI int32_t audio_init(void) {
      pthread_mutex_lock(&table_lock);
      int32_t r=initialized ? ERR_ALREADY_INIT : 0;
      initialized=1;
@@ -18693,7 +18736,7 @@ index e9ffa16..fd5423e 100644
      pthread_mutex_unlock(&table_lock);
      return r;
  }
-@@ -160,6 +168,13 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -160,12 +200,29 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      p->is_float=format>=3 && format!=6;
      p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
      for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
@@ -18707,7 +18750,24 @@ index e9ffa16..fd5423e 100644
      if (sdl_audio()) {
          audio_levels();
          int out=p->channels;
-@@ -178,7 +193,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+         if (device_channels>0 && device_channels<p->channels) out=device_channels;
+         SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, out, 48000};
+-        p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
++        SDL_AudioDeviceID playback=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
++        int pad_endpoint=0;
++        if (type==4) {
++            playback=pad_speaker_device(&pad_endpoint);
++            if (!pad_endpoint) puts("Runtime: controller speaker port will use the system default playback device");
++        }
++        p->stream=SDL_OpenAudioDeviceStream(playback,&spec,NULL,NULL);
++        if (!p->stream && type==4 && pad_endpoint) {
++            fprintf(stderr,"Runtime: controller speaker endpoint failed (%s); retrying the system default\n",SDL_GetError());
++            p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
++        }
+         if (p->stream) { p->out_channels=out; SDL_ResumeAudioStreamDevice(p->stream); }
+         else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+     }
+@@ -178,7 +235,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      }
      ++ports_opened;
      pthread_mutex_unlock(&table_lock);
@@ -18717,7 +18777,7 @@ index e9ffa16..fd5423e 100644
      return (type<<16) | id | 0x20000000;
  }
  static ABI int32_t audio_close(int32_t handle) {
-@@ -213,7 +229,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -213,7 +271,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          unsigned char converted[2048*8*4];
          /* mute_unfocused: silence while the window is in the background; the port keeps its
           * pace, so the game's audio threads run on as before. */
@@ -18728,7 +18788,7 @@ index e9ffa16..fd5423e 100644
          if (p->out_channels!=p->channels) {
              static const int from_std[8]={0,1,2,3,6,7,4,5}; /* SDL order -> PS4 L R C LFE SL SR BL BR */
              for (size_t f=0;f<(size_t)p->frames;++f) {
-@@ -263,7 +281,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -263,7 +323,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          if (p->stream) {
              /* The device drains the queue in quanta (21 ms on PipeWire), so the level
                 is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
@@ -21068,10 +21128,10 @@ index 4978ec5..0fd517c 100644
      if (!strcmp(name,"BmMjYxmew1w#p#J")) return (uintptr_t)cond_timedwait;
 diff --git a/src/runtime_ngs2.c b/src/runtime_ngs2.c
 new file mode 100644
-index 0000000..55b8594
+index 0000000..2d9f16d
 --- /dev/null
 +++ b/src/runtime_ngs2.c
-@@ -0,0 +1,693 @@
+@@ -0,0 +1,708 @@
 +/* libSceNgs2, GRport's own: systems, racks and voices, mixed into the buffers the game then
 + * gives to sceAudioOut. Sampler voices (rack 0x1000) decode ATRAC9, VAG ADPCM or PCM waveform blocks and
 + * feed submixers (0x2000) through their ports; mastering voices (0x3000) write the render
@@ -21180,11 +21240,26 @@ index 0000000..55b8594
 +    if (enabled < 0) {
 +        const char *e = getenv("BB_LOW_GRAVITY_BEEP");
 +        enabled = !(e && e[0] == '0');
++        printf("Ngs2: low-gravity warning sound %s (BB_LOW_GRAVITY_BEEP=%s)\n",
++               enabled ? "enabled" : "muted",e && e[0] ? e : "unset");
 +    }
 +    if (enabled) return 0;
 +    switch (v->user_data) {
 +    case 31: case 32: case 94: case 99: return 1;
-+    default: return 0;
++    default: {
++        /* If a game's SNDX name ID differs from the known GR1/GR2 IDs, log a bounded list
++         * while the option is off so a gameplay report can identify the unmatched sound. */
++        static uintptr_t reported_ids[64];
++        static unsigned reported_count;
++        for (unsigned i=0;i<reported_count;++i)
++            if (reported_ids[i]==v->user_data) return 0;
++        if (reported_count<sizeof(reported_ids)/sizeof(*reported_ids)) {
++            reported_ids[reported_count++]=v->user_data;
++            printf("Ngs2: sampler sound id %llu not matched while low-gravity warning is off\n",
++                   (unsigned long long)v->user_data);
++        }
++        return 0;
++    }
 +    }
 +}
 +
@@ -21605,7 +21680,7 @@ index 0000000..55b8594
 +static void send(Voice *v, uint32_t frames) {
 +    if (v->rack->id == RACK_SAMPLER && low_gravity_beep_muted(v)) {
 +        static unsigned reported;
-+        if (logging() && reported++ < 8)
++        if (reported++ < 8)
 +            printf("Ngs2: muted low-gravity warning on voice %u (name id %llu)\n",
 +                   v->index, (unsigned long long)v->user_data);
 +        return;
