@@ -10899,7 +10899,46 @@ index 6c56743..1317b03 100644
          if (new_info.num_samples == 1 &&
              (new_info.resources.layers > old_image.info.resources.layers ||
               new_info.resources.levels > old_image.info.resources.levels)) {
-@@ -555,12 +567,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+@@ -394,9 +406,24 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+             cache_image.info.resources.levels == 1 && image_info.resources.layers == 1 &&
+             cache_image.info.resources.layers == 1;
+ 
+-        // Size and resources are less than or equal, use image view.
++        // The game can redraw a text image at the same address with a larger extent but the same
++        // guest allocation size. Reuse the cached view only when requested extent still fits.
++        const bool extends_extent =
++            image_info.type == cache_image.info.type &&
++            image_info.resources == cache_image.info.resources &&
++            image_info.tile_mode == cache_image.info.tile_mode &&
++            image_info.guest_size >= cache_image.info.guest_size &&
++            image_info.size.width >= cache_image.info.size.width &&
++            image_info.size.height >= cache_image.info.size.height &&
++            image_info.size.depth >= cache_image.info.size.depth &&
++            (image_info.size.width > cache_image.info.size.width ||
++             image_info.size.height > cache_image.info.size.height ||
++             image_info.size.depth > cache_image.info.size.depth);
++
++        // Use an image view when the requested image fits the cached image.
+         if (image_info.pixel_format != cache_image.info.pixel_format ||
+-            image_info.guest_size <= cache_image.info.guest_size || pow2_padding_only) {
++            (image_info.guest_size <= cache_image.info.guest_size && !extends_extent) ||
++            pow2_padding_only) {
+             auto result_id = merged_image_id ? merged_image_id : cache_image_id;
+             const auto& result_image = slot_images[result_id];
+             const bool is_compatible =
+@@ -404,9 +431,9 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+             return {is_compatible ? result_id : ImageId{}, -1, -1};
+         }
+ 
+-        // Size and resources are greater, expand the image.
++        // Expand cached image when its resources or extent grow.
+         if (image_info.type == cache_image.info.type &&
+-            image_info.resources > cache_image.info.resources) {
++            (image_info.resources > cache_image.info.resources || extends_extent)) {
+             return {ExpandImage(image_info, cache_image_id), -1, -1};
+         }
+ 
+@@ -555,12 +582,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                      return {merged_image_id, -1, -1};
                  }
  

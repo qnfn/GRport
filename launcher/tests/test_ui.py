@@ -129,6 +129,19 @@ def test_picture_settings_write_that_games_grport_ini(app):
     assert not (app.paths.root / "user" / "gr2" / "grport.ini").exists()
 
 
+def test_keyboard_mouse_prompt_choice_is_available_per_game(app):
+    from grport import ini
+    from grport.ui.setup import PICTURE
+    prompt = next(entry for entry in PICTURE if entry[0] == "button_prompts")
+    assert ("keyboard", "Keyboard and mouse") in prompt[2]
+    app.show("setup")
+    page = app.pages["setup"]
+    for key in ("gr1", "gr2"):
+        page.select_game(key)
+        page.set_picture("button_prompts", "keyboard")
+        assert ini.read_ini(app.paths.root / "user" / key / "grport.ini")["button_prompts"] == "keyboard"
+
+
 def test_setup_row_labels_fit(app):
     """Every row label is shown whole ('FSR 1 to the screen', 'Mute in background')."""
     import tkinter as tk
