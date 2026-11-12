@@ -35,7 +35,7 @@ OLD_EXE = "GRport.exe.old"
 
 
 def parse_version(text: str) -> "tuple[int, ...] | None":
-    """'0.3.5' -> (0, 3, 5); a suffix ('0.3.5-test') or anything else -> None."""
+    """'0.3.6' -> (0, 3, 6); a suffix ('0.3.6-test') or anything else -> None."""
     m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", text.strip())
     return tuple(int(x) for x in m.groups()) if m else None
 
