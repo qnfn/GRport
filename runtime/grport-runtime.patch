@@ -14199,10 +14199,10 @@ index 85b7b33..fb8ca86 100644
 +
 +} // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
-index 3d44504..b25be89 100644
+index 3d44504..9cf96df 100644
 --- a/gpu/shim/bbport_prompts.cpp
 +++ b/gpu/shim/bbport_prompts.cpp
-@@ -1,274 +1,396 @@
+@@ -1,274 +1,397 @@
 -// SPDX-License-Identifier: GPL-2.0-or-later
 -// bbport: button prompts that follow the input device (bbport_prompts.h).
 -
@@ -14749,9 +14749,10 @@ index 3d44504..b25be89 100644
 +            }
 +        }
 +    }
-+    if (levels != 1) return;
 +    if (AddGravity(address, size, width, height, bits)) return;
-+    if (bits != 128) return;
++    // Gravity hashes describe mip 0, whose address and size are passed above.
++    // A texture may still have lower-resolution mip levels.
++    if (levels != 1 || bits != 128) return;
 +    if (AddDriveclub(address, size, width, height)) return;
 +    if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
 +        // A KG_* icon: the menus' key guides and the buttons in their messages.
@@ -23641,45 +23642,66 @@ index a477ea9..761d1c5 100644
      SDL_Quit();
      unlink(path);
 diff --git a/tests/test_prompt_icons.cpp b/tests/test_prompt_icons.cpp
-index a5edf37..9b9e6a3 100644
+index a5edf37..9ddc564 100644
 --- a/tests/test_prompt_icons.cpp
 +++ b/tests/test_prompt_icons.cpp
-@@ -86,6 +86,32 @@ int main(int argc, char** argv) {
-     std::vector<unsigned char> font((std::istreambuf_iterator<char>(font_file)), {});
+@@ -4,3 +4,4 @@
+ #include "bbport_prompt_icons.h"
+-
++
++#include <algorithm>
+ #include <cassert>
+@@ -87,3 +87,48 @@ int main(int argc, char** argv) {
      assert(SetFont(font.data()));
- 
-+    // The two games encode Cross differently, but must show the same physical Xbox A.
-+    std::vector<uint8_t> gr1(40 * 32, 0xaa), gr2(40 * 32, 0xbb), circle(40 * 32, 0xcc);
-+    assert(DrawGravityGlyph(false, 'h', PadXbox, gr1.data(), 32, 32, 40));
-+    assert(DrawGravityGlyph(true, 'b', PadXbox, gr2.data(), 32, 32, 40));
-+    assert(DrawGravityGlyph(true, 'a', PadXbox, circle.data(), 32, 32, 40));
-+    bool different = false;
-+    for (int y = 0; y < 32; ++y) for (int x = 0; x < 40; ++x) {
-+        if (x < 32) {
-+            assert(gr1[y * 40 + x] == gr2[y * 40 + x]);
-+            different |= gr2[y * 40 + x] != circle[y * 40 + x];
-+        } else {
-+            assert(gr1[y * 40 + x] == 0xaa && gr2[y * 40 + x] == 0xbb);
+-
++    // Verify every supported prompt mapping in both games, including L1/R1 and both triggers.
++    struct GlyphCase { bool gr2; uint32_t code; Icon icon; };
++    const GlyphCase glyphs[] = {
++        {false, 'e', OK}, {false, 'h', Cancel}, {false, 'g', R_L}, {false, 'f', R_U},
++        {false, 'i', L1}, {false, 'j', R1}, {false, 'A', L2}, {false, 'B', R2},
++        {false, 'C', L3}, {false, 'D', R3}, {false, 'n', TP_L}, {false, 'o', Start},
++        {true, 'a', OK}, {true, 'p', OK}, {true, 'b', Cancel}, {true, 'q', Cancel},
++        {true, 'c', R_L}, {true, 'd', R_U}, {true, 'e', L1}, {true, 'f', R1},
++        {true, 'g', L2}, {true, 'h', R2}, {true, 'k', TP_L}, {true, 'r', Start},
++    };
++    for (const auto& item : glyphs) {
++        std::vector<uint8_t> mask(40 * 32, 0xaa);
++        assert(DrawGravityGlyph(item.gr2, item.code, PadXbox, mask.data(), 32, 32, 40));
++        Pixels expected;
++        assert(DrawPad(item.icon, PadXbox, expected));
++        for (int y = 0; y < 32; ++y) {
++            for (int x = 0; x < 32; ++x) {
++                const uint8_t* pixel = &expected[(y * 32 + x) * 4];
++                const uint8_t brightness = std::max({pixel[0], pixel[1], pixel[2]});
++                assert(mask[y * 40 + x] == uint8_t(brightness * pixel[3] / 255));
++            }
++            for (int x = 32; x < 40; ++x) assert(mask[y * 40 + x] == 0xaa);
++        }
++        for (int style = 0; style < DcStyleCount; ++style) {
++            std::fill(mask.begin(), mask.end(), 0xaa);
++            const bool expected = style != DcPs5 || item.icon != Start;
++            assert(DrawGravityGlyph(item.gr2, item.code, PadXbox, mask.data(), 32, 32, 40, style) == expected);
++        }
++        std::fill(mask.begin(), mask.end(), 0xaa);
++        assert(DrawGravityGlyph(item.gr2, item.code, PadSwitch, mask.data(), 32, 32, 40));
++        Pixels switch_expected;
++        assert(DrawPad(item.icon, PadSwitch, switch_expected));
++        for (int y = 0; y < 32; ++y) {
++            for (int x = 0; x < 32; ++x) {
++                const uint8_t* pixel = &switch_expected[(y * 32 + x) * 4];
++                const uint8_t brightness = std::max({pixel[0], pixel[1], pixel[2]});
++                assert(mask[y * 40 + x] == uint8_t(brightness * pixel[3] / 255));
++            }
 +        }
 +    }
-+    assert(different);
-+    auto glossy = gr1, flat = gr1, ps5 = gr1;
-+    assert(DrawGravityGlyph(false, 'h', PadXbox, glossy.data(), 32, 32, 40, DcXbox360));
-+    assert(DrawGravityGlyph(false, 'h', PadXbox, flat.data(), 32, 32, 40, DcXboxOne));
-+    assert(DrawGravityGlyph(false, 'h', PadXbox, ps5.data(), 32, 32, 40, DcPs5));
-+    assert(glossy != flat && flat != ps5 && glossy != ps5);
-+    auto kept = gr1;
-+    assert(!DrawGravityGlyph(true, 'D', PadXbox, gr1.data(), 32, 32, 40)); // GR2's warning icon
-+    assert(gr1 == kept);
-+    assert(!DrawGravityGlyph(false, 'h', PadXbox, gr1.data(), 32, 32, 10));
-+    std::puts("PASS: GR1/GR2 glyph mapping, button distinction, pitch padding, unrelated symbols");
++    std::vector<uint8_t> unchanged(40 * 32, 0xcc);
++    assert(!DrawGravityGlyph(true, 'D', PadXbox, unchanged.data(), 32, 32, 40)); // GR2 warning icon
++    assert(std::all_of(unchanged.begin(), unchanged.end(), [](uint8_t value) { return value == 0xcc; }));
++    assert(!DrawGravityGlyph(false, 'h', PadXbox, unchanged.data(), 32, 32, 10));
++    std::puts("PASS: all mapped GR1/GR2 glyphs, L1/R1, triggers, styles, pitch padding");
 +
      assert(KeyLabel("e") == "E" && KeyLabel("space") == "Space" && KeyLabel("lshift") == "Shift");
-     assert(KeyLabel("f11") == "F11" && KeyLabel("kp5") == "Num5" && KeyLabel("leftbutton").empty());
- 
-@@ -157,8 +183,56 @@ int main(int argc, char** argv) {
-         assert(alpha(area.w / 2, area.h / 2) > 200);
-     }
+@@ -159,4 +206,52 @@ int main(int argc, char** argv) {
  
 -    // PSNR above ~30 dB: differences no one sees at 32x32 in a menu.
 -    assert(worst < 65.0);
@@ -23734,8 +23756,7 @@ index a5edf37..9b9e6a3 100644
 +    // PSNR above ~30 dB: differences no one sees at 32x32 in a menu (the DriveClub icons too).
 +    assert(worst < 65.0 && dc_worst < 65.0);
      std::printf("prompt icons: all tests passed (worst mse %.1f)\n", worst);
-     return 0;
- }
+
 diff --git a/tests/test_trophy.c b/tests/test_trophy.c
 new file mode 100644
 index 0000000..b66b116
