@@ -34115,3 +34115,109 @@ index 0000000..7dc9edb
 +        }
 +    }
 +}
+
+--- a/src/runtime_font.c
++++ b/src/runtime_font.c
+@@ -281,7 +281,12 @@
+         return FONT_ERROR_NO_SUPPORT_GLYPH;
+     }
+     metrics(f, m);
+-    load_glyph(f, code, fx, fy, 1);
++    if (!load_glyph(f, code, fx, fy, 1)) {
++        memset(m, 0, sizeof(*m));
++        memset(out, 0, sizeof(*out));
++        pthread_mutex_unlock(&lock);
++        return FONT_ERROR_NO_SUPPORT_GLYPH;
++    }
+     const FT_GlyphSlot slot = f->face->glyph;
+     const FT_Bitmap *bitmap = &slot->bitmap;
+     // Restrict substitutions to each game's exact symbol font. Ordinary text uses some
+@@ -292,7 +297,6 @@
+                              (int)bitmap->width,(int)bitmap->rows,bitmap->pitch);
+     const int32_t left = slot->bitmap_left, top = slot->bitmap_top;
+     const int32_t gw = (int32_t)bitmap->width, gh = (int32_t)bitmap->rows;
+-    const int32_t right = left + gw;
+     const int32_t dest_x = (int32_t)floorf(x) + left, dest_y = (int32_t)floorf(y) - top;
+     const int32_t bpp = s->pixel_size_byte > 0 ? s->pixel_size_byte : 1;
+     int32_t ux0 = dest_x, uy0 = dest_y, uw = 0, uh = 0;
+@@ -319,13 +323,28 @@
+                                              (size_t)out->update_rect.x * (size_t)bpp : NULL;
+     out->surface_image.width_byte = (uint32_t)s->width_byte;
+     out->surface_image.pixel_size_byte = (uint8_t)bpp;
+-    const float advance_end = ceilf(x + m->horizontal.advance);
+-    out->image_metrics.bearing_x = (float)((int32_t)floorf(x) + left) - x;
+-    out->image_metrics.bearing_y = (float)top + floorf(y) - y;
+-    out->image_metrics.advance = advance_end - x;
+-    out->image_metrics.stride = fmaxf(advance_end, floorf(x) + (float)right) - x;
+-    out->image_metrics.width = (uint32_t)gw;
+-    out->image_metrics.height = (uint32_t)gh;
++    /* SceFont reports snapped outline bounds, which are not always identical to
++       the FreeType bitmap bounds at fractional pen positions (shadPS4 font HLE). */
++    const float left_f = x + m->horizontal.bearing_x;
++    const float top_f = y + m->horizontal.bearing_y;
++    const float right_f = left_f + m->width;
++    const float bottom_f = top_f - m->height;
++    const int32_t left_i = (int32_t)floorf(left_f), top_i = (int32_t)ceilf(top_f);
++    const int32_t right_i = (int32_t)ceilf(right_f), bottom_i = (int32_t)floorf(bottom_f);
++    const float advance_f = x + m->horizontal.advance;
++    const int32_t advance_i = (int32_t)ceilf(advance_f);
++    int32_t stride_i = advance_i;
++    if (advance_f != (float)advance_i) {
++        const int32_t tmp_i = (int32_t)(((float)right_i - right_f) + advance_f);
++        stride_i = advance_f <= right_f ? tmp_i : right_i + 1;
++        if (stride_i < tmp_i) stride_i = tmp_i;
++    }
++    out->image_metrics.bearing_x = (float)left_i - x;
++    out->image_metrics.bearing_y = (float)top_i - y;
++    out->image_metrics.advance = (float)advance_i - x;
++    out->image_metrics.stride = (float)stride_i - x;
++    out->image_metrics.width = (uint32_t)max_i(0, right_i - left_i);
++    out->image_metrics.height = (uint32_t)max_i(0, top_i - bottom_i);
+     pthread_mutex_unlock(&lock);
+     return 0;
+ }
+--- /dev/null
++++ b/tests/test_font_metrics.c
+@@ -0,0 +1,42 @@
++/* Compare the SceFont outline bounds against real fractional-position glyphs. */
++#include <assert.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include "../src/runtime_font.c"
++
++uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid) {
++    (void)table; (void)count; (void)nid; return 0;
++}
++int bbgpu_gr_prompt_glyph(int game, uint32_t code, uint8_t *data, int w, int h, int pitch) {
++    (void)game; (void)code; (void)data; (void)w; (void)h; (void)pitch; return 0;
++}
++int main(int argc, char **argv) {
++    assert(argc==2);
++    FILE *file=fopen(argv[1],"rb"); assert(file);
++    assert(fseek(file,0,SEEK_END)==0); long n=ftell(file); assert(n>0); rewind(file);
++    void *bytes=malloc((size_t)n); assert(bytes && fread(bytes,1,(size_t)n,file)==(size_t)n);
++    fclose(file);
++    Font *f=open_font(bytes,(size_t)n,"test"); free(bytes); assert(f);
++    assert(set_scale_pixel(f,22,22)==0);
++    uint8_t pixels[128*128]={0}; RenderSurface surface;
++    render_surface_init(&surface,pixels,128,1,128,128);
++    unsigned different=0;
++    for (int ch='0';ch<='9';++ch) for (int sub=0;sub<4;++sub) {
++        const float x=64.0f+sub*0.25f, y=64.0f+sub*0.25f;
++        GlyphMetrics m; RenderOutput out;
++        assert(render_glyph(f,(uint32_t)ch,&surface,x,y,&m,&out)==0);
++        const float l=x+m.horizontal.bearing_x, t=y+m.horizontal.bearing_y;
++        const int w=(int)ceilf(l+m.width)-(int)floorf(l);
++        const int h=(int)ceilf(t)-(int)floorf(t-m.height);
++        assert(out.image_metrics.width==(uint32_t)w && out.image_metrics.height==(uint32_t)h);
++        assert(fabsf(out.image_metrics.bearing_x-(floorf(l)-x))<0.0001f);
++        assert(fabsf(out.image_metrics.bearing_y-(ceilf(t)-y))<0.0001f);
++        if ((int)out.image_metrics.width!=(int)f->face->glyph->bitmap.width ||
++            (int)out.image_metrics.height!=(int)f->face->glyph->bitmap.rows) ++different;
++    }
++    assert(different>0);
++    close_font(f);
++    puts("PASS: fractional digit metrics use SceFont outline bounds");
++    return 0;
++}
