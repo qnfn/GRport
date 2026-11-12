@@ -33890,3 +33890,228 @@ index 0000000..7dc9edb
 +
 +if __name__ == "__main__":
 +    sys.exit(main(sys.argv[1:]))
+
+--- a/src/runtime_pad.c
++++ b/src/runtime_pad.c
+@@ -991,7 +991,15 @@
+     if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
+     if (index) return ERR_INVALID_ARG;
+     pthread_mutex_lock(&lock);
+-    int already=opened; opened=1;
++    int already=opened;
++    if (!already) {
++        opened=1;
++        motion_enabled=1;
++        reset_motion();
++        SDL_Gamepad *g=current_motion_gamepad(current_gamepad());
++        configure_motion(g);
++        report_motion_capabilities(g,"enabled at pad open");
++    }
+     pthread_mutex_unlock(&lock);
+     if (already) return ERR_ALREADY_OPENED;
+     puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
+--- a/tests/test_pad.c
++++ b/tests/test_pad.c
+@@ -534,7 +534,11 @@
+     PadData d;
+     assert(pad_set_motion(0,1)==ERR_INVALID_HANDLE);
+     assert(pad_reset_orientation(0)==ERR_INVALID_HANDLE);
+-    assert(pad_set_motion(1,1)==0);
++    /* Games may never call scePadSetMotionSensorState. Reopening the pad must
++       discover and enable the sensor, and explicit disable must still work. */
++    assert(pad_close(1)==0);
++    assert(pad_open(1,0,0,NULL)==1);
++    assert(motion_enabled);
+     assert(motion_gamepad && motion_gamepad!=gamepad);
+     assert(SDL_GamepadHasSensor(motion_gamepad,SDL_SENSOR_GYRO));
+     assert(SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
+@@ -562,6 +566,9 @@
+     assert(pad_set_motion(1,0)==0);
+     assert(!SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
+     assert(pad_read_state(1,&d)==0 && d.angular_velocity[0]==0 && d.orientation[3]==1.0f);
++    assert(pad_close(1)==0);
++    assert(pad_open(1,0,0,NULL)==1);
++    assert(motion_gamepad && SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
+     puts("PASS: gyro-capable SDL pad discovery, sensor enablement, units, quaternion, reset and overlay capture");
+ }
+ 
+
+--- a/gpu/shadps4/shader_recompiler/runtime_info.h
++++ b/gpu/shadps4/shader_recompiler/runtime_info.h
+@@ -108,6 +108,7 @@
+ 
+ struct HwVertexRuntimeInfo {
+     u32 num_outputs;
++    u32 num_exports;
+     std::array<OutputMap, 3> outputs;
+     bool emulate_depth_negative_one_to_one{};
+     bool clip_disable{};
+--- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -179,6 +179,7 @@
+         BuildCommon(regs.vs_program);
+         info.hw.vs.user_clip_plane_mask = regs.clipper_control.user_clip_plane_enable;
+         info.hw.vs.num_outputs = MapOutputs(info.hw.vs.outputs, regs.vs_output_control);
++        info.hw.vs.num_exports = regs.vs_output_config.NumExports();
+         info.hw.vs.emulate_depth_negative_one_to_one =
+             !instance.IsDepthClipControlSupported() &&
+             regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
+--- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
++++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
+@@ -19,6 +19,7 @@
+ };
+ 
+ [[nodiscard]] std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type,
++                                                      u32 num_vertex_exports,
+                                                       const HwFragmentRuntimeInfo& fs_info);
+ 
+ } // namespace Shader::Backend::SPIRV
+--- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
++++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <sirit/sirit.h>
+ #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
+ #include "shader_recompiler/runtime_info.h"
+@@ -12,8 +13,8 @@
+ constexpr u32 SPIRV_VERSION_1_5 = 0x00010500;
+ 
+ struct QuadRectListEmitter : public Sirit::Module {
+-    explicit QuadRectListEmitter(const HwFragmentRuntimeInfo& fs_info_)
+-        : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_} {
++    explicit QuadRectListEmitter(u32 num_vertex_exports_, const HwFragmentRuntimeInfo& fs_info_)
++        : Sirit::Module{SPIRV_VERSION_1_5}, num_vertex_exports{num_vertex_exports_}, fs_info{fs_info_} {
+         void_id = TypeVoid();
+         bool_id = TypeBool();
+         float_id = TypeFloat(32);
+@@ -252,8 +253,9 @@
+         } else {
+             gl_per_vertex = AddOutput(gl_per_vertex_type);
+         }
+-        outputs.reserve(fs_info.num_inputs);
+-        for (int i = 0; i < fs_info.num_inputs; i++) {
++        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
++        outputs.reserve(num_forwards);
++        for (u32 i = 0; i < num_forwards; i++) {
+             const auto& input = fs_info.inputs[i];
+             if (input.IsDefault()) {
+                 continue;
+@@ -276,8 +278,9 @@
+         const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, 32U))};
+         gl_in = AddInput(gl_per_vertex_array);
+         const Id float_arr{TypeArray(vec4_id, Int(32))};
+-        inputs.reserve(fs_info.num_inputs);
+-        for (int i = 0; i < fs_info.num_inputs; i++) {
++        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
++        inputs.reserve(num_forwards);
++        for (u32 i = 0; i < num_forwards; i++) {
+             const auto& input = fs_info.inputs[i];
+             if (input.IsDefault()) {
+                 continue;
+@@ -288,6 +291,7 @@
+     }
+ 
+ private:
++    u32 num_vertex_exports;
+     HwFragmentRuntimeInfo fs_info;
+     Id main;
+     Id void_id;
+@@ -319,8 +323,9 @@
+     std::vector<Id> interfaces;
+ };
+ 
+-std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const HwFragmentRuntimeInfo& fs_info) {
+-    QuadRectListEmitter ctx{fs_info};
++std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, u32 num_vertex_exports,
++                                         const HwFragmentRuntimeInfo& fs_info) {
++    QuadRectListEmitter ctx{num_vertex_exports, fs_info};
+     switch (type) {
+     case AuxShaderType::RectListTCS:
+         ctx.EmitRectListTCS();
+--- a/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -92,6 +92,12 @@
+ 
+     const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList;
+     const bool is_quad_list = key.prim_type == AmdGpu::PrimitiveType::QuadList;
++    const auto& vertex_runtime = runtime_infos[u32(Shader::SwStage::Vertex)].hw.vs;
++    const auto& fragment_runtime = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
++    const auto* vertex_info = infos[u32(Shader::SwStage::Vertex)];
++    const u32 vertex_exports = vertex_runtime.num_exports +
++        (fragment_runtime.clip_distance_emulation && vertex_info &&
++         vertex_info->stores.GetAny(Shader::IR::Attribute::ClipDistance) ? 1u : 0u);
+     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
+         .patchControlPoints = is_rect_list ? 3U : (is_quad_list ? 4U : key.patch_control_points),
+     };
+@@ -198,7 +204,7 @@
+         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
+         if (!preloading) {
+             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+-            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info);
++            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, vertex_exports, fs_info);
+         }
+         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+             .stage = vk::ShaderStageFlagBits::eTessellationControl,
+@@ -217,7 +223,7 @@
+         if (!preloading) {
+             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+-                AuxShaderType::PassthroughTES, fs_info);
++                AuxShaderType::PassthroughTES, vertex_exports, fs_info);
+         }
+         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
+--- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
+@@ -18,7 +18,7 @@
+ // DCport 13: CFG fallthrough edges kept (shadPS4 #5365).
+ // DCport 15: permutation indices are never reused across sessions (14 caches could pair a
+ // pipeline with another permutation's shader: graphics bugs until the cache was deleted).
+-static constexpr u32 ShaderBinaryVersion = 16u;
++static constexpr u32 ShaderBinaryVersion = 17u;
+ static constexpr u32 ShaderMetaVersion = 9u;
+ static constexpr u32 PipelineKeyVersion = 6u;
+ // GRport: shaders made with and without seamless cube sampling differ, so each setting has
+--- /dev/null
++++ b/tests/test_aux_tess_exports.cpp
+@@ -0,0 +1,37 @@
++#include <cassert>
++#include <cstdint>
++#include <fstream>
++#include <string>
++#include <vector>
++#include <spirv/unified1/spirv.hpp11>
++#include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
++#include "shader_recompiler/runtime_info.h"
++
++int main() {
++    Shader::HwFragmentRuntimeInfo fs{};
++    fs.num_inputs = 3;
++    for (unsigned i = 0; i < fs.num_inputs; ++i) fs.inputs[i].param_index = i;
++    using Shader::Backend::SPIRV::AuxShaderType;
++    using Shader::Backend::SPIRV::EmitAuxilaryTessShader;
++    const AuxShaderType types[] = {AuxShaderType::RectListTCS, AuxShaderType::QuadListTCS,
++                                   AuxShaderType::PassthroughTES};
++    for (unsigned t = 0; t < 3; ++t) {
++        for (unsigned limit : {0u, 1u, 3u, 5u}) {
++            auto code = EmitAuxilaryTessShader(types[t], limit, fs);
++            unsigned locations = 0;
++            for (size_t i = 5; i < code.size();) {
++                const unsigned words = code[i] >> 16;
++                assert(words && i + words <= code.size());
++                if ((code[i] & 0xffffu) == static_cast<unsigned>(spv::Op::OpDecorate) &&
++                    words >= 4 && code[i + 2] == static_cast<unsigned>(spv::Decoration::Location))
++                    ++locations;
++                i += words;
++            }
++            assert(locations == 2 * (limit < fs.num_inputs ? limit : fs.num_inputs));
++            std::ofstream file("tess-" + std::to_string(t) + "-" + std::to_string(limit) + ".spv",
++                               std::ios::binary);
++            file.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(code[0]));
++            assert(file.good());
++        }
++    }
++}

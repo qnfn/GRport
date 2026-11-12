@@ -2,9 +2,10 @@
 
 Gravity Rush Remastered and Gravity Rush 2 on Windows (and, experimental, Linux), from one launcher.
 
-GRport runs your own PS4 copies of the games natively on Windows: its own runtime, its own
-audio, FSR 4 / DLSS anti-aliasing, Gravity Rush Remastered at up to 144 FPS and Gravity Rush 2
-at up to 120 FPS.
+GRport is an unofficial PS4 compatibility runtime for playing your own copies of these games
+on Windows and, experimentally, Linux. Most original game CPU code executes directly on x86-64;
+the runtime implements PS4 services and uses a shadPS4-derived renderer to translate graphics
+to Vulkan. It supports FSR 4 / DLSS anti-aliasing and community frame-rate patches.
 
 ![GRport launcher](screenshots/launcher.png)
 
@@ -53,7 +54,7 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
 
 ## Features
 
-- **Native runtime**: no PS4 firmware or system files needed.
+- **PS4 compatibility runtime**: runs the original game with translated graphics; no separate PS4 firmware installation is needed.
 - **Sound**: GRport's own audio engine for the games' music, voices and effects.
 - **Anti-aliasing**: FSR 3.1, FSR 4 (FSR edition), DLSS (NVIDIA RTX) or TAA, with sharpening;
   FSR 1 for screens above 1080p. Open GRport's menu in the game with **Insert** or **L3+R3**.
@@ -122,6 +123,8 @@ More of my projects: [github.com/qnfn](https://github.com/qnfn)
   which GRport's runtime is built (GPL); the Linux AppImage follows their Linux packaging.
 - Junmin Lee: Gravity Rush 2 frame rate patches and crash fix (downloaded from his repository,
   not included).
+- [GR2fork](https://github.com/junminlee2004/GR2fork) and its contributors: work adapted for
+  Gravity Rush 2 photo handling and GPU readbacks, as credited in the runtime source.
 - AMD FidelityFX (FSR), NVIDIA DLSS SDK, LibAtrac9 and the other libraries listed in the
   release's `licenses` folder.
 
