@@ -31,10 +31,25 @@ GR1_KICK_FIX = "Gravity kick camera leveling"
 DLC_UNLOCK = "Unlock All DLC"  # Gravity Rush 2: always on
 GOLDHEN_BASE = 0x400000
 
+# GR1 CUSA01113 1.00: addresses are offsets into the executable image. The
+# gravity and gem patches are adapted from Talixme's GoldHEN definitions;
+# the health write follows Skal's definition. The special timer patch stops
+# its decrement after it has been charged. Prepare validates original bytes.
+GR1_CHEATS = {
+    "GR1 health": (0x2D2F44, bytes.fromhex("894f20")),
+    "GR1 gravity": (0x08169A, bytes.fromhex("9090909090909090")),
+    "GR1 gems": (0x104777, bytes.fromhex("0117")),
+    "GR1 special": (0x2E203E, bytes.fromhex("909090")),
+}
+
 # The optional patches: (name prefix in the author's file, label, on by default, note).
 OPTIONAL = {
     "gr1": (
         ("Skip intro", "Skip intro", False, "Skips the logos and the intro movie at boot."),
+        ("GR1 health", "Cheat: health stays full", False, "Experimental; European v1.00 only."),
+        ("GR1 gravity", "Cheat: infinite gravity", False, "Experimental; European v1.00 only."),
+        ("GR1 special", "Cheat: infinite special", False, "Keeps the special timer once charged; European v1.00 only."),
+        ("GR1 gems", "Cheat: gems increase when spent", False, "Experimental; European v1.00 only. May affect saved gems."),
     ),
     "gr2": (
         ("Disable motion blur", "Motion blur off", True, "Removes the camera motion blur."),
@@ -123,10 +138,15 @@ def _line_bytes(kind: "str | None", value: str) -> bytes:
     raise ValueError(f"unsupported patch line type {kind}")
 
 
-def compile_patches(xml: Path, prefixes: list, app_version: str = APP_VERSIONS["gr2"]) -> bytes:
-    root = ET.parse(xml).getroot()
+def compile_patches(xml: "Path | None", prefixes: list, app_version: str = APP_VERSIONS["gr2"]) -> bytes:
+    root = ET.parse(xml).getroot() if xml is not None else None
     writes = []
     for prefix in prefixes:
+        if prefix in GR1_CHEATS:
+            writes.append(GR1_CHEATS[prefix])
+            continue
+        if root is None:
+            raise ValueError(f"the patch file is required for '{prefix}'")
         size = respatch.parse(prefix)
         if size is not None:  # a size made from the author's 16:10 patches
             writes += [(addr - GOLDHEN_BASE, data)
@@ -225,7 +245,10 @@ def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | Non
         except OSError:
             path.unlink(missing_ok=True)
             return None
-    blob = compile_patches(download(paths, key), names, APP_VERSIONS[key])
+    if key == "gr1" and any(n in GR1_CHEATS for n in names) and info.serial != "CUSA01113":
+        raise ValueError("GR1 cheats currently support only the European CUSA01113 v1.00 game")
+    external_names = [n for n in names if n not in GR1_CHEATS]
+    blob = compile_patches(download(paths, key) if external_names else None, names, APP_VERSIONS[key])
     if mismatched(paths, info, blob):
         path.unlink(missing_ok=True)
         return None

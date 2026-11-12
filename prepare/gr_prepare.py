@@ -85,6 +85,31 @@ def patch_mismatches(boot: Path, patch: Path) -> "tuple[int, int]":
     return calls, bad
 
 
+def validate_gr1_cheats(boot: Path, patch: Path) -> None:
+    """Reject a GR1 cheat if its target instruction differs from the tested build."""
+    guards = {
+        (0x2D2F44, bytes.fromhex("894f20")): bytes.fromhex("895720"),
+        (0x08169A, bytes.fromhex("9090909090909090")): bytes.fromhex("c5fa1183780a0000"),
+        (0x104777, bytes.fromhex("0117")): bytes.fromhex("2917"),
+        (0x2E203E, bytes.fromhex("909090")): bytes.fromhex("412b07"),
+    }
+    raw = boot.read_bytes()
+    size = struct.unpack_from("<Q", raw, 8)[0]
+    image = raw[len(raw) - size:]
+    blob = patch.read_bytes()
+    magic, _base, count = struct.unpack_from("<8sQQ", blob, 0)
+    if magic != b"BBPATCH2":
+        raise ValueError("Invalid patch file")
+    pos = 24
+    for _ in range(count):
+        offset, length = struct.unpack_from("<QQ", blob, pos)
+        value = blob[pos + 16:pos + 16 + length]
+        expected = guards.get((offset, value))
+        if expected is not None and image[offset:offset + len(expected)] != expected:
+            raise ValueError(f"GR1 cheat does not match the game's instruction at 0x{offset:x}")
+        pos += 16 + length
+
+
 def main(argv) -> int:
     if len(argv) not in (3, 4):
         print(__doc__)
@@ -101,6 +126,11 @@ def main(argv) -> int:
     (data / "source.txt").unlink(missing_ok=True)
     prepare.prepare(game, data)
     if patch:
+        try:
+            validate_gr1_cheats(data / "boot.bin", patch)
+        except ValueError as e:
+            print(f"PATCH MISMATCH: {e}")
+            return 3
         calls, bad = patch_mismatches(data / "boot.bin", patch)
         if bad * 2 > calls:  # the patches also add new calls in places; most must match
             print(f"PATCH MISMATCH: {bad} of {calls} patched call sites are not calls in this "

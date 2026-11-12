@@ -520,8 +520,7 @@ class App(tk.Tk):
         try:
             patch = patches.write(self.paths, self.settings, info)
         except (OSError, ValueError) as e:
-            return (f"Could not get {info.game.title}'s patches (they download from their "
-                    f"author's GitHub on first use): {e}")
+            return f"Could not prepare {info.game.title}'s patches: {e}"
         if not runtime.is_prepared(self.paths, info, patch):
             runtime.data_dir(self.paths, key).mkdir(parents=True, exist_ok=True)
             return self._start(key, runtime.prepare_command(self.paths, info, patch), dict(os.environ),

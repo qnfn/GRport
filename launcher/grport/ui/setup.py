@@ -65,9 +65,9 @@ WINDOW_NOTE = ("Fullscreen takes the monitor (exclusive); Borderless is a window
                "Window has a title bar and the Window size below.")
 WINDOW_SIZE_NOTE = ("Window size: only the window, in Window mode ({size}, the shape of Render); "
                     "Fullscreen and Borderless use the whole monitor.")
-PATCHES_NOTE = ("Patches by Junmin Lee (his GR2fork patch repository), downloaded at the first "
-                "PLAY that needs them. Made for Gravity Rush Remastered 1.00 and Gravity Rush 2 "
-                "1.11. A change prepares the game again at the next PLAY (about a minute).")
+PATCHES_NOTE = ("Game patches by Junmin Lee are downloaded when needed. GR1 cheats are "
+                "adapted from GoldHEN codes by Talixme and Skal where noted. Patches target GR1 "
+                "1.00 and GR2 1.11. Changes prepare the game again at the next PLAY.")
 # Every _row label on the page: the label column fits the longest one.
 ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
               "Threading", "Frame rate", "Skybox seam fix", "PS4 Pro mode", "Stick dead zone", "Controller speaker", "Camera Roll", "Temporal output", "Performance log", "HDR10 output", "HDR white (nits)",
