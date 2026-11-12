@@ -12319,1192 +12319,438 @@ index 86ef250..a114c5c 100644
 +            std::size_t png_size);
 +
  } // namespace BbOverlay
-diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
-index c729033..b7e110e 100644
---- a/gpu/shim/bbport_prompt_icons.cpp
-+++ b/gpu/shim/bbport_prompt_icons.cpp
-@@ -1,591 +1,1083 @@
--// SPDX-License-Identifier: GPL-2.0-or-later
--// bbport: keyboard and mouse, Xbox and Switch key-guide icons (bbport_prompt_icons.h).
--
--#include "bbport_prompt_icons.h"
--
--#include <algorithm>
--#include <cmath>
--#include <cstring>
--#include <map>
--
--// A private copy of Dear ImGui's stb_truetype (static, so it cannot clash with ImGui's own).
--#define STB_TRUETYPE_IMPLEMENTATION
--#define STBTT_STATIC
--#pragma clang diagnostic push
--#pragma clang diagnostic ignored "-Wunused-function"
--#include "imstb_truetype.h"
--#pragma clang diagnostic pop
--
--namespace BbPromptIcons {
--
--const char* const Names[Count] = {
--    "KG_Cancel", "KG_L1", "KG_L2", "KG_L3", "KG_LS", "KG_L_D", "KG_L_LR", "KG_L_U", "KG_L_UD", "KG_L_UDLR",
--    "KG_OK", "KG_R1", "KG_R2", "KG_R3", "KG_RS", "KG_R_L", "KG_R_U", "KG_Start", "KG_TP_L", "KG_TP_R",
--};
--const uint64_t PlayStationHash[Count] = {
--    0x681cd54bf1ebfaeaull, 0xc2e52c29caf88e58ull, 0xa865b38e932d16bbull, 0x22fb8049bd638e46ull,
--    0x67620ed3bf36878aull, 0x29ad9450b1d02186ull, 0x8e97d270d7b066cfull, 0xe11b417f55904354ull,
--    0xde3b2100c5c414b1ull, 0x3dd2dbcbb8432b36ull, 0xc42aa25bf0baffedull, 0xb3e95215d4a042adull,
--    0xc80ea56ca1f84870ull, 0x568eba23a284c2a8ull, 0x0c1d8189222d57a6ull, 0xd8b19c9041c32644ull,
--    0x18ba522de454258dull, 0xbbf2bc267e780389ull, 0xe6e94727c7bcf1bbull, 0xdae39773f2aadd03ull,
--};
--const Area HudAreas[HudCount] = {{660, 120, 28, 32}, {692, 120, 28, 32}, {724, 120, 28, 32}};
--const Icon HudIcon[HudCount] = {OK, Cancel, L3};
--const uint64_t HudPlayStationHash[HudCount] = {
--    0xf5681001af8a6d1full, 0xd5d7e8ebf85a63f6ull, 0x75f17fcc6aff2036ull,
--};
--
--namespace {
--
--// The game's icons: a dark plate, tan glyphs.
--struct Color { float r, g, b, a; };
--constexpr Color kPlate{46, 46, 46, 255};
--constexpr Color kRim{30, 30, 30, 255};
--constexpr Color kGlyph{195, 161, 113, 255};
--
--stbtt_fontinfo g_font;
--bool g_font_ready = false;
--
--/// Premultiplied float canvas.
--struct Canvas {
--    float px[Size * Size][4]{};
--    void Blend(int x, int y, Color c, float coverage) {
--        if (x < 0 || y < 0 || x >= Size || y >= Size || coverage <= 0.0f) return;
--        const float a = c.a / 255.0f * std::min(coverage, 1.0f);
--        float* p = px[y * Size + x];
--        p[0] = c.r * a + p[0] * (1 - a);
--        p[1] = c.g * a + p[1] * (1 - a);
--        p[2] = c.b * a + p[2] * (1 - a);
--        p[3] = 255.0f * a + p[3] * (1 - a);
--    }
--};
--
--struct Clip { float x0 = 0, y0 = 0, x1 = Size, y1 = Size; };
--
--/// Anti-aliased rounded rectangle [x0, x1) x [y0, y1), 4x4 samples per pixel, inside `clip`.
--void FillRoundRect(Canvas& c, float x0, float y0, float x1, float y1, float r, Color color, Clip clip = {}) {
--    for (int y = int(y0); y < int(std::ceil(y1)); ++y) {
--        for (int x = int(x0); x < int(std::ceil(x1)); ++x) {
--            int inside = 0;
--            for (int sy = 0; sy < 4; ++sy) {
--                for (int sx = 0; sx < 4; ++sx) {
--                    const float px = x + (sx + 0.5f) / 4, py = y + (sy + 0.5f) / 4;
--                    if (px < x0 || px >= x1 || py < y0 || py >= y1) continue;
--                    if (px < clip.x0 || px >= clip.x1 || py < clip.y0 || py >= clip.y1) continue;
--                    const float cx = std::clamp(px, x0 + r, x1 - r), cy = std::clamp(py, y0 + r, y1 - r);
--                    if ((px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r) ++inside;
--                }
--            }
--            c.Blend(x, y, color, inside / 16.0f);
--        }
--    }
--}
--
--void Line(Canvas& c, float x0, float y0, float x1, float y1, float width, Color color) {
--    for (int y = 0; y < Size; ++y) {
--        for (int x = 0; x < Size; ++x) {
--            int inside = 0;
--            for (int sy = 0; sy < 4; ++sy) {
--                for (int sx = 0; sx < 4; ++sx) {
--                    const float px = x + (sx + 0.5f) / 4, py = y + (sy + 0.5f) / 4;
--                    const float dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
--                    const float t = len2 > 0 ? std::clamp(((px - x0) * dx + (py - y0) * dy) / len2, 0.0f, 1.0f) : 0;
--                    const float qx = x0 + t * dx - px, qy = y0 + t * dy - py;
--                    if (qx * qx + qy * qy <= width * width / 4) ++inside;
--                }
--            }
--            c.Blend(x, y, color, inside / 16.0f);
--        }
--    }
--}
--
--std::vector<int> Codepoints(const std::string& text) {
--    std::vector<int> out;
--    for (size_t i = 0; i < text.size();) {
--        const unsigned char b = text[i];
--        int cp, n;
--        if (b < 0x80) { cp = b; n = 1; }
--        else if ((b >> 5) == 6) { cp = b & 0x1f; n = 2; }
--        else if ((b >> 4) == 14) { cp = b & 0x0f; n = 3; }
--        else { cp = b & 0x07; n = 4; }
--        for (int k = 1; k < n && i + k < text.size(); ++k) cp = (cp << 6) | (text[i + k] & 0x3f);
--        out.push_back(cp);
--        i += n;
--    }
--    return out;
--}
--
--float TextWidth(const std::vector<int>& cps, float scale) {
--    float w = 0;
--    for (size_t i = 0; i < cps.size(); ++i) {
--        int advance, lsb;
--        stbtt_GetCodepointHMetrics(&g_font, cps[i], &advance, &lsb);
--        w += advance * scale;
--        if (i + 1 < cps.size()) w += stbtt_GetCodepointKernAdvance(&g_font, cps[i], cps[i + 1]) * scale;
--    }
--    return w;
--}
--
--/// The text centred on (cx, cy), at the largest pixel height in [min_px, max_px] that fits
--/// max_width (the smallest one otherwise).
--void Text(Canvas& c, const std::string& text, float cx, float cy, float max_width, float max_px, float min_px,
--          Color color) {
--    if (!g_font_ready || text.empty()) return;
--    const auto cps = Codepoints(text);
--    float px = max_px;
--    while (px > min_px && TextWidth(cps, stbtt_ScaleForPixelHeight(&g_font, px)) > max_width) px -= 0.5f;
--    const float scale = stbtt_ScaleForPixelHeight(&g_font, px);
--    int ascent, descent, gap;
--    stbtt_GetFontVMetrics(&g_font, &ascent, &descent, &gap);
--    // Centre the capital letters: their height is about 0.73 of the ascent in DejaVu Sans.
--    const float baseline = cy + ascent * scale * 0.73f / 2;
--    // Twice, half a pixel apart: as heavy as the game's bold glyphs.
--    for (const float bold : {-0.25f, 0.25f}) {
--    float x = cx - TextWidth(cps, scale) / 2 + bold;
--    for (size_t i = 0; i < cps.size(); ++i) {
--        const float shift_x = x - std::floor(x);
--        int w, h, xoff, yoff;
--        unsigned char* bitmap = stbtt_GetCodepointBitmapSubpixel(&g_font, scale, scale, shift_x, 0, cps[i], &w, &h,
--                                                                &xoff, &yoff);
--        for (int by = 0; by < h; ++by) {
--            for (int bx = 0; bx < w; ++bx) {
--                c.Blend(int(std::floor(x)) + xoff + bx, int(std::round(baseline)) + yoff + by, color,
--                        bitmap[by * w + bx] / 255.0f);
--            }
--        }
--        stbtt_FreeBitmap(bitmap, nullptr);
--        int advance, lsb;
--        stbtt_GetCodepointHMetrics(&g_font, cps[i], &advance, &lsb);
--        x += advance * scale;
--        if (i + 1 < cps.size()) x += stbtt_GetCodepointKernAdvance(&g_font, cps[i], cps[i + 1]) * scale;
--    }
--    }
--}
--
--bool IsMouse(const std::string& input) {
--    return input == "mouse" || input.find("button") != std::string::npos || input.rfind("mousewheel", 0) == 0;
--}
--
--/// A mouse on the plate, with the bound button lit (or the wheel and its direction).
--void Mouse(Canvas& c, const std::string& input, float top) {
--    const float x0 = 10, x1 = 22, y0 = top, y1 = 28, split = y0 + (y1 - y0) * 0.42f;
--    FillRoundRect(c, x0 - 1.4f, y0 - 1.4f, x1 + 1.4f, y1 + 1.4f, 7.4f, kGlyph);
--    FillRoundRect(c, x0, y0, x1, y1, 6, kPlate);
--    const float mid = (x0 + x1) / 2;
--    // The bound button: the body's own outline, cut to that button's half of the top.
--    if (input == "leftbutton") FillRoundRect(c, x0, y0, x1, y1, 6, kGlyph, {x0, y0, mid, split});
--    if (input == "rightbutton") FillRoundRect(c, x0, y0, x1, y1, 6, kGlyph, {mid, y0, x1, split});
--    Line(c, mid, y0, mid, split, 1.3f, kGlyph);
--    Line(c, x0, split, x1, split, 1.3f, kGlyph);
--    const bool wheel = input == "middlebutton" || input.rfind("mousewheel", 0) == 0;
--    FillRoundRect(c, mid - 1.6f, y0 + 2.5f, mid + 1.6f, split - 1.5f, 1.5f, wheel ? kGlyph : kRim);
--    if (input == "mousewheelup" || input == "mousewheeldown") {
--        Text(c, input == "mousewheelup" ? "\xe2\x96\xb2" : "\xe2\x96\xbc", 27, (y0 + split) / 2, 8, 7, 5, kGlyph);
--    }
--    if (input == "sidebuttonback" || input == "sidebuttonforward") {
--        Text(c, input == "sidebuttonback" ? "4" : "5", mid, (split + y1) / 2 + 1, 8, 9, 6, kGlyph);
--    }
--}
--
--Pixels Finish(const Canvas& c);
--
--void Plate(Canvas& c) {
--    FillRoundRect(c, 1, 1, 31, 31, 7, kRim);
--    FillRoundRect(c, 2, 2, 30, 30, 6, kPlate);
--}
--
--// ---- BC7 ---------------------------------------------------------------------------------
--
--struct Bits {
--    uint8_t out[16]{};
--    int at = 0;
--    void Put(uint32_t value, int count) {
--        for (int i = 0; i < count; ++i, ++at) {
--            if ((value >> i) & 1) out[at >> 3] |= uint8_t(1u << (at & 7));
--        }
--    }
--};
--
--constexpr int kWeights2[4] = {0, 21, 43, 64};
--constexpr int kWeights4[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
--
--int Interp(int a, int b, int w) { return ((64 - w) * a + w * b + 32) >> 6; }
--
--using Block = std::array<std::array<int, 4>, 16>;  // RGBA, straight
--
--/// The two pixels farthest apart in the chosen channels: the endpoints of the block's line.
--void FarthestPair(const Block& px, int first, int count, const bool* use, std::array<int, 4>& a,
--                  std::array<int, 4>& b) {
--    int best = -1;
--    a = b = px[0];
--    for (int i = 0; i < 16; ++i) {
--        if (use && !use[i]) continue;
--        for (int j = i; j < 16; ++j) {
--            if (use && !use[j]) continue;
--            int d = 0;
--            for (int k = first; k < first + count; ++k) d += (px[i][k] - px[j][k]) * (px[i][k] - px[j][k]);
--            if (d > best) { best = d; a = px[i]; b = px[j]; }
--        }
--    }
--}
--
--/// Mode 6: RGBA endpoints of 7 bits plus a p-bit each, 16 shades. Returns the squared error.
--long Mode6(const Block& px, uint8_t out[16]) {
--    std::array<int, 4> a, b;
--    FarthestPair(px, 0, 4, nullptr, a, b);
--    long best_err = -1;
--    uint8_t best[16];
--    for (int pa = 0; pa < 2; ++pa) {
--        for (int pb = 0; pb < 2; ++pb) {
--            int qa[4], qb[4], ea[4], eb[4];
--            for (int k = 0; k < 4; ++k) {
--                qa[k] = std::clamp((a[k] - pa + 1) >> 1, 0, 127);
--                qb[k] = std::clamp((b[k] - pb + 1) >> 1, 0, 127);
--                ea[k] = (qa[k] << 1) | pa;
--                eb[k] = (qb[k] << 1) | pb;
--            }
--            int idx[16];
--            long err = 0;
--            for (int i = 0; i < 16; ++i) {
--                long e_best = -1;
--                for (int s = 0; s < 16; ++s) {
--                    long e = 0;
--                    for (int k = 0; k < 4; ++k) {
--                        const int d = Interp(ea[k], eb[k], kWeights4[s]) - px[i][k];
--                        e += d * d;
--                    }
--                    if (e_best < 0 || e < e_best) { e_best = e; idx[i] = s; }
--                }
--                err += e_best;
--            }
--            if (best_err >= 0 && err >= best_err) continue;
--            best_err = err;
--            // Anchor: pixel 0's index has no top bit; swap the endpoints if it would need one.
--            Bits bits;
--            int pa_out = pa, pb_out = pb;
--            int sa[4], sb[4];
--            std::memcpy(sa, qa, sizeof sa);
--            std::memcpy(sb, qb, sizeof sb);
--            if (idx[0] >= 8) {
--                std::swap(sa, sb);
--                std::swap(pa_out, pb_out);
--                for (int& v : idx) v = 15 - v;
--            }
--            bits.Put(1u << 6, 7);
--            for (int k = 0; k < 4; ++k) { bits.Put(sa[k], 7); bits.Put(sb[k], 7); }
--            bits.Put(pa_out, 1);
--            bits.Put(pb_out, 1);
--            bits.Put(idx[0], 3);
--            for (int i = 1; i < 16; ++i) bits.Put(idx[i], 4);
--            std::memcpy(best, bits.out, 16);
--        }
--    }
--    std::memcpy(out, best, 16);
--    return best_err;
--}
--
--/// Mode 5: RGB endpoints of 7 bits and alpha endpoints of 8 bits, each with its own 4 shades.
--/// Transparent pixels do not pull the colour line. Returns the squared error.
--long Mode5(const Block& px, uint8_t out[16]) {
--    bool opaque[16];
--    bool any = false;
--    for (int i = 0; i < 16; ++i) any |= (opaque[i] = px[i][3] > 8);
--    std::array<int, 4> a, b;
--    FarthestPair(px, 0, 3, any ? opaque : nullptr, a, b);
--    int qa[3], qb[3], ea[3], eb[3];
--    for (int k = 0; k < 3; ++k) {
--        qa[k] = std::clamp((a[k] + 1) >> 1, 0, 127);
--        qb[k] = std::clamp((b[k] + 1) >> 1, 0, 127);
--        ea[k] = (qa[k] << 1) | (qa[k] >> 6);
--        eb[k] = (qb[k] << 1) | (qb[k] >> 6);
--    }
--    int alo = 255, ahi = 0;
--    for (const auto& p : px) { alo = std::min(alo, p[3]); ahi = std::max(ahi, p[3]); }
--    int cidx[16], aidx[16];
--    long err = 0;
--    for (int i = 0; i < 16; ++i) {
--        long e_best = -1;
--        for (int s = 0; s < 4; ++s) {
--            long e = 0;
--            for (int k = 0; k < 3; ++k) {
--                const int d = Interp(ea[k], eb[k], kWeights2[s]) - px[i][k];
--                e += d * d;
--            }
--            if (e_best < 0 || e < e_best) { e_best = e; cidx[i] = s; }
--        }
--        // Colour under a transparent pixel is invisible: it only counts as much as it shows.
--        err += e_best * px[i][3] / 255;
--        long ea_best = -1;
--        for (int s = 0; s < 4; ++s) {
--            const int d = Interp(alo, ahi, kWeights2[s]) - px[i][3];
--            if (ea_best < 0 || d * d < ea_best) { ea_best = d * d; aidx[i] = s; }
--        }
--        err += ea_best;
--    }
--    if (cidx[0] >= 2) {
--        std::swap(qa, qb);
--        for (int& v : cidx) v = 3 - v;
--    }
--    if (aidx[0] >= 2) {
--        std::swap(alo, ahi);
--        for (int& v : aidx) v = 3 - v;
--    }
--    Bits bits;
--    bits.Put(1u << 5, 6);
--    bits.Put(0, 2);  // no channel rotation
--    for (int k = 0; k < 3; ++k) { bits.Put(qa[k], 7); bits.Put(qb[k], 7); }
--    bits.Put(alo, 8);
--    bits.Put(ahi, 8);
--    bits.Put(cidx[0], 1);
--    for (int i = 1; i < 16; ++i) bits.Put(cidx[i], 2);
--    bits.Put(aidx[0], 1);
--    for (int i = 1; i < 16; ++i) bits.Put(aidx[i], 2);
--    std::memcpy(out, bits.out, 16);
--    return err;
--}
--
--/// The game's layout of a 32x32 BC7 texture: one 8x8 micro tile of blocks, Morton order (x in
--/// the even bits). Verified against the game's own KG_* icons.
--int TiledBlock(int bx, int by) {
--    int out = 0;
--    for (int bit = 0; bit < 3; ++bit) out |= ((bx >> bit) & 1) << (2 * bit) | ((by >> bit) & 1) << (2 * bit + 1);
--    return out;
--}
--
--} // namespace
--
--bool SetFont(const unsigned char* ttf) {
--    g_font_ready = ttf && stbtt_InitFont(&g_font, ttf, stbtt_GetFontOffsetForIndex(ttf, 0));
--    return g_font_ready;
--}
--
--std::string KeyLabel(const std::string& input) {
--    static const std::map<std::string, std::string> names = {
--        {"space", "Space"}, {"lshift", "Shift"}, {"rshift", "Shift"}, {"lctrl", "Ctrl"}, {"rctrl", "Ctrl"},
--        {"lalt", "Alt"}, {"ralt", "Alt"}, {"tab", "Tab"}, {"escape", "Esc"}, {"enter", "Enter"},
--        {"backspace", "Bksp"}, {"delete", "Del"}, {"insert", "Ins"}, {"home", "Home"}, {"end", "End"},
--        {"pgup", "PgUp"}, {"pgdown", "PgDn"}, {"capslock", "Caps"}, {"lmeta", "Win"}, {"rmeta", "Win"},
--        {"lwin", "Win"}, {"rwin", "Win"}, {"up", "\xe2\x86\x91"}, {"down", "\xe2\x86\x93"},
--        {"left", "\xe2\x86\x90"}, {"right", "\xe2\x86\x92"}, {"grave", "`"}, {"minus", "-"}, {"equals", "="},
--        {"lbracket", "["}, {"rbracket", "]"}, {"backslash", "\\"}, {"semicolon", ";"}, {"apostrophe", "'"},
--        {"comma", ","}, {"period", "."}, {"slash", "/"}, {"printscreen", "PrtSc"}, {"scrolllock", "ScrLk"},
--        {"pausebreak", "Pause"}, {"kpperiod", "Num."}, {"kpcomma", "Num,"}, {"kpslash", "Num/"},
--        {"kpasterisk", "Num*"}, {"kpminus", "Num-"}, {"kpplus", "Num+"}, {"kpequals", "Num="},
--        {"kpenter", "Enter"},
--    };
--    if (IsMouse(input)) return {};
--    if (auto it = names.find(input); it != names.end()) return it->second;
--    if (input.size() == 1) return std::string(1, char(std::toupper(static_cast<unsigned char>(input[0]))));
--    if (input.size() >= 2 && input[0] == 'f' && std::isdigit(static_cast<unsigned char>(input[1]))) return "F" + input.substr(1);
--    if (input.rfind("kp", 0) == 0) return "Num" + input.substr(2);
--    return input;
--}
--
--Pixels Draw(const Inputs& inputs) {
--    Canvas c;
--    Plate(c);
--    if (inputs.empty()) {
--        Text(c, "\xe2\x80\x93", 16, 16, 24, 18, 10, kGlyph);
--    } else if (inputs.size() == 1) {
--        // A combination: its last input big, the modifiers small above it.
--        std::string mods, main = inputs[0];
--        if (const size_t plus = main.rfind('+'); plus != std::string::npos) {
--            for (size_t start = 0; start < plus;) {
--                const size_t end = std::min(main.find('+', start), plus);
--                mods += (mods.empty() ? "" : "+") + KeyLabel(main.substr(start, end - start));
--                start = end + 1;
--            }
--            main = main.substr(plus + 1);
--        }
--        const float top = mods.empty() ? 4.5f : 11.0f;
--        if (!mods.empty()) Text(c, mods, 16, 7.5f, 25, 8, 5.5f, kGlyph);
--        if (IsMouse(main)) Mouse(c, main, top);
--        else Text(c, KeyLabel(main), 16, mods.empty() ? 16 : 20, 25, mods.empty() ? 17 : 13, 7, kGlyph);
--    } else if (std::all_of(inputs.begin(), inputs.end(), [](const std::string& input) {
--                   return input == "up" || input == "down" || input == "left" || input == "right";
--               })) {
--        // Arrow keys for d-pad directions: each where it points, as on the game's d-pad icons.
--        for (const auto& input : inputs) {
--            const float x = input == "left" ? 9.5f : input == "right" ? 22.5f : 16;
--            const float y = input == "up" ? 9.5f : input == "down" ? 22.5f : 16;
--            Text(c, KeyLabel(input), x, y, 12, 12, 8, kGlyph);
--        }
--    } else {
--        // A stick or a set of d-pad directions on other keys: side by side ("WASD", "IK").
--        std::string label;
--        bool mouse = false;
--        for (const auto& input : inputs) {
--            if (IsMouse(input)) { mouse = true; continue; }
--            label += KeyLabel(input.substr(input.rfind('+') == std::string::npos ? 0 : input.rfind('+') + 1));
--        }
--        if (mouse && label.empty()) Mouse(c, "mouse", 4.5f);
--        else Text(c, label, 16, 16, 26, 14, 6, kGlyph);
--    }
--    return Finish(c);
--}
--
--namespace {
--
--// The face buttons' letters: Xbox's own colours, a little darker as the game's PlayStation
--// symbols are; the Switch's are all one colour.
--constexpr Color kXboxA{96, 168, 58, 255}, kXboxB{206, 54, 48, 255}, kXboxX{48, 112, 208, 255},
--                kXboxY{222, 176, 38, 255};
--
--void Round(Canvas& c) {
--    FillRoundRect(c, 1, 1, 31, 31, 15, kRim);
--    FillRoundRect(c, 2, 2, 30, 30, 14, kPlate);
--}
--
--/// A face button: the letter on the round plate, as the game's Cross and Circle are drawn.
--void Face(Canvas& c, const char* letter, Color color) {
--    Round(c);
--    Text(c, letter, 16, 16, 20, 19, 12, color);
--}
--
--/// A shoulder button or trigger: its name on the plate, as the game's L1 and R2.
--void Shoulder(Canvas& c, const char* name) {
--    FillRoundRect(c, 1, 5, 31, 28, 5, kRim);
--    FillRoundRect(c, 2, 6, 30, 27, 4, kPlate);
--    Text(c, name, 16, 16.5f, 26, 19, 9, kGlyph);
--}
--
--} // namespace
--
--bool DrawPad(Icon icon, Pad pad, Pixels& out) {
--    const bool xbox = pad == PadXbox;
--    Canvas c;
--    switch (icon) {
--    case Cancel: Face(c, xbox ? "A" : "B", xbox ? kXboxA : kGlyph); break;     // Cross
--    case OK: Face(c, xbox ? "B" : "A", xbox ? kXboxB : kGlyph); break;         // Circle
--    case R_L: Face(c, xbox ? "X" : "Y", xbox ? kXboxX : kGlyph); break;        // Square
--    case R_U: Face(c, xbox ? "Y" : "X", xbox ? kXboxY : kGlyph); break;        // Triangle
--    case L1: Shoulder(c, xbox ? "LB" : "L"); break;
--    case R1: Shoulder(c, xbox ? "RB" : "R"); break;
--    case L2: Shoulder(c, xbox ? "LT" : "ZL"); break;
--    case R2: Shoulder(c, xbox ? "RT" : "ZR"); break;
--    case L3: case R3:
--        // A stick pressed: the game's own stick icon is the letter alone.
--        Round(c);
--        Text(c, icon == L3 ? "LS" : "RS", 16, 16, 22, 15, 9, kGlyph);
--        break;
--    case Start:
--        Round(c);
--        if (xbox) {
--            // Menu: three lines.
--            for (const float y : {11.0f, 16.0f, 21.0f}) Line(c, 10.5f, y, 21.5f, y, 2.2f, kGlyph);
--        } else {
--            Line(c, 9.5f, 16, 22.5f, 16, 3, kGlyph);  // +
--            Line(c, 16, 9.5f, 16, 22.5f, 3, kGlyph);
--        }
--        break;
--    case TP_L:
--        // The touchpad's controller binding is Back: Xbox's View, the Switch's minus.
--        Round(c);
--        if (xbox) {
--            FillRoundRect(c, 12, 9, 23, 18, 1.5f, kGlyph);
--            FillRoundRect(c, 13.6f, 10.6f, 21.4f, 16.4f, 0.5f, kPlate);
--            FillRoundRect(c, 9, 14, 20, 23, 1.5f, kGlyph);
--            FillRoundRect(c, 10.6f, 15.6f, 18.4f, 21.4f, 0.5f, kPlate);
--        } else {
--            Line(c, 9.5f, 16, 22.5f, 16, 3, kGlyph);
--        }
--        break;
--    default:
--        return false;  // the d-pad, the sticks, the touchpad's right half: the game's own
--    }
--    out = Finish(c);
--    return true;
--}
--
--namespace {
--
--Pixels Finish(const Canvas& c) {
--    Pixels out{};
--    for (int i = 0; i < Size * Size; ++i) {
--        const float a = c.px[i][3];
--        for (int k = 0; k < 3; ++k) {
--            // Straight colour; a transparent pixel takes the plate's, so filtering at the rounded
--            // edge does not darken toward black.
--            const float v = a > 0.5f ? c.px[i][k] * 255.0f / a : (k == 0 ? kPlate.r : k == 1 ? kPlate.g : kPlate.b);
--            out[i * 4 + k] = uint8_t(std::clamp(std::lround(v), 0l, 255l));
--        }
--        out[i * 4 + 3] = uint8_t(std::clamp(std::lround(a), 0l, 255l));
--    }
--    return out;
--}
--
--} // namespace
--
--namespace {
--/// The better of modes 5 and 6 for the 4x4 block at (bx, by) of an RGBA image `width` wide.
--void EncodeBlock(const uint8_t* rgba, int width, int bx, int by, uint8_t out[16]) {
--    Block block;
--    for (int y = 0; y < 4; ++y) {
--        for (int x = 0; x < 4; ++x) {
--            const uint8_t* p = &rgba[((by * 4 + y) * width + bx * 4 + x) * 4];
--            block[y * 4 + x] = {p[0], p[1], p[2], p[3]};
--        }
--    }
--    uint8_t six[16], five[16];
--    const long e6 = Mode6(block, six), e5 = Mode5(block, five);
--    std::memcpy(out, e6 <= e5 ? six : five, 16);
--}
--} // namespace
--
--std::array<uint8_t, Bytes> Encode(const Pixels& pixels) {
--    std::array<uint8_t, Bytes> out{};
--    for (int by = 0; by < Size / 4; ++by) {
--        for (int bx = 0; bx < Size / 4; ++bx) EncodeBlock(pixels.data(), Size, bx, by, &out[TiledBlock(bx, by) * 16]);
--    }
--    return out;
--}
--
--size_t TiledBlockOffset(int bx, int by, int width) {
--    const int tiles_x = width / 32;  // 8 blocks of 4 pixels per micro tile
--    return (size_t(by / 8 * tiles_x + bx / 8) * 64 + size_t(TiledBlock(bx % 8, by % 8))) * 16;
--}
--
--std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area) {
--    return RenderIconArea(Draw(inputs), area);
--}
--
--std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
--    // The 32x32 icon scaled to the game's 26x26 sprite (each output pixel the alpha-weighted
--    // average of what it covers), centred in an otherwise transparent area.
--    constexpr int kSprite = 26;
--    std::vector<uint8_t> rgba(size_t(area.w) * area.h * 4, 0);
--    const int ox = (area.w - kSprite) / 2, oy = (area.h - kSprite) / 2;
--    const float step = float(Size) / kSprite;
--    for (int y = 0; y < kSprite; ++y) {
--        for (int x = 0; x < kSprite; ++x) {
--            float sum[4]{}, weight = 0;
--            int samples = 0;
--            for (int sy = 0; sy < 4; ++sy) {
--                for (int sx = 0; sx < 4; ++sx, ++samples) {
--                    const int px = std::min(Size - 1, int((x + (sx + 0.5f) / 4) * step));
--                    const int py = std::min(Size - 1, int((y + (sy + 0.5f) / 4) * step));
--                    const uint8_t* p = &icon[(py * Size + px) * 4];
--                    const float a = p[3] / 255.0f;
--                    for (int k = 0; k < 3; ++k) sum[k] += p[k] * a;
--                    sum[3] += p[3];
--                    weight += a;
--                }
--            }
--            uint8_t* out = &rgba[(size_t(oy + y) * area.w + ox + x) * 4];
--            for (int k = 0; k < 3; ++k) out[k] = uint8_t(weight > 0 ? std::lround(sum[k] / weight) : kPlate.r);
--            out[3] = uint8_t(std::lround(sum[3] / samples));
--        }
--    }
--    for (size_t i = 0; i < rgba.size(); i += 4) {
--        if (!rgba[i + 3]) { rgba[i] = rgba[i + 1] = rgba[i + 2] = uint8_t(kPlate.r); }
--    }
--    std::vector<uint8_t> blocks(size_t(area.w / 4) * (area.h / 4) * 16);
--    for (int by = 0; by < area.h / 4; ++by) {
--        for (int bx = 0; bx < area.w / 4; ++bx) {
--            EncodeBlock(rgba.data(), area.w, bx, by, &blocks[(size_t(by) * (area.w / 4) + bx) * 16]);
--        }
--    }
--    return blocks;
--}
--
--} // namespace BbPromptIcons
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+// bbport: keyboard and mouse, Xbox and Switch key-guide icons (bbport_prompt_icons.h).
-+
-+#include "bbport_prompt_icons.h"
-+
-+#include <algorithm>
-+#include <cmath>
-+#include <cstring>
+diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
+index ca00643..eb98b1a 100644
+--- a/gpu/shim/bbport_prompts.cpp
++++ b/gpu/shim/bbport_prompts.cpp
+@@ -9,6 +9,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
 +#include <map>
-+
-+// A private copy of Dear ImGui's stb_truetype (static, so it cannot clash with ImGui's own).
-+#define STB_TRUETYPE_IMPLEMENTATION
-+#define STBTT_STATIC
-+#pragma clang diagnostic push
-+#pragma clang diagnostic ignored "-Wunused-function"
-+#include "imstb_truetype.h"
-+#pragma clang diagnostic pop
-+
-+namespace BbPromptIcons {
-+
-+const char* const Names[Count] = {
-+    "KG_Cancel", "KG_L1", "KG_L2", "KG_L3", "KG_LS", "KG_L_D", "KG_L_LR", "KG_L_U", "KG_L_UD", "KG_L_UDLR",
-+    "KG_OK", "KG_R1", "KG_R2", "KG_R3", "KG_RS", "KG_R_L", "KG_R_U", "KG_Start", "KG_TP_L", "KG_TP_R",
-+};
-+const uint64_t PlayStationHash[Count] = {
-+    0x681cd54bf1ebfaeaull, 0xc2e52c29caf88e58ull, 0xa865b38e932d16bbull, 0x22fb8049bd638e46ull,
-+    0x67620ed3bf36878aull, 0x29ad9450b1d02186ull, 0x8e97d270d7b066cfull, 0xe11b417f55904354ull,
-+    0xde3b2100c5c414b1ull, 0x3dd2dbcbb8432b36ull, 0xc42aa25bf0baffedull, 0xb3e95215d4a042adull,
-+    0xc80ea56ca1f84870ull, 0x568eba23a284c2a8ull, 0x0c1d8189222d57a6ull, 0xd8b19c9041c32644ull,
-+    0x18ba522de454258dull, 0xbbf2bc267e780389ull, 0xe6e94727c7bcf1bbull, 0xdae39773f2aadd03ull,
-+};
-+const Area HudAreas[HudCount] = {{660, 120, 28, 32}, {692, 120, 28, 32}, {724, 120, 28, 32}};
-+const Icon HudIcon[HudCount] = {OK, Cancel, L3};
-+const uint64_t HudPlayStationHash[HudCount] = {
-+    0xf5681001af8a6d1full, 0xd5d7e8ebf85a63f6ull, 0x75f17fcc6aff2036ull,
-+};
-+
-+namespace {
-+
-+// The game's icons: a dark plate, tan glyphs.
-+struct Color { float r, g, b, a; };
-+constexpr Color kPlate{46, 46, 46, 255};
-+constexpr Color kRim{30, 30, 30, 255};
-+constexpr Color kGlyph{195, 161, 113, 255};
-+
-+stbtt_fontinfo g_font;
-+bool g_font_ready = false;
-+
-+/// Premultiplied float canvas.
-+struct Canvas {
-+    float px[Size * Size][4]{};
-+    void Blend(int x, int y, Color c, float coverage) {
-+        if (x < 0 || y < 0 || x >= Size || y >= Size || coverage <= 0.0f) return;
-+        const float a = c.a / 255.0f * std::min(coverage, 1.0f);
-+        float* p = px[y * Size + x];
-+        p[0] = c.r * a + p[0] * (1 - a);
-+        p[1] = c.g * a + p[1] * (1 - a);
-+        p[2] = c.b * a + p[2] * (1 - a);
-+        p[3] = 255.0f * a + p[3] * (1 - a);
-+    }
-+};
-+
-+struct Clip { float x0 = 0, y0 = 0, x1 = Size, y1 = Size; };
-+
-+/// Anti-aliased rounded rectangle [x0, x1) x [y0, y1), 4x4 samples per pixel, inside `clip`.
-+void FillRoundRect(Canvas& c, float x0, float y0, float x1, float y1, float r, Color color, Clip clip = {}) {
-+    for (int y = int(y0); y < int(std::ceil(y1)); ++y) {
-+        for (int x = int(x0); x < int(std::ceil(x1)); ++x) {
-+            int inside = 0;
-+            for (int sy = 0; sy < 4; ++sy) {
-+                for (int sx = 0; sx < 4; ++sx) {
-+                    const float px = x + (sx + 0.5f) / 4, py = y + (sy + 0.5f) / 4;
-+                    if (px < x0 || px >= x1 || py < y0 || py >= y1) continue;
-+                    if (px < clip.x0 || px >= clip.x1 || py < clip.y0 || py >= clip.y1) continue;
-+                    const float cx = std::clamp(px, x0 + r, x1 - r), cy = std::clamp(py, y0 + r, y1 - r);
-+                    if ((px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r) ++inside;
-+                }
-+            }
-+            c.Blend(x, y, color, inside / 16.0f);
-+        }
-+    }
-+}
-+
-+void Line(Canvas& c, float x0, float y0, float x1, float y1, float width, Color color) {
-+    for (int y = 0; y < Size; ++y) {
-+        for (int x = 0; x < Size; ++x) {
-+            int inside = 0;
-+            for (int sy = 0; sy < 4; ++sy) {
-+                for (int sx = 0; sx < 4; ++sx) {
-+                    const float px = x + (sx + 0.5f) / 4, py = y + (sy + 0.5f) / 4;
-+                    const float dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
-+                    const float t = len2 > 0 ? std::clamp(((px - x0) * dx + (py - y0) * dy) / len2, 0.0f, 1.0f) : 0;
-+                    const float qx = x0 + t * dx - px, qy = y0 + t * dy - py;
-+                    if (qx * qx + qy * qy <= width * width / 4) ++inside;
-+                }
-+            }
-+            c.Blend(x, y, color, inside / 16.0f);
-+        }
-+    }
-+}
-+
-+std::vector<int> Codepoints(const std::string& text) {
-+    std::vector<int> out;
-+    for (size_t i = 0; i < text.size();) {
-+        const unsigned char b = text[i];
-+        int cp, n;
-+        if (b < 0x80) { cp = b; n = 1; }
-+        else if ((b >> 5) == 6) { cp = b & 0x1f; n = 2; }
-+        else if ((b >> 4) == 14) { cp = b & 0x0f; n = 3; }
-+        else { cp = b & 0x07; n = 4; }
-+        for (int k = 1; k < n && i + k < text.size(); ++k) cp = (cp << 6) | (text[i + k] & 0x3f);
-+        out.push_back(cp);
-+        i += n;
-+    }
-+    return out;
-+}
-+
-+float TextWidth(const std::vector<int>& cps, float scale) {
-+    float w = 0;
-+    for (size_t i = 0; i < cps.size(); ++i) {
-+        int advance, lsb;
-+        stbtt_GetCodepointHMetrics(&g_font, cps[i], &advance, &lsb);
-+        w += advance * scale;
-+        if (i + 1 < cps.size()) w += stbtt_GetCodepointKernAdvance(&g_font, cps[i], cps[i + 1]) * scale;
-+    }
-+    return w;
-+}
-+
-+/// The text centred on (cx, cy), at the largest pixel height in [min_px, max_px] that fits
-+/// max_width (the smallest one otherwise).
-+void Text(Canvas& c, const std::string& text, float cx, float cy, float max_width, float max_px, float min_px,
-+          Color color) {
-+    if (!g_font_ready || text.empty()) return;
-+    const auto cps = Codepoints(text);
-+    float px = max_px;
-+    while (px > min_px && TextWidth(cps, stbtt_ScaleForPixelHeight(&g_font, px)) > max_width) px -= 0.5f;
-+    const float scale = stbtt_ScaleForPixelHeight(&g_font, px);
-+    int ascent, descent, gap;
-+    stbtt_GetFontVMetrics(&g_font, &ascent, &descent, &gap);
-+    // Centre the capital letters: their height is about 0.73 of the ascent in DejaVu Sans.
-+    const float baseline = cy + ascent * scale * 0.73f / 2;
-+    // Twice, half a pixel apart: as heavy as the game's bold glyphs.
-+    for (const float bold : {-0.25f, 0.25f}) {
-+    float x = cx - TextWidth(cps, scale) / 2 + bold;
-+    for (size_t i = 0; i < cps.size(); ++i) {
-+        const float shift_x = x - std::floor(x);
-+        int w, h, xoff, yoff;
-+        unsigned char* bitmap = stbtt_GetCodepointBitmapSubpixel(&g_font, scale, scale, shift_x, 0, cps[i], &w, &h,
-+                                                                &xoff, &yoff);
-+        for (int by = 0; by < h; ++by) {
-+            for (int bx = 0; bx < w; ++bx) {
-+                c.Blend(int(std::floor(x)) + xoff + bx, int(std::round(baseline)) + yoff + by, color,
-+                        bitmap[by * w + bx] / 255.0f);
-+            }
-+        }
-+        stbtt_FreeBitmap(bitmap, nullptr);
-+        int advance, lsb;
-+        stbtt_GetCodepointHMetrics(&g_font, cps[i], &advance, &lsb);
-+        x += advance * scale;
-+        if (i + 1 < cps.size()) x += stbtt_GetCodepointKernAdvance(&g_font, cps[i], cps[i + 1]) * scale;
-+    }
-+    }
-+}
-+
-+bool IsMouse(const std::string& input) {
-+    return input == "mouse" || input.find("button") != std::string::npos || input.rfind("mousewheel", 0) == 0;
-+}
-+
-+/// A mouse on the plate, with the bound button lit (or the wheel and its direction).
-+void Mouse(Canvas& c, const std::string& input, float top) {
-+    const float x0 = 10, x1 = 22, y0 = top, y1 = 28, split = y0 + (y1 - y0) * 0.42f;
-+    FillRoundRect(c, x0 - 1.4f, y0 - 1.4f, x1 + 1.4f, y1 + 1.4f, 7.4f, kGlyph);
-+    FillRoundRect(c, x0, y0, x1, y1, 6, kPlate);
-+    const float mid = (x0 + x1) / 2;
-+    // The bound button: the body's own outline, cut to that button's half of the top.
-+    if (input == "leftbutton") FillRoundRect(c, x0, y0, x1, y1, 6, kGlyph, {x0, y0, mid, split});
-+    if (input == "rightbutton") FillRoundRect(c, x0, y0, x1, y1, 6, kGlyph, {mid, y0, x1, split});
-+    Line(c, mid, y0, mid, split, 1.3f, kGlyph);
-+    Line(c, x0, split, x1, split, 1.3f, kGlyph);
-+    const bool wheel = input == "middlebutton" || input.rfind("mousewheel", 0) == 0;
-+    FillRoundRect(c, mid - 1.6f, y0 + 2.5f, mid + 1.6f, split - 1.5f, 1.5f, wheel ? kGlyph : kRim);
-+    if (input == "mousewheelup" || input == "mousewheeldown") {
-+        Text(c, input == "mousewheelup" ? "\xe2\x96\xb2" : "\xe2\x96\xbc", 27, (y0 + split) / 2, 8, 7, 5, kGlyph);
-+    }
-+    if (input == "sidebuttonback" || input == "sidebuttonforward") {
-+        Text(c, input == "sidebuttonback" ? "4" : "5", mid, (split + y1) / 2 + 1, 8, 9, 6, kGlyph);
-+    }
-+}
-+
-+Pixels Finish(const Canvas& c);
-+
-+void Plate(Canvas& c) {
-+    FillRoundRect(c, 1, 1, 31, 31, 7, kRim);
-+    FillRoundRect(c, 2, 2, 30, 30, 6, kPlate);
-+}
-+
-+// ---- BC7 ---------------------------------------------------------------------------------
-+
-+struct Bits {
-+    uint8_t out[16]{};
-+    int at = 0;
-+    void Put(uint32_t value, int count) {
-+        for (int i = 0; i < count; ++i, ++at) {
-+            if ((value >> i) & 1) out[at >> 3] |= uint8_t(1u << (at & 7));
-+        }
-+    }
-+};
-+
-+constexpr int kWeights2[4] = {0, 21, 43, 64};
-+constexpr int kWeights4[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
-+
-+int Interp(int a, int b, int w) { return ((64 - w) * a + w * b + 32) >> 6; }
-+
-+using Block = std::array<std::array<int, 4>, 16>;  // RGBA, straight
-+
-+/// The two pixels farthest apart in the chosen channels: the endpoints of the block's line.
-+void FarthestPair(const Block& px, int first, int count, const bool* use, std::array<int, 4>& a,
-+                  std::array<int, 4>& b) {
-+    int best = -1;
-+    a = b = px[0];
-+    for (int i = 0; i < 16; ++i) {
-+        if (use && !use[i]) continue;
-+        for (int j = i; j < 16; ++j) {
-+            if (use && !use[j]) continue;
-+            int d = 0;
-+            for (int k = first; k < first + count; ++k) d += (px[i][k] - px[j][k]) * (px[i][k] - px[j][k]);
-+            if (d > best) { best = d; a = px[i]; b = px[j]; }
-+        }
-+    }
-+}
-+
-+/// Mode 6: RGBA endpoints of 7 bits plus a p-bit each, 16 shades. Returns the squared error.
-+long Mode6(const Block& px, uint8_t out[16]) {
-+    std::array<int, 4> a, b;
-+    FarthestPair(px, 0, 4, nullptr, a, b);
-+    long best_err = -1;
-+    uint8_t best[16];
-+    for (int pa = 0; pa < 2; ++pa) {
-+        for (int pb = 0; pb < 2; ++pb) {
-+            int qa[4], qb[4], ea[4], eb[4];
-+            for (int k = 0; k < 4; ++k) {
-+                qa[k] = std::clamp((a[k] - pa + 1) >> 1, 0, 127);
-+                qb[k] = std::clamp((b[k] - pb + 1) >> 1, 0, 127);
-+                ea[k] = (qa[k] << 1) | pa;
-+                eb[k] = (qb[k] << 1) | pb;
-+            }
-+            int idx[16];
-+            long err = 0;
-+            for (int i = 0; i < 16; ++i) {
-+                long e_best = -1;
-+                for (int s = 0; s < 16; ++s) {
-+                    long e = 0;
-+                    for (int k = 0; k < 4; ++k) {
-+                        const int d = Interp(ea[k], eb[k], kWeights4[s]) - px[i][k];
-+                        e += d * d;
-+                    }
-+                    if (e_best < 0 || e < e_best) { e_best = e; idx[i] = s; }
-+                }
-+                err += e_best;
-+            }
-+            if (best_err >= 0 && err >= best_err) continue;
-+            best_err = err;
-+            // Anchor: pixel 0's index has no top bit; swap the endpoints if it would need one.
-+            Bits bits;
-+            int pa_out = pa, pb_out = pb;
-+            int sa[4], sb[4];
-+            std::memcpy(sa, qa, sizeof sa);
-+            std::memcpy(sb, qb, sizeof sb);
-+            if (idx[0] >= 8) {
-+                std::swap(sa, sb);
-+                std::swap(pa_out, pb_out);
-+                for (int& v : idx) v = 15 - v;
-+            }
-+            bits.Put(1u << 6, 7);
-+            for (int k = 0; k < 4; ++k) { bits.Put(sa[k], 7); bits.Put(sb[k], 7); }
-+            bits.Put(pa_out, 1);
-+            bits.Put(pb_out, 1);
-+            bits.Put(idx[0], 3);
-+            for (int i = 1; i < 16; ++i) bits.Put(idx[i], 4);
-+            std::memcpy(best, bits.out, 16);
-+        }
-+    }
-+    std::memcpy(out, best, 16);
-+    return best_err;
-+}
-+
-+/// Mode 5: RGB endpoints of 7 bits and alpha endpoints of 8 bits, each with its own 4 shades.
-+/// Transparent pixels do not pull the colour line. Returns the squared error.
-+long Mode5(const Block& px, uint8_t out[16]) {
-+    bool opaque[16];
-+    bool any = false;
-+    for (int i = 0; i < 16; ++i) any |= (opaque[i] = px[i][3] > 8);
-+    std::array<int, 4> a, b;
-+    FarthestPair(px, 0, 3, any ? opaque : nullptr, a, b);
-+    int qa[3], qb[3], ea[3], eb[3];
-+    for (int k = 0; k < 3; ++k) {
-+        qa[k] = std::clamp((a[k] + 1) >> 1, 0, 127);
-+        qb[k] = std::clamp((b[k] + 1) >> 1, 0, 127);
-+        ea[k] = (qa[k] << 1) | (qa[k] >> 6);
-+        eb[k] = (qb[k] << 1) | (qb[k] >> 6);
-+    }
-+    int alo = 255, ahi = 0;
-+    for (const auto& p : px) { alo = std::min(alo, p[3]); ahi = std::max(ahi, p[3]); }
-+    int cidx[16], aidx[16];
-+    long err = 0;
-+    for (int i = 0; i < 16; ++i) {
-+        long e_best = -1;
-+        for (int s = 0; s < 4; ++s) {
-+            long e = 0;
-+            for (int k = 0; k < 3; ++k) {
-+                const int d = Interp(ea[k], eb[k], kWeights2[s]) - px[i][k];
-+                e += d * d;
-+            }
-+            if (e_best < 0 || e < e_best) { e_best = e; cidx[i] = s; }
-+        }
-+        // Colour under a transparent pixel is invisible: it only counts as much as it shows.
-+        err += e_best * px[i][3] / 255;
-+        long ea_best = -1;
-+        for (int s = 0; s < 4; ++s) {
-+            const int d = Interp(alo, ahi, kWeights2[s]) - px[i][3];
-+            if (ea_best < 0 || d * d < ea_best) { ea_best = d * d; aidx[i] = s; }
-+        }
-+        err += ea_best;
-+    }
-+    if (cidx[0] >= 2) {
-+        std::swap(qa, qb);
-+        for (int& v : cidx) v = 3 - v;
-+    }
-+    if (aidx[0] >= 2) {
-+        std::swap(alo, ahi);
-+        for (int& v : aidx) v = 3 - v;
-+    }
-+    Bits bits;
-+    bits.Put(1u << 5, 6);
-+    bits.Put(0, 2);  // no channel rotation
-+    for (int k = 0; k < 3; ++k) { bits.Put(qa[k], 7); bits.Put(qb[k], 7); }
-+    bits.Put(alo, 8);
-+    bits.Put(ahi, 8);
-+    bits.Put(cidx[0], 1);
-+    for (int i = 1; i < 16; ++i) bits.Put(cidx[i], 2);
-+    bits.Put(aidx[0], 1);
-+    for (int i = 1; i < 16; ++i) bits.Put(aidx[i], 2);
-+    std::memcpy(out, bits.out, 16);
-+    return err;
-+}
-+
-+/// The game's layout of a 32x32 BC7 texture: one 8x8 micro tile of blocks, Morton order (x in
-+/// the even bits). Verified against the game's own KG_* icons.
-+int TiledBlock(int bx, int by) {
-+    int out = 0;
-+    for (int bit = 0; bit < 3; ++bit) out |= ((bx >> bit) & 1) << (2 * bit) | ((by >> bit) & 1) << (2 * bit + 1);
-+    return out;
-+}
-+
-+} // namespace
-+
-+bool SetFont(const unsigned char* ttf) {
-+    g_font_ready = ttf && stbtt_InitFont(&g_font, ttf, stbtt_GetFontOffsetForIndex(ttf, 0));
-+    return g_font_ready;
-+}
-+
-+std::string KeyLabel(const std::string& input) {
-+    static const std::map<std::string, std::string> names = {
-+        {"space", "Space"}, {"lshift", "Shift"}, {"rshift", "Shift"}, {"lctrl", "Ctrl"}, {"rctrl", "Ctrl"},
-+        {"lalt", "Alt"}, {"ralt", "Alt"}, {"tab", "Tab"}, {"escape", "Esc"}, {"enter", "Enter"},
-+        {"backspace", "Bksp"}, {"delete", "Del"}, {"insert", "Ins"}, {"home", "Home"}, {"end", "End"},
-+        {"pgup", "PgUp"}, {"pgdown", "PgDn"}, {"capslock", "Caps"}, {"lmeta", "Win"}, {"rmeta", "Win"},
-+        {"lwin", "Win"}, {"rwin", "Win"}, {"up", "\xe2\x86\x91"}, {"down", "\xe2\x86\x93"},
-+        {"left", "\xe2\x86\x90"}, {"right", "\xe2\x86\x92"}, {"grave", "`"}, {"minus", "-"}, {"equals", "="},
-+        {"lbracket", "["}, {"rbracket", "]"}, {"backslash", "\\"}, {"semicolon", ";"}, {"apostrophe", "'"},
-+        {"comma", ","}, {"period", "."}, {"slash", "/"}, {"printscreen", "PrtSc"}, {"scrolllock", "ScrLk"},
-+        {"pausebreak", "Pause"}, {"kpperiod", "Num."}, {"kpcomma", "Num,"}, {"kpslash", "Num/"},
-+        {"kpasterisk", "Num*"}, {"kpminus", "Num-"}, {"kpplus", "Num+"}, {"kpequals", "Num="},
-+        {"kpenter", "Enter"},
-+    };
-+    if (IsMouse(input)) return {};
-+    if (auto it = names.find(input); it != names.end()) return it->second;
-+    if (input.size() == 1) return std::string(1, char(std::toupper(static_cast<unsigned char>(input[0]))));
-+    if (input.size() >= 2 && input[0] == 'f' && std::isdigit(static_cast<unsigned char>(input[1]))) return "F" + input.substr(1);
-+    if (input.rfind("kp", 0) == 0) return "Num" + input.substr(2);
-+    return input;
-+}
-+
-+Pixels Draw(const Inputs& inputs) {
-+    Canvas c;
-+    Plate(c);
-+    if (inputs.empty()) {
-+        Text(c, "\xe2\x80\x93", 16, 16, 24, 18, 10, kGlyph);
-+    } else if (inputs.size() == 1) {
-+        // A combination: its last input big, the modifiers small above it.
-+        std::string mods, main = inputs[0];
-+        if (const size_t plus = main.rfind('+'); plus != std::string::npos) {
-+            for (size_t start = 0; start < plus;) {
-+                const size_t end = std::min(main.find('+', start), plus);
-+                mods += (mods.empty() ? "" : "+") + KeyLabel(main.substr(start, end - start));
-+                start = end + 1;
-+            }
-+            main = main.substr(plus + 1);
-+        }
-+        const float top = mods.empty() ? 4.5f : 11.0f;
-+        if (!mods.empty()) Text(c, mods, 16, 7.5f, 25, 8, 5.5f, kGlyph);
-+        if (IsMouse(main)) Mouse(c, main, top);
-+        else Text(c, KeyLabel(main), 16, mods.empty() ? 16 : 20, 25, mods.empty() ? 17 : 13, 7, kGlyph);
-+    } else if (std::all_of(inputs.begin(), inputs.end(), [](const std::string& input) {
-+                   return input == "up" || input == "down" || input == "left" || input == "right";
-+               })) {
-+        // Arrow keys for d-pad directions: each where it points, as on the game's d-pad icons.
-+        for (const auto& input : inputs) {
-+            const float x = input == "left" ? 9.5f : input == "right" ? 22.5f : 16;
-+            const float y = input == "up" ? 9.5f : input == "down" ? 22.5f : 16;
-+            Text(c, KeyLabel(input), x, y, 12, 12, 8, kGlyph);
-+        }
-+    } else {
-+        // A stick or a set of d-pad directions on other keys: side by side ("WASD", "IK").
-+        std::string label;
-+        bool mouse = false;
-+        for (const auto& input : inputs) {
-+            if (IsMouse(input)) { mouse = true; continue; }
-+            label += KeyLabel(input.substr(input.rfind('+') == std::string::npos ? 0 : input.rfind('+') + 1));
-+        }
-+        if (mouse && label.empty()) Mouse(c, "mouse", 4.5f);
-+        else Text(c, label, 16, 16, 26, 14, 6, kGlyph);
-+    }
-+    return Finish(c);
-+}
-+
-+namespace {
-+
-+// The face buttons' letters: Xbox's own colours, a little darker as the game's PlayStation
-+// symbols are; the Switch's are all one colour.
-+constexpr Color kXboxA{96, 168, 58, 255}, kXboxB{206, 54, 48, 255}, kXboxX{48, 112, 208, 255},
-+                kXboxY{222, 176, 38, 255};
-+
-+void Round(Canvas& c) {
-+    FillRoundRect(c, 1, 1, 31, 31, 15, kRim);
-+    FillRoundRect(c, 2, 2, 30, 30, 14, kPlate);
-+}
-+
-+/// A face button: the letter on the round plate, as the game's Cross and Circle are drawn.
-+void Face(Canvas& c, const char* letter, Color color) {
-+    Round(c);
-+    Text(c, letter, 16, 16, 20, 19, 12, color);
-+}
-+
-+/// A shoulder button or trigger: its name on the plate, as the game's L1 and R2.
-+void Shoulder(Canvas& c, const char* name) {
-+    FillRoundRect(c, 1, 5, 31, 28, 5, kRim);
-+    FillRoundRect(c, 2, 6, 30, 27, 4, kPlate);
-+    Text(c, name, 16, 16.5f, 26, 19, 9, kGlyph);
-+}
-+
-+} // namespace
-+
-+bool DrawPad(Icon icon, Pad pad, Pixels& out) {
-+    const bool xbox = pad == PadXbox;
-+    Canvas c;
-+    switch (icon) {
-+    case Cancel: Face(c, xbox ? "A" : "B", xbox ? kXboxA : kGlyph); break;     // Cross
-+    case OK: Face(c, xbox ? "B" : "A", xbox ? kXboxB : kGlyph); break;         // Circle
-+    case R_L: Face(c, xbox ? "X" : "Y", xbox ? kXboxX : kGlyph); break;        // Square
-+    case R_U: Face(c, xbox ? "Y" : "X", xbox ? kXboxY : kGlyph); break;        // Triangle
-+    case L1: Shoulder(c, xbox ? "LB" : "L"); break;
-+    case R1: Shoulder(c, xbox ? "RB" : "R"); break;
-+    case L2: Shoulder(c, xbox ? "LT" : "ZL"); break;
-+    case R2: Shoulder(c, xbox ? "RT" : "ZR"); break;
-+    case L3: case R3:
-+        // A stick pressed: the game's own stick icon is the letter alone.
-+        Round(c);
-+        Text(c, icon == L3 ? "LS" : "RS", 16, 16, 22, 15, 9, kGlyph);
+ #include <mutex>
+ #include <set>
+ #include <tuple>
+@@ -38,20 +39,26 @@ struct Entry {
+     int sprite;     // BbPromptIcons::HudSprite, or -1
+     Bytes original;
+     uint64_t written;
++    int dc = -1;    // DCport: a BbPromptIcons::DcIcon (a whole DriveClub icon texture), or -1
++    std::array<Bytes, BbPromptIcons::DcStyleCount> looks; // DCport: that icon in each DcStyle
++    bool gravity = false;
++    std::array<Bytes, BbPromptIcons::DcStyleCount + 1> gravity_looks; // Xbox 360, One, PS5, Switch
+ };
+ 
+ std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
+ std::vector<Entry> entries;
+ std::array<Bytes, BbPromptIcons::Count> keyboard_icons;
++std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> keyboard_pixels; // the symbol font
+ std::array<Bytes, HudCount> keyboard_sprites;
+ bool keyboard_ready = false;
+ // Xbox and Switch (BbPromptIcons::Pad order); empty for an icon that stays the game's own.
+ std::array<std::array<Bytes, BbPromptIcons::Count>, BbPromptIcons::PadCount> pad_icons;
+ std::array<std::array<Bytes, HudCount>, BbPromptIcons::PadCount> pad_sprites;
+-std::set<uintptr_t> searched;      // HUD atlases already looked at
++std::map<uintptr_t, uint64_t> searched; // HUD atlases, by their first icon's picture
+ std::atomic<int> device{-1};       // -1 nothing seen yet, else a Device
+ std::atomic<bool> dirty{false};    // something to write: a new picture, a device or binding change
+ int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
++int shown_style = -1;              // DCport: the DcStyle (or -1, the game's own) Apply last chose
+ 
+ Device Want() {
+     switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
+@@ -86,10 +93,12 @@ void DrawPads() {
+ 
+ /// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
+ /// sprite's area in the atlas's tiled layout.
+-std::vector<size_t> Pieces(int sprite) {
++std::vector<size_t> Pieces(int sprite, int dc = -1) {
+     std::vector<size_t> out;
+     if (sprite < 0) {
+-        for (size_t at = 0; at < size_t(BbPromptIcons::Bytes); at += 16) out.push_back(at);
++        const size_t bytes = dc >= 0 ? BbPromptIcons::DcBytes(BbPromptIcons::DcIcon(dc))
++                                     : size_t(BbPromptIcons::Bytes);
++        for (size_t at = 0; at < bytes; at += 16) out.push_back(at);
+         return out;
+     }
+     const auto& area = BbPromptIcons::HudAreas[sprite];
+@@ -101,9 +110,9 @@ std::vector<size_t> Pieces(int sprite) {
+     return out;
+ }
+ 
+-Bytes Gather(uintptr_t base, int sprite) {
++Bytes Gather(uintptr_t base, int sprite, int dc = -1) {
+     Bytes out;
+-    for (size_t at : Pieces(sprite)) {
++    for (size_t at : Pieces(sprite, dc)) {
+         const auto* p = reinterpret_cast<const uint8_t*>(base + at);
+         out.insert(out.end(), p, p + 16);
+     }
+@@ -111,8 +120,8 @@ Bytes Gather(uintptr_t base, int sprite) {
+ }
+ 
+ /// The guest range an entry touches (to check that it is mapped and to invalidate it).
+-std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite) {
+-    const auto pieces = Pieces(sprite);
++std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite, int dc = -1) {
++    const auto pieces = Pieces(sprite, dc);
+     const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
+     return {base + *lo, *hi + 16 - *lo};
+ }
+@@ -121,16 +130,94 @@ uint64_t Hash(const Bytes& data) {
+     return XXH3_64bits(data.data(), data.size());
+ }
+ 
+-void Add(uintptr_t base, int icon, int sprite, Bytes original) {
++void Add(uintptr_t base, int icon, int sprite, Bytes original, int dc = -1,
++         std::array<Bytes, BbPromptIcons::DcStyleCount> looks = {}) {
+     std::scoped_lock lock{mutex};
+-    for (const Entry& e : entries) {
+-        if (e.base == base && e.sprite == sprite) return;
+-    }
+     const uint64_t hash = Hash(original);
+-    entries.push_back({base, icon, sprite, std::move(original), hash});
++    for (auto it = entries.begin(); it != entries.end(); ++it) {
++        if (it->base != base || it->sprite != sprite) continue;
++        // The picture is already tracked.
++        if (it->icon == icon && Hash(it->original) == hash) return;
++        // The games reuse texture memory constantly, so this address can hold another picture
++        // by now. Refusing the upload used to leave the new texture the game's own: Apply
++        // dropped the stale entry a frame later, and nothing replaced what took its place.
++        entries.erase(it);
 +        break;
-+    case Start:
-+        Round(c);
-+        if (xbox) {
-+            // Menu: three lines.
-+            for (const float y : {11.0f, 16.0f, 21.0f}) Line(c, 10.5f, y, 21.5f, y, 2.2f, kGlyph);
-+        } else {
-+            Line(c, 9.5f, 16, 22.5f, 16, 3, kGlyph);  // +
-+            Line(c, 16, 9.5f, 16, 22.5f, 3, kGlyph);
-+        }
-+        break;
-+    case TP_L:
-+        // The touchpad's controller binding is Back: Xbox's View, the Switch's minus.
-+        Round(c);
-+        if (xbox) {
-+            FillRoundRect(c, 12, 9, 23, 18, 1.5f, kGlyph);
-+            FillRoundRect(c, 13.6f, 10.6f, 21.4f, 16.4f, 0.5f, kPlate);
-+            FillRoundRect(c, 9, 14, 20, 23, 1.5f, kGlyph);
-+            FillRoundRect(c, 10.6f, 15.6f, 18.4f, 21.4f, 0.5f, kPlate);
-+        } else {
-+            Line(c, 9.5f, 16, 22.5f, 16, 3, kGlyph);
-+        }
-+        break;
-+    default:
-+        return false;  // the d-pad, the sticks, the touchpad's right half: the game's own
 +    }
-+    out = Finish(c);
++    entries.push_back({base, icon, sprite, std::move(original), hash, dc, std::move(looks)});
+     dirty = true;
+ }
+ 
++/// DCport: a DriveClub icon texture (one of BbPromptIcons::DcTextures), with its Xbox 360
++/// button drawn and encoded now (once per address; the game reuses few).
++bool AddGravity(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t bits) {
++    const auto& textures = BbPromptIcons::GravityTextures;
++    bool candidate = false;
++    for (const auto& texture : textures)
++        candidate |= texture.width == width && texture.height == height && texture.bits == bits && texture.bytes == size;
++    if (!candidate) return false;
++    const uint64_t hash = XXH3_64bits(reinterpret_cast<const void*>(address), size);
++    for (const auto& texture : textures) {
++        if (texture.width != width || texture.height != height || texture.bits != bits ||
++            texture.bytes != size || texture.hash != hash) continue;
++        {
++            std::scoped_lock lock{mutex};
++            for (const Entry& e : entries)
++                if (e.base == address && e.gravity && e.written == hash) return true;
++        }
++        Bytes original(reinterpret_cast<const uint8_t*>(address),
++                       reinterpret_cast<const uint8_t*>(address) + size);
++        std::array<Bytes, BbPromptIcons::DcStyleCount + 1> looks;
++        for (int style = 0; style < BbPromptIcons::DcStyleCount; ++style)
++            looks[style] = BbPromptIcons::RenderGravityTexture(texture, style, original);
++        looks[BbPromptIcons::DcStyleCount] = BbPromptIcons::RenderGravityTexture(texture, -1, original);
++        std::scoped_lock lock{mutex};
++        for (auto it = entries.begin(); it != entries.end();) {
++            if (it->base == address && it->gravity) it = entries.erase(it);
++            else ++it;
++        }
++        const uint64_t original_hash = Hash(original);
++        Entry entry{};
++        entry.base = address;
++        entry.icon = -1;
++        entry.sprite = -1;
++        entry.original = std::move(original);
++        entry.written = original_hash;
++        entry.gravity = true;
++        entry.gravity_looks = std::move(looks);
++        entries.push_back(std::move(entry));
++        dirty = true;
++        return true;
++    }
++    return false;
++}
++
++bool AddDriveclub(uintptr_t address, size_t size, uint32_t width, uint32_t height) {
++    for (int i = 0; i < BbPromptIcons::DcCount; ++i) {
++        const auto icon = BbPromptIcons::DcIcon(i);
++        const auto& t = BbPromptIcons::DcTextures[i];
++        if (uint32_t(t.width) != width || uint32_t(t.height) != height || BbPromptIcons::DcBytes(icon) != size) {
++            continue;
++        }
++        Bytes bytes = Gather(address, -1, i);
++        if (Hash(bytes) != t.hash) continue;
++        {
++            std::scoped_lock lock{mutex};
++            for (const Entry& e : entries) {
++                if (e.base == address && e.dc == i) return true;
++            }
++        }
++        static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
++        std::array<Bytes, BbPromptIcons::DcStyleCount> looks;
++        for (int style = 0; font && style < BbPromptIcons::DcStyleCount; ++style) {
++            looks[style] = BbPromptIcons::EncodeDc(icon, BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style)), bytes);
++        }
++        Add(address, -1, -1, std::move(bytes), i, std::move(looks));
++        return true;
++    }
++    return false;
++}
++
+ } // namespace
+ 
+ void Configure(const char* const* inputs, int count) {
+@@ -138,6 +225,7 @@ void Configure(const char* const* inputs, int count) {
+     if (!font || count != BbPromptIcons::Count) return;
+     std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
+     std::array<Bytes, BbPromptIcons::Count> icons;
++    std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> pixels;
+     for (int i = 0; i < count; ++i) {
+         const std::string text = inputs[i] ? inputs[i] : "";
+         for (size_t start = 0; start < text.size();) {
+@@ -145,7 +233,8 @@ void Configure(const char* const* inputs, int count) {
+             if (end > start) lists[i].push_back(text.substr(start, end - start));
+             start = end + 1;
+         }
+-        const auto icon = BbPromptIcons::Render(lists[i]);
++        pixels[i] = BbPromptIcons::Draw(lists[i]);
++        const auto icon = BbPromptIcons::Encode(pixels[i]);
+         icons[i].assign(icon.begin(), icon.end());
+     }
+     std::array<Bytes, HudCount> sprites;
+@@ -155,11 +244,35 @@ void Configure(const char* const* inputs, int count) {
+     std::scoped_lock lock{mutex};
+     if (!keyboard_ready) DrawPads();
+     keyboard_icons = icons;
++    keyboard_pixels = pixels;
+     keyboard_sprites = sprites;
+     keyboard_ready = true;
+     dirty = true;
+ }
+ 
++bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
++                   int pitch) {
++    if (!coverage || width <= 0 || height <= 0 || pitch < width) return false;
++    const int icon = BbPromptIcons::GlyphIcon(second_game, code);
++    if (icon >= BbPromptIcons::Count) return false;
++    BbPromptIcons::Pixels pixels;
++    {
++        std::scoped_lock lock{mutex};
++        if (!keyboard_ready) return false;
++        pixels = keyboard_pixels[icon];
++    }
++    // The same way the controller icons are drawn into this cache: monochrome coverage.
++    const int size = BbPromptIcons::Size;
++    for (int y = 0; y < height; ++y) {
++        for (int x = 0; x < width; ++x) {
++            const size_t source = ((y * size / height) * size + x * size / width) * 4;
++            const int brightness = std::max({pixels[source], pixels[source + 1], pixels[source + 2]});
++            coverage[y * pitch + x] = uint8_t(brightness * pixels[source + 3] / 255);
++        }
++    }
 +    return true;
 +}
 +
-+namespace {
+ void OnInput(Device value) {
+     if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
+ }
+@@ -192,7 +305,11 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+             }
+         }
+     }
++    if (AddGravity(address, size, width, height, bits)) return;
++    // Gravity hashes describe mip 0, whose address and size are passed above.
++    // A texture may still have lower-resolution mip levels.
+     if (levels != 1 || bits != 128) return;
++    if (AddDriveclub(address, size, width, height)) return;
+     if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
+         // A KG_* icon: the menus' key guides and the buttons in their messages.
+         Bytes bytes = Gather(address, -1);
+@@ -203,10 +320,14 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+         return;
+     }
+     if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
+-        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3.
++        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3. Another atlas
++        // can be uploaded at the same address later, so remember the picture, not the address.
++        const uint64_t first = Hash(Gather(address, 0));
+         {
+             std::scoped_lock lock{mutex};
+-            if (!searched.insert(address).second) return;
++            const auto [found, added] = searched.try_emplace(address, first);
++            if (!added && found->second == first) return;
++            found->second = first;
+         }
+         for (int s = 0; s < HudCount; ++s) {
+             Bytes bytes = Gather(address, s);
+@@ -215,19 +336,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+     }
+ }
+ 
++Device WantLayout() {
++    return Want();
++}
 +
-+Pixels Finish(const Canvas& c) {
-+    Pixels out{};
-+    for (int i = 0; i < Size * Size; ++i) {
-+        const float a = c.px[i][3];
-+        for (int k = 0; k < 3; ++k) {
-+            // Straight colour; a transparent pixel takes the plate's, so filtering at the rounded
-+            // edge does not darken toward black.
-+            const float v = a > 0.5f ? c.px[i][k] * 255.0f / a : (k == 0 ? kPlate.r : k == 1 ? kPlate.g : kPlate.b);
-+            out[i * 4 + k] = uint8_t(std::clamp(std::lround(v), 0l, 255l));
++int StyleFor(Device want) {
++    const auto& settings = BbSettings::Get();
++    return want == Xbox ? (settings.xbox_buttons ? BbPromptIcons::DcXboxOne : BbPromptIcons::DcXbox360)
++         : want == PlayStation && settings.playstation_buttons ? BbPromptIcons::DcPs5
++         : want == Switch ? BbPromptIcons::DcStyleCount : -1;
++}
++
+ void Apply() {
+     const Device want = Want();
+-    if (!dirty.exchange(false) && want == shown) return;
++    // DCport: Driveclub's icons follow the controller in its chosen look (settings
++    // xbox_buttons, playstation_buttons); the game's own for a PS4 look or the keyboard.
++    const int style = StyleFor(want);
++    if (!dirty.exchange(false) && want == shown && style == shown_style) return;
+     shown = want;
++    shown_style = style;
+ 
+     std::vector<Entry> snapshot;
+     std::array<Bytes, BbPromptIcons::Count> icons; // empty: the game's own
+     std::array<Bytes, HudCount> sprites;
+     {
+         std::scoped_lock lock{mutex};
+-        if (want != PlayStation && !keyboard_ready) return;
+         snapshot = entries;
+-        if (want == Keyboard) {
++        // Without the keyboard pictures (input.ini not read yet) the key-guide icons stay the
++        // game's for now; DriveClub's icons need none of them.
++        if (!keyboard_ready) {
++        } else if (want == Keyboard) {
+             icons = keyboard_icons;
+             sprites = keyboard_sprites;
+         } else if (want != PlayStation) {
+@@ -238,28 +376,47 @@ void Apply() {
+     }
+     // Written without any lock: a write to a page the texture cache protects faults into it.
+     auto* memory = Core::Memory::Instance();
+-    std::vector<std::tuple<uintptr_t, int, uint64_t>> written; // hash 0: the entry is gone
++    std::vector<std::tuple<uintptr_t, int, bool, uint64_t>> written; // hash 0: the entry is gone
++    static const Bytes none;
+     for (const Entry& e : snapshot) {
+-        const auto [start, length] = Range(e.base, e.sprite);
+-        if (!memory->IsValidMapping(start, length) || Hash(Gather(e.base, e.sprite)) != e.written) {
+-            written.emplace_back(e.base, e.sprite, 0); // unmapped, or the game put something else there
++        const auto [start, length] = e.gravity ? std::pair<uintptr_t, size_t>{e.base, e.original.size()}
++                                                : Range(e.base, e.sprite, e.dc);
++        if (!memory->IsValidMapping(start, length)) {
++            written.emplace_back(e.base, e.sprite, e.gravity, 0);
++            continue;
 +        }
-+        out[i * 4 + 3] = uint8_t(std::clamp(std::lround(a), 0l, 255l));
-+    }
-+    return out;
-+}
-+
-+} // namespace
-+
-+namespace {
-+/// The better of modes 5 and 6 for the 4x4 block at (bx, by) of an RGBA image `width` wide.
-+void EncodeBlock(const uint8_t* rgba, int width, int bx, int by, uint8_t out[16]) {
-+    Block block;
-+    for (int y = 0; y < 4; ++y) {
-+        for (int x = 0; x < 4; ++x) {
-+            const uint8_t* p = &rgba[((by * 4 + y) * width + bx * 4 + x) * 4];
-+            block[y * 4 + x] = {p[0], p[1], p[2], p[3]};
-+        }
-+    }
-+    uint8_t six[16], five[16];
-+    const long e6 = Mode6(block, six), e5 = Mode5(block, five);
-+    std::memcpy(out, e6 <= e5 ? six : five, 16);
-+}
-+} // namespace
-+
-+std::array<uint8_t, Bytes> Encode(const Pixels& pixels) {
-+    std::array<uint8_t, Bytes> out{};
-+    for (int by = 0; by < Size / 4; ++by) {
-+        for (int bx = 0; bx < Size / 4; ++bx) EncodeBlock(pixels.data(), Size, bx, by, &out[TiledBlock(bx, by) * 16]);
-+    }
-+    return out;
-+}
-+
-+size_t TiledBlockOffset(int bx, int by, int width) {
-+    const int tiles_x = width / 32;  // 8 blocks of 4 pixels per micro tile
-+    return (size_t(by / 8 * tiles_x + bx / 8) * 64 + size_t(TiledBlock(bx % 8, by % 8))) * 16;
-+}
-+
-+std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area) {
-+    return RenderIconArea(Draw(inputs), area);
-+}
-+
-+std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
-+    // The 32x32 icon scaled to the game's 26x26 sprite (each output pixel the alpha-weighted
-+    // average of what it covers), centred in an otherwise transparent area.
-+    constexpr int kSprite = 26;
-+    std::vector<uint8_t> rgba(size_t(area.w) * area.h * 4, 0);
-+    const int ox = (area.w - kSprite) / 2, oy = (area.h - kSprite) / 2;
-+    const float step = float(Size) / kSprite;
-+    for (int y = 0; y < kSprite; ++y) {
-+        for (int x = 0; x < kSprite; ++x) {
-+            float sum[4]{}, weight = 0;
-+            int samples = 0;
-+            for (int sy = 0; sy < 4; ++sy) {
-+                for (int sx = 0; sx < 4; ++sx, ++samples) {
-+                    const int px = std::min(Size - 1, int((x + (sx + 0.5f) / 4) * step));
-+                    const int py = std::min(Size - 1, int((y + (sy + 0.5f) / 4) * step));
-+                    const uint8_t* p = &icon[(py * Size + px) * 4];
-+                    const float a = p[3] / 255.0f;
-+                    for (int k = 0; k < 3; ++k) sum[k] += p[k] * a;
-+                    sum[3] += p[3];
-+                    weight += a;
-+                }
++        const Bytes current = e.gravity ? Bytes(reinterpret_cast<const uint8_t*>(e.base),
++                                                 reinterpret_cast<const uint8_t*>(e.base) + e.original.size())
++                                        : Gather(e.base, e.sprite, e.dc);
++        const uint64_t current_hash = Hash(current);
++        // The game's own picture: it re-uploaded the texture the cache did not report (a view,
++        // a bigger image at the address). Anything else is a different texture.
++        if (current_hash != e.written && current_hash != Hash(e.original)) {
++            written.emplace_back(e.base, e.sprite, e.gravity, 0);
+             continue;
+         }
+-        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
++        // DriveClub's icons: the chosen look for the controller in use, else the game's own.
++        const Bytes& mine = e.gravity ? (style >= 0 ? e.gravity_looks[style] : none)
++                            : e.dc >= 0 ? (style >= 0 && style < BbPromptIcons::DcStyleCount ? e.looks[style] : none)
++                            : e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
+         const Bytes& target = mine.empty() ? e.original : mine;
+         const uint64_t target_hash = Hash(target);
+-        if (target_hash == e.written) continue;
+-        const auto pieces = Pieces(e.sprite);
+-        for (size_t i = 0; i < pieces.size(); ++i) {
+-            std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
++        if (target_hash == current_hash) continue;
++        if (e.gravity) {
++            std::memcpy(reinterpret_cast<void*>(e.base), target.data(), target.size());
++        } else {
++            const auto pieces = Pieces(e.sprite, e.dc);
++            for (size_t i = 0; i < pieces.size(); ++i) {
++                std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
 +            }
-+            uint8_t* out = &rgba[(size_t(oy + y) * area.w + ox + x) * 4];
-+            for (int k = 0; k < 3; ++k) out[k] = uint8_t(weight > 0 ? std::lround(sum[k] / weight) : kPlate.r);
-+            out[3] = uint8_t(std::lround(sum[3] / samples));
-+        }
-+    }
-+    for (size_t i = 0; i < rgba.size(); i += 4) {
-+        if (!rgba[i + 3]) { rgba[i] = rgba[i + 1] = rgba[i + 2] = uint8_t(kPlate.r); }
-+    }
-+    std::vector<uint8_t> blocks(size_t(area.w / 4) * (area.h / 4) * 16);
-+    for (int by = 0; by < area.h / 4; ++by) {
-+        for (int bx = 0; bx < area.w / 4; ++bx) {
-+            EncodeBlock(rgba.data(), area.w, bx, by, &blocks[(size_t(by) * (area.w / 4) + bx) * 16]);
-+        }
-+    }
-+    return blocks;
-+}
+         }
+         memory->InvalidateMemory(start, length);
+-        written.emplace_back(e.base, e.sprite, target_hash);
++        written.emplace_back(e.base, e.sprite, e.gravity, target_hash);
+     }
+     std::scoped_lock lock{mutex};
+-    for (const auto& [base, sprite, hash] : written) {
++    for (const auto& [base, sprite, gravity, hash] : written) {
+         for (size_t i = 0; i < entries.size(); ++i) {
+-            if (entries[i].base != base || entries[i].sprite != sprite) continue;
++            if (entries[i].base != base || entries[i].sprite != sprite || entries[i].gravity != gravity) continue;
+             if (hash) entries[i].written = hash;
+             else entries.erase(entries.begin() + i);
+             break;
+@@ -272,3 +429,40 @@ void Apply() {
+ extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
+     BbPrompts::Configure(inputs, count);
+ }
 +
++// Diagnosis (BB_PROMPT_GLYPH=1): which layout the symbol font resolves to, and which codes
++// the games ask it for, to find the pictures the menus draw with the font.
++static const bool kGlyphTrace = std::getenv("BB_PROMPT_GLYPH") != nullptr;
++
++extern "C" int bbgpu_gr_prompt_glyph(int second_game, uint32_t code, uint8_t* coverage,
++                                    int width, int height, int pitch) {
++    // The same layout the textures follow: with "auto" that is the device in use, not
++    // nothing. Menus, photo mode and the comic panels draw their prompts from this font.
++    const BbPrompts::Device want = BbPrompts::WantLayout();
++    const int style = BbPrompts::StyleFor(want);
++    if (want == BbPrompts::Keyboard) {
++        // Keyboard and mouse: the key caps drawn from input.ini, as the textures show them.
++        const bool drawn = BbPrompts::KeyboardGlyph(second_game != 0, code, coverage, width, height,
++                                                    pitch);
++        if (kGlyphTrace)
++            std::fprintf(stderr, "Glyph prompt: keyboard code %u (%dx%d) drawn %d\n", code, width,
++                         height, drawn ? 1 : 0);
++        return drawn;
++    }
++    const bool ps5 = style == BbPromptIcons::DcPs5;
++    const int draw_style = style < BbPromptIcons::DcStyleCount ? style : -1;
++    if (want != BbPrompts::Xbox && want != BbPrompts::Switch && !ps5) {
++        if (kGlyphTrace)
++            std::fprintf(stderr, "Glyph prompt: want %d style %d code %u left alone\n",
++                         static_cast<int>(want), style, code);
++        return 0;
++    }
++    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
++    const bool drawn = font && BbPromptIcons::DrawGravityGlyph(second_game != 0, code,
++        want == BbPrompts::Switch ? BbPromptIcons::PadSwitch : BbPromptIcons::PadXbox,
++        coverage, width, height, pitch, draw_style);
++    if (kGlyphTrace)
++        std::fprintf(stderr, "Glyph prompt: want %d style %d code %u (%dx%d) drawn %d\n",
++                     static_cast<int>(want), style, code, width, height, drawn ? 1 : 0);
++    return drawn;
++}
+diff --git a/gpu/shim/bbport_prompts.h b/gpu/shim/bbport_prompts.h
+index 69dd07f..195d17b 100644
+--- a/gpu/shim/bbport_prompts.h
++++ b/gpu/shim/bbport_prompts.h
+@@ -19,6 +19,17 @@ void Configure(const char* const* inputs, int count);
+ /// What the prompts show: the keyboard and mouse, or a kind of controller.
+ enum Device : int { Keyboard, PlayStation, Xbox, Switch };
+ 
++/// The layout the pictures follow: the chosen setting, or the device in use for "auto".
++Device WantLayout();
++/// The look for that layout (a BbPromptIcons::DcStyle), or -1 for the game's own pictures.
++int StyleFor(Device want);
++
++/// The keyboard and mouse key caps for the symbol font (menus and photo mode): the codepoint's
++/// icon drawn from input.ini's bindings into the glyph's coverage. False when the bindings are not
++/// read yet or nothing is bound.
++bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
++                   int pitch);
++
+ /// Window thread: an input event from the keyboard or mouse, or a controller of that kind.
+ void OnInput(Device device);
+ /// Window thread: a controller of that kind is connected. Before any input, the prompts are
+diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
+index 6ddc6da..f1ec6a2 100644
+--- a/gpu/shim/bbport_prompt_icons.cpp
++++ b/gpu/shim/bbport_prompt_icons.cpp
+@@ -588,4 +588,503 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
+     return blocks;
+ }
+ 
 +// ---- DCport: DriveClub ------------------------------------------------------------------
 +
 +// Game 01.28's icons (XXH3-64 of their bytes as uploaded), drawn by its UI shader 78662cab.
@@ -13934,10 +13180,7 @@ index c729033..b7e110e 100644
 +    return out;
 +}
 +
-+bool DrawGravityGlyph(bool second_game, uint32_t code, Pad pad, uint8_t* coverage,
-+                      int width, int height, int pitch, int dc_style) {
-+    if (!coverage || width <= 0 || height <= 0 || pitch < width || width > 4096 || height > 4096)
-+        return false;
++Icon GlyphIcon(bool second_game, uint32_t code) {
 +    Icon icon = Count;
 +    if (second_game) {
 +        switch (code) {
@@ -13948,7 +13191,7 @@ index c729033..b7e110e 100644
 +        case 'g': icon = L2; break; case 'h': icon = R2; break;
 +        case 'i': icon = LS; break; case 'j': icon = RS; break;
 +        case 'k': icon = TP_L; break; case 'r': icon = Start; break;
-+        default: return false;
++        default: return Count;
 +        }
 +    } else {
 +        switch (code) {
@@ -13958,9 +13201,19 @@ index c729033..b7e110e 100644
 +        case 'A': icon = L2; break; case 'B': icon = R2; break;
 +        case 'C': icon = L3; break; case 'D': icon = R3; break;
 +        case 'n': icon = TP_L; break; case 'o': icon = Start; break;
-+        default: return false;
++        default: return Count;
 +        }
 +    }
++    return icon;
++}
++
++bool DrawGravityGlyph(bool second_game, uint32_t code, Pad pad, uint8_t* coverage,
++                      int width, int height, int pitch, int dc_style) {
++    if (!coverage || width <= 0 || height <= 0 || pitch < width || width > 4096 || height > 4096)
++        return false;
++    const Icon icon = GlyphIcon(second_game, code);
++    if (icon == Count) return false;
++
 +    Pixels generic;
 +    std::vector<uint8_t> styled;
 +    const uint8_t* pixels = nullptr;
@@ -13997,165 +13250,15 @@ index c729033..b7e110e 100644
 +    return true;
 +}
 +
-+} // namespace BbPromptIcons
+ } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompt_icons.h b/gpu/shim/bbport_prompt_icons.h
-index 85b7b33..fb8ca86 100644
+index a93cd08..fb77be3 100644
 --- a/gpu/shim/bbport_prompt_icons.h
 +++ b/gpu/shim/bbport_prompt_icons.h
-@@ -1,77 +1,118 @@
--// SPDX-License-Identifier: GPL-2.0-or-later
--// bbport: keyboard and mouse, Xbox and Switch button prompts drawn in the style of the game's own
--// key-guide icons (menu/common.tpf.dcx, KG_*: 32x32 BC7, stored in the PS4's tiled layout). Pure
--// functions, no renderer state: bbport_prompts.cpp swaps them in, tests/test_prompt_icons.cpp
--// renders them.
--
--#pragma once
--
--#include <array>
--#include <cstdint>
--#include <string>
--#include <vector>
--
--namespace BbPromptIcons {
--
--inline constexpr int Size = 32;      ///< pixels per side, as the game's icons
--inline constexpr int Bytes = 1024;   ///< 8x8 BC7 blocks of 16 bytes
--
--/// The game's key-guide icons, named after their textures. A texture's name is its role in the
--/// menus; the picture is a button (KG_OK shows Circle): ShownButton says which.
--enum Icon : int {
--    Cancel, L1, L2, L3, LS, L_D, L_LR, L_U, L_UD, L_UDLR, OK, R1, R2, R3, RS, R_L, R_U, Start, TP_L, TP_R,
--    Count
--};
--extern const char* const Names[Count];
--/// XXH3-64 of each icon as game 1.09 stores it (the texture cache's upload hash): how the
--/// textures are recognised in guest memory.
--extern const uint64_t PlayStationHash[Count];
--
--/// What an icon shows, from the bindings: one entry per input it stands for (two for KG_L_UD,
--/// four for a stick). An input is an input.ini name ("e", "space", "leftbutton",
--/// "mousewheelup"), a combination joined with '+' ("lshift+leftbutton"), or "mouse" for
--/// mouse motion. Empty: nothing is bound (the icon shows a dash).
--using Inputs = std::vector<std::string>;
--
--/// The TrueType font the labels are drawn with (the overlay's embedded DejaVu Sans). Call once
--/// before Render; the data must stay valid.
--bool SetFont(const unsigned char* ttf);
--
--/// 32x32 RGBA, straight alpha.
--using Pixels = std::array<uint8_t, Size * Size * 4>;
--Pixels Draw(const Inputs& inputs);
--/// BC7 (mode 6) in the game's tiled block order: the bytes a KG_* texture holds.
--std::array<uint8_t, Bytes> Encode(const Pixels& pixels);
--inline std::array<uint8_t, Bytes> Render(const Inputs& inputs) { return Encode(Draw(inputs)); }
--
--/// The short label a key gets on its cap ("Space", "Shift", "E"); empty for a mouse input.
--std::string KeyLabel(const std::string& input);
--
--/// Other controllers' buttons in the place of the PlayStation ones, by position: Cross is the
--/// bottom face button (Xbox A, Switch B), Circle the right one (Xbox B, Switch A).
--enum Pad : int { PadXbox, PadSwitch, PadCount };
--/// `icon` as `pad`'s button, in the game's style; false for an icon that stays the game's own
--/// (the d-pad and the sticks, which every controller has alike).
--bool DrawPad(Icon icon, Pad pad, Pixels& out);
--
--/// The HUD atlas (MENU_Common_00091, 1024x512 BC7): its own Circle, Cross and L3, which the
--/// prompts in the world use ("Pick Up Item"), not the KG_* icons. Each is a 26x26 sprite in a
--/// block-aligned area that holds nothing else.
--inline constexpr int HudAtlasWidth = 1024, HudAtlasHeight = 512;
--enum HudSprite : int { HudCircle, HudCross, HudL3, HudCount };
--struct Area { int x, y, w, h; };
--extern const Area HudAreas[HudCount];
--/// The key-guide icon whose button each sprite shows (its keyboard picture is the same).
--extern const Icon HudIcon[HudCount];
--/// XXH3-64 of each area's blocks as game 1.09 stores them, read row by row (HudBlocks).
--extern const uint64_t HudPlayStationHash[HudCount];
--
--/// Offset of BC7 block (bx, by) in a texture `width` pixels wide in the game's tiled layout:
--/// 8x8-block micro tiles in rows, Morton order inside.
--size_t TiledBlockOffset(int bx, int by, int width);
--/// The sprite for `inputs` sized to `area` (the icon at 26x26, centred), as BC7 blocks row by row.
--std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
--/// The same for an icon already drawn (DrawPad).
--std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area);
--
--} // namespace BbPromptIcons
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+// bbport: keyboard and mouse, Xbox and Switch button prompts drawn in the style of the game's own
-+// key-guide icons (menu/common.tpf.dcx, KG_*: 32x32 BC7, stored in the PS4's tiled layout). Pure
-+// functions, no renderer state: bbport_prompts.cpp swaps them in, tests/test_prompt_icons.cpp
-+// renders them.
-+
-+#pragma once
-+
-+#include <array>
-+#include <cstdint>
-+#include <string>
-+#include <vector>
-+
-+namespace BbPromptIcons {
-+
-+inline constexpr int Size = 32;      ///< pixels per side, as the game's icons
-+inline constexpr int Bytes = 1024;   ///< 8x8 BC7 blocks of 16 bytes
-+
-+/// The game's key-guide icons, named after their textures. A texture's name is its role in the
-+/// menus; the picture is a button (KG_OK shows Circle): ShownButton says which.
-+enum Icon : int {
-+    Cancel, L1, L2, L3, LS, L_D, L_LR, L_U, L_UD, L_UDLR, OK, R1, R2, R3, RS, R_L, R_U, Start, TP_L, TP_R,
-+    Count
-+};
-+extern const char* const Names[Count];
-+/// XXH3-64 of each icon as game 1.09 stores it (the texture cache's upload hash): how the
-+/// textures are recognised in guest memory.
-+extern const uint64_t PlayStationHash[Count];
-+
-+/// What an icon shows, from the bindings: one entry per input it stands for (two for KG_L_UD,
-+/// four for a stick). An input is an input.ini name ("e", "space", "leftbutton",
-+/// "mousewheelup"), a combination joined with '+' ("lshift+leftbutton"), or "mouse" for
-+/// mouse motion. Empty: nothing is bound (the icon shows a dash).
-+using Inputs = std::vector<std::string>;
-+
-+/// The TrueType font the labels are drawn with (the overlay's embedded DejaVu Sans). Call once
-+/// before Render; the data must stay valid.
-+bool SetFont(const unsigned char* ttf);
-+
-+/// 32x32 RGBA, straight alpha.
-+using Pixels = std::array<uint8_t, Size * Size * 4>;
-+Pixels Draw(const Inputs& inputs);
-+/// BC7 (mode 6) in the game's tiled block order: the bytes a KG_* texture holds.
-+std::array<uint8_t, Bytes> Encode(const Pixels& pixels);
-+inline std::array<uint8_t, Bytes> Render(const Inputs& inputs) { return Encode(Draw(inputs)); }
-+
-+/// The short label a key gets on its cap ("Space", "Shift", "E"); empty for a mouse input.
-+std::string KeyLabel(const std::string& input);
-+
-+/// Other controllers' buttons in the place of the PlayStation ones, by position: Cross is the
-+/// bottom face button (Xbox A, Switch B), Circle the right one (Xbox B, Switch A).
-+enum Pad : int { PadXbox, PadSwitch, PadCount };
-+/// `icon` as `pad`'s button, in the game's style; false for an icon that stays the game's own
-+/// (the d-pad and the sticks, which every controller has alike).
-+bool DrawPad(Icon icon, Pad pad, Pixels& out);
-+
-+/// The HUD atlas (MENU_Common_00091, 1024x512 BC7): its own Circle, Cross and L3, which the
-+/// prompts in the world use ("Pick Up Item"), not the KG_* icons. Each is a 26x26 sprite in a
-+/// block-aligned area that holds nothing else.
-+inline constexpr int HudAtlasWidth = 1024, HudAtlasHeight = 512;
-+enum HudSprite : int { HudCircle, HudCross, HudL3, HudCount };
-+struct Area { int x, y, w, h; };
-+extern const Area HudAreas[HudCount];
-+/// The key-guide icon whose button each sprite shows (its keyboard picture is the same).
-+extern const Icon HudIcon[HudCount];
-+/// XXH3-64 of each area's blocks as game 1.09 stores them, read row by row (HudBlocks).
-+extern const uint64_t HudPlayStationHash[HudCount];
-+
-+/// Offset of BC7 block (bx, by) in a texture `width` pixels wide in the game's tiled layout:
-+/// 8x8-block micro tiles in rows, Morton order inside.
-+size_t TiledBlockOffset(int bx, int by, int width);
-+/// The sprite for `inputs` sized to `area` (the icon at 26x26, centred), as BC7 blocks row by row.
-+std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
-+/// The same for an icon already drawn (DrawPad).
-+std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area);
-+
+@@ -74,4 +74,48 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
+ /// The same for an icon already drawn (DrawPad).
+ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area);
+ 
 +/// DCport: DriveClub's button icons, each its own BC7 texture in the PS4's tiled layout (rows
 +/// and columns of blocks padded to whole 8x8-block micro tiles). Recognised by their upload
 +/// hash, as the key-guide icons are. The d-pad icons stay the game's own.
@@ -14192,688 +13295,15 @@ index 85b7b33..fb8ca86 100644
 +std::vector<uint8_t> RenderGravityTexture(const GravityTexture& texture, int style,
 +                                         const std::vector<uint8_t>& original);
 +
++/// The icon a symbol-font codepoint stands for in each game, or Count when it maps to none.
++Icon GlyphIcon(bool second_game, uint32_t code);
++
 +/// Gravity Rush's symbol fonts use different codepoints in each game. Render the mapped
 +/// controller symbol into the original glyph's coverage bitmap, preserving font metrics.
 +bool DrawGravityGlyph(bool second_game, uint32_t code, Pad pad, uint8_t* coverage,
 +                      int width, int height, int pitch, int dc_style = -1);
 +
-+} // namespace BbPromptIcons
-diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
-index 3d44504..9cf96df 100644
---- a/gpu/shim/bbport_prompts.cpp
-+++ b/gpu/shim/bbport_prompts.cpp
-@@ -1,274 +1,397 @@
--// SPDX-License-Identifier: GPL-2.0-or-later
--// bbport: button prompts that follow the input device (bbport_prompts.h).
--
--#include "bbport_prompts.h"
--
--#include <algorithm>
--#include <array>
--#include <atomic>
--#include <cstdio>
--#include <cstdlib>
--#include <cstring>
--#include <mutex>
--#include <set>
--#include <tuple>
--#include <vector>
--
--#include <xxhash.h>
--
--#include "bbport_prompt_icons.h"
--#include "bbport_settings.h"
--#include "core/memory.h"
--
--extern "C" const unsigned char bb_font_ttf[]; // bbport_overlay.cpp
--
--namespace BbPrompts {
--namespace {
--
--using Bytes = std::vector<uint8_t>;
--using BbPromptIcons::HudCount;
--
--/// A button picture found in guest memory: a KG_* icon (its 1 KiB at `base`) or a sprite area
--/// of the HUD atlas at `base` (its blocks, gathered row by row). `original` is the game's,
--/// `written` the hash of what is there now (ours or the game's): anything else means the game
--/// reused the memory.
--struct Entry {
--    uintptr_t base;
--    int icon;       // BbPromptIcons::Icon (a KG_* texture), or -1 for an atlas sprite
--    int sprite;     // BbPromptIcons::HudSprite, or -1
--    Bytes original;
--    uint64_t written;
--};
--
--std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
--std::vector<Entry> entries;
--std::array<Bytes, BbPromptIcons::Count> keyboard_icons;
--std::array<Bytes, HudCount> keyboard_sprites;
--bool keyboard_ready = false;
--// Xbox and Switch (BbPromptIcons::Pad order); empty for an icon that stays the game's own.
--std::array<std::array<Bytes, BbPromptIcons::Count>, BbPromptIcons::PadCount> pad_icons;
--std::array<std::array<Bytes, HudCount>, BbPromptIcons::PadCount> pad_sprites;
--std::set<uintptr_t> searched;      // HUD atlases already looked at
--std::atomic<int> device{-1};       // -1 nothing seen yet, else a Device
--std::atomic<bool> dirty{false};    // something to write: a new picture, a device or binding change
--int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
--
--Device Want() {
--    switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
--    case BbSettings::PromptsPlayStation: return PlayStation;
--    case BbSettings::PromptsKeyboard: return Keyboard;
--    case BbSettings::PromptsXbox: return Xbox;
--    case BbSettings::PromptsSwitch: return Switch;
--    default: {
--        const int used = device.load(std::memory_order_relaxed);
--        return used < 0 ? Keyboard : Device(used); // nothing used yet: keyboard
--    }
--    }
--}
--
--/// The Xbox and Switch pictures: they do not depend on the bindings, drawn once.
--void DrawPads() {
--    for (int pad = 0; pad < BbPromptIcons::PadCount; ++pad) {
--        for (int icon = 0; icon < BbPromptIcons::Count; ++icon) {
--            BbPromptIcons::Pixels pixels;
--            if (!BbPromptIcons::DrawPad(BbPromptIcons::Icon(icon), BbPromptIcons::Pad(pad), pixels)) continue;
--            const auto encoded = BbPromptIcons::Encode(pixels);
--            pad_icons[pad][icon].assign(encoded.begin(), encoded.end());
--        }
--        for (int s = 0; s < HudCount; ++s) {
--            BbPromptIcons::Pixels pixels;
--            if (BbPromptIcons::DrawPad(BbPromptIcons::HudIcon[s], BbPromptIcons::Pad(pad), pixels)) {
--                pad_sprites[pad][s] = BbPromptIcons::RenderIconArea(pixels, BbPromptIcons::HudAreas[s]);
--            }
--        }
--    }
--}
--
--/// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
--/// sprite's area in the atlas's tiled layout.
--std::vector<size_t> Pieces(int sprite) {
--    std::vector<size_t> out;
--    if (sprite < 0) {
--        for (size_t at = 0; at < size_t(BbPromptIcons::Bytes); at += 16) out.push_back(at);
--        return out;
--    }
--    const auto& area = BbPromptIcons::HudAreas[sprite];
--    for (int by = area.y / 4; by < (area.y + area.h) / 4; ++by) {
--        for (int bx = area.x / 4; bx < (area.x + area.w) / 4; ++bx) {
--            out.push_back(BbPromptIcons::TiledBlockOffset(bx, by, BbPromptIcons::HudAtlasWidth));
--        }
--    }
--    return out;
--}
--
--Bytes Gather(uintptr_t base, int sprite) {
--    Bytes out;
--    for (size_t at : Pieces(sprite)) {
--        const auto* p = reinterpret_cast<const uint8_t*>(base + at);
--        out.insert(out.end(), p, p + 16);
--    }
--    return out;
--}
--
--/// The guest range an entry touches (to check that it is mapped and to invalidate it).
--std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite) {
--    const auto pieces = Pieces(sprite);
--    const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
--    return {base + *lo, *hi + 16 - *lo};
--}
--
--uint64_t Hash(const Bytes& data) {
--    return XXH3_64bits(data.data(), data.size());
--}
--
--void Add(uintptr_t base, int icon, int sprite, Bytes original) {
--    std::scoped_lock lock{mutex};
--    for (const Entry& e : entries) {
--        if (e.base == base && e.sprite == sprite) return;
--    }
--    const uint64_t hash = Hash(original);
--    entries.push_back({base, icon, sprite, std::move(original), hash});
--    dirty = true;
--}
--
--} // namespace
--
--void Configure(const char* const* inputs, int count) {
--    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
--    if (!font || count != BbPromptIcons::Count) return;
--    std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
--    std::array<Bytes, BbPromptIcons::Count> icons;
--    for (int i = 0; i < count; ++i) {
--        const std::string text = inputs[i] ? inputs[i] : "";
--        for (size_t start = 0; start < text.size();) {
--            const size_t end = std::min(text.find(' ', start), text.size());
--            if (end > start) lists[i].push_back(text.substr(start, end - start));
--            start = end + 1;
--        }
--        const auto icon = BbPromptIcons::Render(lists[i]);
--        icons[i].assign(icon.begin(), icon.end());
--    }
--    std::array<Bytes, HudCount> sprites;
--    for (int s = 0; s < HudCount; ++s) {
--        sprites[s] = BbPromptIcons::RenderArea(lists[BbPromptIcons::HudIcon[s]], BbPromptIcons::HudAreas[s]);
--    }
--    std::scoped_lock lock{mutex};
--    if (!keyboard_ready) DrawPads();
--    keyboard_icons = icons;
--    keyboard_sprites = sprites;
--    keyboard_ready = true;
--    dirty = true;
--}
--
--void OnInput(Device value) {
--    if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
--}
--
--void OnControllerConnected(Device value) {
--    int unknown = -1;
--    if (device.compare_exchange_strong(unknown, value, std::memory_order_relaxed)) dirty = true;
--}
--
--void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t levels,
--              uint32_t bits) {
--    static const bool trace = [] {
--        const char* env = std::getenv("BB_PROMPT_TRACE");
--        return env && env[0] == '1';
--    }();
--    if (trace && size <= 256 * 256 * 4) {
--        static std::mutex trace_mutex;
--        static std::set<uint64_t> seen;
--        const uint64_t h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
--        std::scoped_lock lock{trace_mutex};
--        if (seen.insert(h).second) {
--            std::printf("Prompts trace: %ux%u levels %u bits %u, %zu bytes at %#llx, hash %016llx\n", width,
--                        height, levels, bits, size, (unsigned long long)address, (unsigned long long)h);
--            char name[64];
--            std::snprintf(name, sizeof(name), "prompt-trace-%ux%u-%016llx.bin", width, height,
--                          (unsigned long long)h);
--            if (FILE* f = std::fopen(name, "wb")) {
--                std::fwrite(reinterpret_cast<const void*>(address), 1, size, f);
--                std::fclose(f);
--            }
--        }
--    }
--    if (levels != 1 || bits != 128) return;
--    if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
--        // A KG_* icon: the menus' key guides and the buttons in their messages.
--        Bytes bytes = Gather(address, -1);
--        const uint64_t hash = Hash(bytes);
--        for (int i = 0; i < BbPromptIcons::Count; ++i) {
--            if (BbPromptIcons::PlayStationHash[i] == hash) Add(address, i, -1, std::move(bytes));
--        }
--        return;
--    }
--    if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
--        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3.
--        {
--            std::scoped_lock lock{mutex};
--            if (!searched.insert(address).second) return;
--        }
--        for (int s = 0; s < HudCount; ++s) {
--            Bytes bytes = Gather(address, s);
--            if (Hash(bytes) == BbPromptIcons::HudPlayStationHash[s]) Add(address, -1, s, std::move(bytes));
--        }
--    }
--}
--
--void Apply() {
--    const Device want = Want();
--    if (!dirty.exchange(false) && want == shown) return;
--    shown = want;
--
--    std::vector<Entry> snapshot;
--    std::array<Bytes, BbPromptIcons::Count> icons; // empty: the game's own
--    std::array<Bytes, HudCount> sprites;
--    {
--        std::scoped_lock lock{mutex};
--        if (want != PlayStation && !keyboard_ready) return;
--        snapshot = entries;
--        if (want == Keyboard) {
--            icons = keyboard_icons;
--            sprites = keyboard_sprites;
--        } else if (want != PlayStation) {
--            const int pad = want == Xbox ? BbPromptIcons::PadXbox : BbPromptIcons::PadSwitch;
--            icons = pad_icons[pad];
--            sprites = pad_sprites[pad];
--        }
--    }
--    // Written without any lock: a write to a page the texture cache protects faults into it.
--    auto* memory = Core::Memory::Instance();
--    std::vector<std::tuple<uintptr_t, int, uint64_t>> written; // hash 0: the entry is gone
--    for (const Entry& e : snapshot) {
--        const auto [start, length] = Range(e.base, e.sprite);
--        if (!memory->IsValidMapping(start, length) || Hash(Gather(e.base, e.sprite)) != e.written) {
--            written.emplace_back(e.base, e.sprite, 0); // unmapped, or the game put something else there
--            continue;
--        }
--        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
--        const Bytes& target = mine.empty() ? e.original : mine;
--        const uint64_t target_hash = Hash(target);
--        if (target_hash == e.written) continue;
--        const auto pieces = Pieces(e.sprite);
--        for (size_t i = 0; i < pieces.size(); ++i) {
--            std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
--        }
--        memory->InvalidateMemory(start, length);
--        written.emplace_back(e.base, e.sprite, target_hash);
--    }
--    std::scoped_lock lock{mutex};
--    for (const auto& [base, sprite, hash] : written) {
--        for (size_t i = 0; i < entries.size(); ++i) {
--            if (entries[i].base != base || entries[i].sprite != sprite) continue;
--            if (hash) entries[i].written = hash;
--            else entries.erase(entries.begin() + i);
--            break;
--        }
--    }
--}
--
--} // namespace BbPrompts
--
--extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
--    BbPrompts::Configure(inputs, count);
--}
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+// bbport: button prompts that follow the input device (bbport_prompts.h).
-+
-+#include "bbport_prompts.h"
-+
-+#include <algorithm>
-+#include <array>
-+#include <atomic>
-+#include <cstdio>
-+#include <cstdlib>
-+#include <cstring>
-+#include <mutex>
-+#include <set>
-+#include <tuple>
-+#include <vector>
-+
-+#include <xxhash.h>
-+
-+#include "bbport_prompt_icons.h"
-+#include "bbport_settings.h"
-+#include "core/memory.h"
-+
-+extern "C" const unsigned char bb_font_ttf[]; // bbport_overlay.cpp
-+
-+namespace BbPrompts {
-+namespace {
-+
-+using Bytes = std::vector<uint8_t>;
-+using BbPromptIcons::HudCount;
-+
-+/// A button picture found in guest memory: a KG_* icon (its 1 KiB at `base`) or a sprite area
-+/// of the HUD atlas at `base` (its blocks, gathered row by row). `original` is the game's,
-+/// `written` the hash of what is there now (ours or the game's): anything else means the game
-+/// reused the memory.
-+struct Entry {
-+    uintptr_t base;
-+    int icon;       // BbPromptIcons::Icon (a KG_* texture), or -1 for an atlas sprite
-+    int sprite;     // BbPromptIcons::HudSprite, or -1
-+    Bytes original;
-+    uint64_t written;
-+    int dc = -1;    // DCport: a BbPromptIcons::DcIcon (a whole DriveClub icon texture), or -1
-+    std::array<Bytes, BbPromptIcons::DcStyleCount> looks; // DCport: that icon in each DcStyle
-+    bool gravity = false;
-+    std::array<Bytes, BbPromptIcons::DcStyleCount + 1> gravity_looks; // Xbox 360, One, PS5, Switch
-+};
-+
-+std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
-+std::vector<Entry> entries;
-+std::array<Bytes, BbPromptIcons::Count> keyboard_icons;
-+std::array<Bytes, HudCount> keyboard_sprites;
-+bool keyboard_ready = false;
-+// Xbox and Switch (BbPromptIcons::Pad order); empty for an icon that stays the game's own.
-+std::array<std::array<Bytes, BbPromptIcons::Count>, BbPromptIcons::PadCount> pad_icons;
-+std::array<std::array<Bytes, HudCount>, BbPromptIcons::PadCount> pad_sprites;
-+std::set<uintptr_t> searched;      // HUD atlases already looked at
-+std::atomic<int> device{-1};       // -1 nothing seen yet, else a Device
-+std::atomic<bool> dirty{false};    // something to write: a new picture, a device or binding change
-+int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
-+int shown_style = -1;              // DCport: the DcStyle (or -1, the game's own) Apply last chose
-+
-+Device Want() {
-+    switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
-+    case BbSettings::PromptsPlayStation: return PlayStation;
-+    case BbSettings::PromptsKeyboard: return Keyboard;
-+    case BbSettings::PromptsXbox: return Xbox;
-+    case BbSettings::PromptsSwitch: return Switch;
-+    default: {
-+        const int used = device.load(std::memory_order_relaxed);
-+        return used < 0 ? Keyboard : Device(used); // nothing used yet: keyboard
-+    }
-+    }
-+}
-+
-+/// The Xbox and Switch pictures: they do not depend on the bindings, drawn once.
-+void DrawPads() {
-+    for (int pad = 0; pad < BbPromptIcons::PadCount; ++pad) {
-+        for (int icon = 0; icon < BbPromptIcons::Count; ++icon) {
-+            BbPromptIcons::Pixels pixels;
-+            if (!BbPromptIcons::DrawPad(BbPromptIcons::Icon(icon), BbPromptIcons::Pad(pad), pixels)) continue;
-+            const auto encoded = BbPromptIcons::Encode(pixels);
-+            pad_icons[pad][icon].assign(encoded.begin(), encoded.end());
-+        }
-+        for (int s = 0; s < HudCount; ++s) {
-+            BbPromptIcons::Pixels pixels;
-+            if (BbPromptIcons::DrawPad(BbPromptIcons::HudIcon[s], BbPromptIcons::Pad(pad), pixels)) {
-+                pad_sprites[pad][s] = BbPromptIcons::RenderIconArea(pixels, BbPromptIcons::HudAreas[s]);
-+            }
-+        }
-+    }
-+}
-+
-+/// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
-+/// sprite's area in the atlas's tiled layout.
-+std::vector<size_t> Pieces(int sprite, int dc = -1) {
-+    std::vector<size_t> out;
-+    if (sprite < 0) {
-+        const size_t bytes = dc >= 0 ? BbPromptIcons::DcBytes(BbPromptIcons::DcIcon(dc))
-+                                     : size_t(BbPromptIcons::Bytes);
-+        for (size_t at = 0; at < bytes; at += 16) out.push_back(at);
-+        return out;
-+    }
-+    const auto& area = BbPromptIcons::HudAreas[sprite];
-+    for (int by = area.y / 4; by < (area.y + area.h) / 4; ++by) {
-+        for (int bx = area.x / 4; bx < (area.x + area.w) / 4; ++bx) {
-+            out.push_back(BbPromptIcons::TiledBlockOffset(bx, by, BbPromptIcons::HudAtlasWidth));
-+        }
-+    }
-+    return out;
-+}
-+
-+Bytes Gather(uintptr_t base, int sprite, int dc = -1) {
-+    Bytes out;
-+    for (size_t at : Pieces(sprite, dc)) {
-+        const auto* p = reinterpret_cast<const uint8_t*>(base + at);
-+        out.insert(out.end(), p, p + 16);
-+    }
-+    return out;
-+}
-+
-+/// The guest range an entry touches (to check that it is mapped and to invalidate it).
-+std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite, int dc = -1) {
-+    const auto pieces = Pieces(sprite, dc);
-+    const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
-+    return {base + *lo, *hi + 16 - *lo};
-+}
-+
-+uint64_t Hash(const Bytes& data) {
-+    return XXH3_64bits(data.data(), data.size());
-+}
-+
-+void Add(uintptr_t base, int icon, int sprite, Bytes original, int dc = -1,
-+         std::array<Bytes, BbPromptIcons::DcStyleCount> looks = {}) {
-+    std::scoped_lock lock{mutex};
-+    for (const Entry& e : entries) {
-+        if (e.base == base && e.sprite == sprite) return;
-+    }
-+    const uint64_t hash = Hash(original);
-+    entries.push_back({base, icon, sprite, std::move(original), hash, dc, std::move(looks)});
-+    dirty = true;
-+}
-+
-+/// DCport: a DriveClub icon texture (one of BbPromptIcons::DcTextures), with its Xbox 360
-+/// button drawn and encoded now (once per address; the game reuses few).
-+bool AddGravity(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t bits) {
-+    const auto& textures = BbPromptIcons::GravityTextures;
-+    bool candidate = false;
-+    for (const auto& texture : textures)
-+        candidate |= texture.width == width && texture.height == height && texture.bits == bits && texture.bytes == size;
-+    if (!candidate) return false;
-+    const uint64_t hash = XXH3_64bits(reinterpret_cast<const void*>(address), size);
-+    for (const auto& texture : textures) {
-+        if (texture.width != width || texture.height != height || texture.bits != bits ||
-+            texture.bytes != size || texture.hash != hash) continue;
-+        {
-+            std::scoped_lock lock{mutex};
-+            for (const Entry& e : entries)
-+                if (e.base == address && e.gravity && e.written == hash) return true;
-+        }
-+        Bytes original(reinterpret_cast<const uint8_t*>(address),
-+                       reinterpret_cast<const uint8_t*>(address) + size);
-+        std::array<Bytes, BbPromptIcons::DcStyleCount + 1> looks;
-+        for (int style = 0; style < BbPromptIcons::DcStyleCount; ++style)
-+            looks[style] = BbPromptIcons::RenderGravityTexture(texture, style, original);
-+        looks[BbPromptIcons::DcStyleCount] = BbPromptIcons::RenderGravityTexture(texture, -1, original);
-+        std::scoped_lock lock{mutex};
-+        for (auto it = entries.begin(); it != entries.end();) {
-+            if (it->base == address && it->gravity) it = entries.erase(it);
-+            else ++it;
-+        }
-+        const uint64_t original_hash = Hash(original);
-+        Entry entry{};
-+        entry.base = address;
-+        entry.icon = -1;
-+        entry.sprite = -1;
-+        entry.original = std::move(original);
-+        entry.written = original_hash;
-+        entry.gravity = true;
-+        entry.gravity_looks = std::move(looks);
-+        entries.push_back(std::move(entry));
-+        dirty = true;
-+        return true;
-+    }
-+    return false;
-+}
-+
-+bool AddDriveclub(uintptr_t address, size_t size, uint32_t width, uint32_t height) {
-+    for (int i = 0; i < BbPromptIcons::DcCount; ++i) {
-+        const auto icon = BbPromptIcons::DcIcon(i);
-+        const auto& t = BbPromptIcons::DcTextures[i];
-+        if (uint32_t(t.width) != width || uint32_t(t.height) != height || BbPromptIcons::DcBytes(icon) != size) {
-+            continue;
-+        }
-+        Bytes bytes = Gather(address, -1, i);
-+        if (Hash(bytes) != t.hash) continue;
-+        {
-+            std::scoped_lock lock{mutex};
-+            for (const Entry& e : entries) {
-+                if (e.base == address && e.dc == i) return true;
-+            }
-+        }
-+        static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
-+        std::array<Bytes, BbPromptIcons::DcStyleCount> looks;
-+        for (int style = 0; font && style < BbPromptIcons::DcStyleCount; ++style) {
-+            looks[style] = BbPromptIcons::EncodeDc(icon, BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style)), bytes);
-+        }
-+        Add(address, -1, -1, std::move(bytes), i, std::move(looks));
-+        return true;
-+    }
-+    return false;
-+}
-+
-+} // namespace
-+
-+void Configure(const char* const* inputs, int count) {
-+    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
-+    if (!font || count != BbPromptIcons::Count) return;
-+    std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
-+    std::array<Bytes, BbPromptIcons::Count> icons;
-+    for (int i = 0; i < count; ++i) {
-+        const std::string text = inputs[i] ? inputs[i] : "";
-+        for (size_t start = 0; start < text.size();) {
-+            const size_t end = std::min(text.find(' ', start), text.size());
-+            if (end > start) lists[i].push_back(text.substr(start, end - start));
-+            start = end + 1;
-+        }
-+        const auto icon = BbPromptIcons::Render(lists[i]);
-+        icons[i].assign(icon.begin(), icon.end());
-+    }
-+    std::array<Bytes, HudCount> sprites;
-+    for (int s = 0; s < HudCount; ++s) {
-+        sprites[s] = BbPromptIcons::RenderArea(lists[BbPromptIcons::HudIcon[s]], BbPromptIcons::HudAreas[s]);
-+    }
-+    std::scoped_lock lock{mutex};
-+    if (!keyboard_ready) DrawPads();
-+    keyboard_icons = icons;
-+    keyboard_sprites = sprites;
-+    keyboard_ready = true;
-+    dirty = true;
-+}
-+
-+void OnInput(Device value) {
-+    if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
-+}
-+
-+void OnControllerConnected(Device value) {
-+    int unknown = -1;
-+    if (device.compare_exchange_strong(unknown, value, std::memory_order_relaxed)) dirty = true;
-+}
-+
-+void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t levels,
-+              uint32_t bits) {
-+    static const bool trace = [] {
-+        const char* env = std::getenv("BB_PROMPT_TRACE");
-+        return env && env[0] == '1';
-+    }();
-+    if (trace && size <= 256 * 256 * 4) {
-+        static std::mutex trace_mutex;
-+        static std::set<uint64_t> seen;
-+        const uint64_t h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
-+        std::scoped_lock lock{trace_mutex};
-+        if (seen.insert(h).second) {
-+            std::printf("Prompts trace: %ux%u levels %u bits %u, %zu bytes at %#llx, hash %016llx\n", width,
-+                        height, levels, bits, size, (unsigned long long)address, (unsigned long long)h);
-+            char name[64];
-+            std::snprintf(name, sizeof(name), "prompt-trace-%ux%u-%016llx.bin", width, height,
-+                          (unsigned long long)h);
-+            if (FILE* f = std::fopen(name, "wb")) {
-+                std::fwrite(reinterpret_cast<const void*>(address), 1, size, f);
-+                std::fclose(f);
-+            }
-+        }
-+    }
-+    if (AddGravity(address, size, width, height, bits)) return;
-+    // Gravity hashes describe mip 0, whose address and size are passed above.
-+    // A texture may still have lower-resolution mip levels.
-+    if (levels != 1 || bits != 128) return;
-+    if (AddDriveclub(address, size, width, height)) return;
-+    if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
-+        // A KG_* icon: the menus' key guides and the buttons in their messages.
-+        Bytes bytes = Gather(address, -1);
-+        const uint64_t hash = Hash(bytes);
-+        for (int i = 0; i < BbPromptIcons::Count; ++i) {
-+            if (BbPromptIcons::PlayStationHash[i] == hash) Add(address, i, -1, std::move(bytes));
-+        }
-+        return;
-+    }
-+    if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
-+        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3.
-+        {
-+            std::scoped_lock lock{mutex};
-+            if (!searched.insert(address).second) return;
-+        }
-+        for (int s = 0; s < HudCount; ++s) {
-+            Bytes bytes = Gather(address, s);
-+            if (Hash(bytes) == BbPromptIcons::HudPlayStationHash[s]) Add(address, -1, s, std::move(bytes));
-+        }
-+    }
-+}
-+
-+void Apply() {
-+    const Device want = Want();
-+    // DCport: Driveclub's icons follow the controller in its chosen look (settings
-+    // xbox_buttons, playstation_buttons); the game's own for a PS4 look or the keyboard.
-+    const auto& settings = BbSettings::Get();
-+    const int style = want == Xbox ? (settings.xbox_buttons ? BbPromptIcons::DcXboxOne : BbPromptIcons::DcXbox360)
-+                      : want == PlayStation && settings.playstation_buttons ? BbPromptIcons::DcPs5
-+                      : want == Switch ? BbPromptIcons::DcStyleCount : -1;
-+    if (!dirty.exchange(false) && want == shown && style == shown_style) return;
-+    shown = want;
-+    shown_style = style;
-+
-+    std::vector<Entry> snapshot;
-+    std::array<Bytes, BbPromptIcons::Count> icons; // empty: the game's own
-+    std::array<Bytes, HudCount> sprites;
-+    {
-+        std::scoped_lock lock{mutex};
-+        snapshot = entries;
-+        // Without the keyboard pictures (input.ini not read yet) the key-guide icons stay the
-+        // game's for now; DriveClub's icons need none of them.
-+        if (!keyboard_ready) {
-+        } else if (want == Keyboard) {
-+            icons = keyboard_icons;
-+            sprites = keyboard_sprites;
-+        } else if (want != PlayStation) {
-+            const int pad = want == Xbox ? BbPromptIcons::PadXbox : BbPromptIcons::PadSwitch;
-+            icons = pad_icons[pad];
-+            sprites = pad_sprites[pad];
-+        }
-+    }
-+    // Written without any lock: a write to a page the texture cache protects faults into it.
-+    auto* memory = Core::Memory::Instance();
-+    std::vector<std::tuple<uintptr_t, int, bool, uint64_t>> written; // hash 0: the entry is gone
-+    static const Bytes none;
-+    for (const Entry& e : snapshot) {
-+        const auto [start, length] = e.gravity ? std::pair<uintptr_t, size_t>{e.base, e.original.size()}
-+                                                : Range(e.base, e.sprite, e.dc);
-+        if (!memory->IsValidMapping(start, length)) {
-+            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-+            continue;
-+        }
-+        const Bytes current = e.gravity ? Bytes(reinterpret_cast<const uint8_t*>(e.base),
-+                                                 reinterpret_cast<const uint8_t*>(e.base) + e.original.size())
-+                                        : Gather(e.base, e.sprite, e.dc);
-+        if (Hash(current) != e.written) {
-+            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-+            continue;
-+        }
-+        // DriveClub's icons: the chosen look for the controller in use, else the game's own.
-+        const Bytes& mine = e.gravity ? (style >= 0 ? e.gravity_looks[style] : none)
-+                            : e.dc >= 0 ? (style >= 0 && style < BbPromptIcons::DcStyleCount ? e.looks[style] : none)
-+                            : e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
-+        const Bytes& target = mine.empty() ? e.original : mine;
-+        const uint64_t target_hash = Hash(target);
-+        if (target_hash == e.written) continue;
-+        if (e.gravity) {
-+            std::memcpy(reinterpret_cast<void*>(e.base), target.data(), target.size());
-+        } else {
-+            const auto pieces = Pieces(e.sprite, e.dc);
-+            for (size_t i = 0; i < pieces.size(); ++i) {
-+                std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
-+            }
-+        }
-+        memory->InvalidateMemory(start, length);
-+        written.emplace_back(e.base, e.sprite, e.gravity, target_hash);
-+    }
-+    std::scoped_lock lock{mutex};
-+    for (const auto& [base, sprite, gravity, hash] : written) {
-+        for (size_t i = 0; i < entries.size(); ++i) {
-+            if (entries[i].base != base || entries[i].sprite != sprite || entries[i].gravity != gravity) continue;
-+            if (hash) entries[i].written = hash;
-+            else entries.erase(entries.begin() + i);
-+            break;
-+        }
-+    }
-+}
-+
-+} // namespace BbPrompts
-+
-+extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
-+    BbPrompts::Configure(inputs, count);
-+}
-+
-+extern "C" int bbgpu_gr_prompt_glyph(int second_game, uint32_t code, uint8_t* coverage,
-+                                    int width, int height, int pitch) {
-+    const int mode = BbSettings::Get().button_prompts.load(std::memory_order_relaxed);
-+    const auto& settings = BbSettings::Get();
-+    const bool ps5 = mode == BbSettings::PromptsPlayStation && settings.playstation_buttons == 1;
-+    if (mode != BbSettings::PromptsXbox && mode != BbSettings::PromptsSwitch && !ps5) return 0;
-+    const int style = ps5 ? BbPromptIcons::DcPs5
-+                   : mode == BbSettings::PromptsXbox ? (settings.xbox_buttons == 1 ? BbPromptIcons::DcXboxOne
-+                                                                                  : BbPromptIcons::DcXbox360)
-+                   : -1;
-+    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
-+    return font && BbPromptIcons::DrawGravityGlyph(second_game != 0, code,
-+        mode == BbSettings::PromptsSwitch ? BbPromptIcons::PadSwitch : BbPromptIcons::PadXbox,
-+        coverage, width, height, pitch, style);
-+}
+ } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
 index 5b985a4..81538f9 100644
 --- a/gpu/shim/bbport_settings.cpp

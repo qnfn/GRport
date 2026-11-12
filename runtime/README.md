@@ -19,6 +19,13 @@ things: Gravity Rush support (event flags, fibers, fonts), GRport's own libSceNg
 (`vk_temporal_upscaler.cpp`, `vk_camera_motion.cpp`, `host_shaders/gr_motion.comp`), patch
 loading with code caves (`src/probe.c`) and the in-game menu (`gpu/shim/bbport_overlay.cpp`).
 
+To try a change in the launcher without cutting a release, run
+`runtime\build-runtime.bat "C:\path\to\GRport"`: it clones the source above into
+`..\grport-runtime` (and reuses it next time), puts it at the right commit with this patch
+applied, builds it in MSYS2 CLANG64 and installs `out\bb-probe.exe` as
+`runtime\GRport-runtime.exe`, keeping the previous one as `.bak`. The launcher sees the new
+runtime and prepares each game once more before PLAY.
+
 The FSR 4 model files are not part of this source; they ship only in the FSR edition release
 zip, with their license.
 
