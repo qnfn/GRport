@@ -38,14 +38,41 @@ def current_config(folder: Path) -> Path:
     if len(accounts) == 1:
         return accounts[0]
     try:
-        login = (folder / "config/loginusers.vdf").read_text(encoding="utf-8")
-        for steam_id, fields in re.findall(r'"(\d{17})"\s*\{([^{}]*)\}', login):
-            if re.search(r'"MostRecent"\s*"1"', fields, re.IGNORECASE):
-                active = folder / "userdata" / str(int(steam_id) & 0xffffffff) / "config"
-                if active in accounts:
-                    return active
+        login = (folder / "config/loginusers.vdf").read_text(encoding="utf-8-sig")
     except OSError:
-        pass
+        login = ""
+
+    configs = {path.parent.name: path for path in accounts}
+    users = []
+    for steam_id, fields in re.findall(r'"(\d{17})"\s*\{([^{}]*)\}', login):
+        account_id = str(int(steam_id) & 0xffffffff)
+        config = configs.get(account_id)
+        if config is None:
+            continue
+
+        def value(name):
+            match = re.search(rf'"{name}"\s*"([^"]*)"', fields, re.IGNORECASE)
+            return match.group(1) if match else None
+
+        timestamp = value("timestamp")
+        users.append({"config": config, "most_recent": value("MostRecent"),
+                      "auto_login": value("AutoLogin"),
+                      "timestamp": int(timestamp) if timestamp and timestamp.isdigit() else None})
+
+    # SteamOS clients may omit MostRecent. AutoLogin, then the newest login timestamp,
+    # identify the active profile in that format.
+    for marker in ("most_recent", "auto_login"):
+        selected = [user["config"] for user in users if user[marker] == "1"]
+        if len(selected) == 1:
+            return selected[0]
+
+    timestamps = [user["timestamp"] for user in users]
+    if timestamps and all(timestamp is not None for timestamp in timestamps):
+        newest = max(timestamps)
+        selected = [user["config"] for user in users if user["timestamp"] == newest]
+        if len(selected) == 1:
+            return selected[0]
+
     raise OSError("Sign in to Steam once so GRport can identify your account, then exit Steam.")
 
 

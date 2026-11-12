@@ -42,6 +42,32 @@ def test_account_selection_uses_most_recent_login(tmp_path):
     assert steam.current_config(tmp_path) == tmp_path / "userdata/456/config"
 
 
+def test_account_selection_uses_autologin_when_most_recent_is_missing(tmp_path):
+    for account in (123, 456):
+        (tmp_path / "userdata" / str(account)).mkdir(parents=True)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/loginusers.vdf").write_text('''
+        "users" {
+            "76561197960265851" { "AccountName" "old" "AutoLogin" "0" "timestamp" "100" }
+            "76561197960266184" { "AccountName" "current" "AutoLogin" "1" "timestamp" "200" }
+        }
+    ''')
+    assert steam.current_config(tmp_path) == tmp_path / "userdata/456/config"
+
+
+def test_account_selection_falls_back_to_latest_timestamp(tmp_path):
+    for account in (123, 456):
+        (tmp_path / "userdata" / str(account)).mkdir(parents=True)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/loginusers.vdf").write_text('''
+        "users" {
+            "76561197960265851" { "AccountName" "old" "timestamp" "100" }
+            "76561197960266184" { "AccountName" "current" "Timestamp" "200" }
+        }
+    ''')
+    assert steam.current_config(tmp_path) == tmp_path / "userdata/456/config"
+
+
 def test_ambiguous_account_does_not_guess(tmp_path):
     for account in (123, 456):
         (tmp_path / "userdata" / str(account)).mkdir(parents=True)
