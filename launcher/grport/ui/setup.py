@@ -2,11 +2,13 @@
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import os
 import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog
 
-from grport import games, ini, patches, runtime, settings, shortcuts, steam
+from grport import games, ini, patches, runtime, saves, settings, shortcuts, steam
 from grport.settings import (ASPECTS, DEADZONE_CHOICES, FPS_CHOICES, LANGUAGES, RENDER_GRID,
                              WINDOW_HEIGHTS, aspect_of, resolution_label, resolution_size)
-from grport.ui import theme
+from grport.ui import dialogs, theme
 
 WINDOW_SIZE_CHOICES = tuple((f"{h}p", {1440: "2K", 2160: "4K"}.get(h, f"{h}p"))
                             for h in WINDOW_HEIGHTS)
@@ -69,6 +71,11 @@ WINDOW_SIZE_NOTE = ("Window size: only the window, in Window mode ({size}, the s
 PATCHES_NOTE = ("Game patches by Junmin Lee are downloaded when needed. GR1 cheats are "
                 "adapted from GoldHEN codes by Talixme and Skal where noted. Patches target GR1 "
                 "1.00 and GR2 1.11. Changes prepare the game again at the next PLAY.")
+SAVES_NOTE = ("Bring your progress from another emulator or launcher (shadPS4, GR2fork, an older "
+              "GRport folder) or from a PS4: choose the folder that holds the saves (for example "
+              "the other program's user folder). PS4 saves must be decrypted first, for example "
+              "exported with Apollo Save Tool on a jailbroken PS4; a PS4's own USB backup is "
+              "encrypted and can't be read. Your current saves are copied to a backup folder first.")
 # Every _row label on the page: the label column fits the longest one.
 ROW_LABELS = ("Window", "Window size", "Render", "Aspect ratio", "Language", "GPU readbacks",
               "Threading", "Frame rate", "Skybox seam fix", "PS4 Pro mode", "Stick dead zone", "Controller speaker", "Camera Roll", "Temporal output", "Performance log", "HDR10 output", "HDR white (nits)",
@@ -349,6 +356,12 @@ class SetupPage(tk.Frame):
         self._note(links, f"Start {games.GAMES[self.key].title} directly, including from Steam Game Mode. "
                           "Each game gets its own shortcut. Exit Steam before adding it.")
 
+        save_card = self.board.add(7, 0, span=2, title="Saves")
+        theme.PillButton(save_card, app, "Import saves", self.import_saves,
+                         kind="secondary", font=app.fonts["button"], height=app.px(36),
+                         padx=app.px(18), bg_role="panel").pack(anchor="w")
+        self._note(save_card, SAVES_NOTE)
+
         self.patch_choices = {}
         extra = self.board.add(4, 0, span=2, title="Patches")
         for i, (prefix, label, _, note) in enumerate(patches.OPTIONAL.get(self.key, ())):
@@ -473,6 +486,59 @@ class SetupPage(tk.Frame):
                 self.flash(f"GRport is now in your {place}.", "muted")
         key = self.key
         self.app.run_task(lambda: shortcuts.create(self.app.paths, folder, key), done)
+
+    def import_saves(self) -> None:
+        key, app = self.key, self.app
+        game, info = games.GAMES[key], app.infos.get(key)
+        if app.phase != "idle":
+            self.flash("Close the game before importing saves.", "bad")
+            return
+        if info is None or not info.serial:
+            self.flash(f"Choose your {game.title} folder on the PLAY page first.", "bad")
+            return
+        with theme.file_dialog_theme(app.style):
+            chosen = filedialog.askdirectory(parent=app, mustexist=True,
+                                             title=f"Choose the folder with your {game.title} saves")
+        if not chosen:
+            return
+        user = runtime.user_dir(app.paths, key)
+        if Path(chosen).resolve().is_relative_to(user.resolve()):
+            self.flash("That is GRport's own save folder.", "bad")
+            return
+
+        def scanned(found, error):
+            if error is not None:
+                self.flash(f"Could not read that folder: {error}", "bad")
+                return
+            if not found.saves:
+                if found.encrypted:
+                    text = ("These are encrypted PS4 saves. Decrypt them first (for example with "
+                            "Apollo Save Tool on a jailbroken PS4), then import the decrypted folder.")
+                elif found.other_games:
+                    text = (f"No {game.title} saves there, only saves of "
+                            f"{', '.join(sorted(found.other_games))}.")
+                else:
+                    text = f"No {game.title} saves found in that folder."
+                self.flash(text, "bad")
+                return
+            names = ", ".join(s.name for s in found.saves)
+            if not dialogs.confirm(app, "Import saves",
+                                   f"Import {len(found.saves)} save(s) into {game.title}: {names}?\n\n"
+                                   "Saves with the same name are replaced. Your current saves are "
+                                   f"copied to user/{key}/savedata-backup-<date> first.", "Import"):
+                return
+            app.run_task(lambda: saves.import_saves(user, info.serial, found.saves), imported)
+
+        def imported(backup, error):
+            if error is not None:
+                self.flash(f"Could not import the saves: {error}", "bad")
+            elif backup is not None:
+                self.flash(f"Saves imported. Your previous saves are in user/{key}/{backup.name}.",
+                           "muted")
+            else:
+                self.flash("Saves imported.", "muted")
+
+        app.run_task(lambda: saves.scan(Path(chosen), game), scanned)
 
     def add_to_steam(self) -> None:
         key = self.key
