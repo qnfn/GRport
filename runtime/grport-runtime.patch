@@ -13217,10 +13217,10 @@ index 86ef250..a114c5c 100644
 +
  } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
-index c729033..99c1078 100644
+index c729033..966da0f 100644
 --- a/gpu/shim/bbport_prompt_icons.cpp
 +++ b/gpu/shim/bbport_prompt_icons.cpp
-@@ -588,4 +588,503 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
+@@ -588,4 +588,505 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
      return blocks;
  }
  
@@ -13586,7 +13586,7 @@ index c729033..99c1078 100644
 +};
 +
 +std::vector<uint8_t> RenderGravityTexture(const GravityTexture& t, int style,
-+                                         const std::vector<uint8_t>& original) {
++                                         const std::vector<uint8_t>& original, const Pixels* key) {
 +    if (original.size() != t.bytes || !t.width || !t.height || t.width > 1024 || t.height > 1024 ||
 +        style < -1 || style >= DcStyleCount || t.bounds.x < 0 || t.bounds.y < 0 ||
 +        t.bounds.w <= 0 || t.bounds.h <= 0 || t.bounds.x + t.bounds.w > int(t.width) ||
@@ -13608,7 +13608,9 @@ index c729033..99c1078 100644
 +    std::vector<uint8_t> styled;
 +    const uint8_t* source;
 +    int sw = Size, sh = Size;
-+    if (style >= 0 && dc >= 0) {
++    if (key) {
++        source = key->data(); // GRport: the key bound to this button in input.ini
++    } else if (style >= 0 && dc >= 0) {
 +        styled = DrawDc(DcIcon(dc), DcStyle(style));
 +        sw = DcTextures[dc].width; sh = DcTextures[dc].height;
 +        source = styled.data();
@@ -13725,10 +13727,10 @@ index c729033..99c1078 100644
 +
  } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompt_icons.h b/gpu/shim/bbport_prompt_icons.h
-index 85b7b33..8064a08 100644
+index 85b7b33..e7cd132 100644
 --- a/gpu/shim/bbport_prompt_icons.h
 +++ b/gpu/shim/bbport_prompt_icons.h
-@@ -74,4 +74,48 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
+@@ -74,4 +74,50 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
  /// The same for an icon already drawn (DrawPad).
  std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area);
  
@@ -13764,9 +13766,11 @@ index 85b7b33..8064a08 100644
 +};
 +extern const std::vector<GravityTexture> GravityTextures;
 +/// Repaint a recognized texture in its original tiled RGBA8 or BC7 layout.
-+/// style -1 selects Switch; invalid input returns an empty vector.
++/// style -1 selects Switch; `key` (a keyboard key-cap picture) replaces the button when given.
++/// Invalid input returns an empty vector.
 +std::vector<uint8_t> RenderGravityTexture(const GravityTexture& texture, int style,
-+                                         const std::vector<uint8_t>& original);
++                                         const std::vector<uint8_t>& original,
++                                         const Pixels* key = nullptr);
 +
 +/// The icon a symbol-font codepoint stands for in each game, or Count when it maps to none.
 +Icon GlyphIcon(bool second_game, uint32_t code);
@@ -13778,26 +13782,31 @@ index 85b7b33..8064a08 100644
 +
  } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
-index 3d44504..ca42d1c 100644
+index 3d44504..b833100 100644
 --- a/gpu/shim/bbport_prompts.cpp
 +++ b/gpu/shim/bbport_prompts.cpp
-@@ -9,6 +9,7 @@
+@@ -9,7 +9,9 @@
  #include <cstdio>
  #include <cstdlib>
  #include <cstring>
 +#include <map>
  #include <mutex>
++#include <optional>
  #include <set>
  #include <tuple>
-@@ -38,20 +39,26 @@ struct Entry {
+ #include <vector>
+@@ -38,20 +40,29 @@ struct Entry {
      int sprite;     // BbPromptIcons::HudSprite, or -1
      Bytes original;
      uint64_t written;
 +    int dc = -1;    // DCport: a BbPromptIcons::DcIcon (a whole DriveClub icon texture), or -1
 +    std::array<Bytes, BbPromptIcons::DcStyleCount> looks; // DCport: that icon in each DcStyle
 +    bool gravity = false;
-+    std::array<Bytes, BbPromptIcons::DcStyleCount + 1> gravity_looks; // Xbox 360, One, PS5, Switch
++    int gravity_texture = -1; // its BbPromptIcons::GravityTextures index
++    // Xbox 360, One, PS5, Switch, then the keyboard (kKeyboardLook; drawn from input.ini).
++    std::array<Bytes, BbPromptIcons::DcStyleCount + 2> gravity_looks;
  };
++constexpr int kKeyboardLook = BbPromptIcons::DcStyleCount + 1;
  
  std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
  std::vector<Entry> entries;
@@ -13817,7 +13826,7 @@ index 3d44504..ca42d1c 100644
  
  Device Want() {
      switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
-@@ -86,10 +93,12 @@ void DrawPads() {
+@@ -86,10 +97,12 @@ void DrawPads() {
  
  /// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
  /// sprite's area in the atlas's tiled layout.
@@ -13832,7 +13841,7 @@ index 3d44504..ca42d1c 100644
          return out;
      }
      const auto& area = BbPromptIcons::HudAreas[sprite];
-@@ -101,9 +110,9 @@ std::vector<size_t> Pieces(int sprite) {
+@@ -101,9 +114,9 @@ std::vector<size_t> Pieces(int sprite) {
      return out;
  }
  
@@ -13844,7 +13853,7 @@ index 3d44504..ca42d1c 100644
          const auto* p = reinterpret_cast<const uint8_t*>(base + at);
          out.insert(out.end(), p, p + 16);
      }
-@@ -111,8 +120,8 @@ Bytes Gather(uintptr_t base, int sprite) {
+@@ -111,8 +124,8 @@ Bytes Gather(uintptr_t base, int sprite) {
  }
  
  /// The guest range an entry touches (to check that it is mapped and to invalidate it).
@@ -13855,7 +13864,7 @@ index 3d44504..ca42d1c 100644
      const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
      return {base + *lo, *hi + 16 - *lo};
  }
-@@ -121,16 +130,94 @@ uint64_t Hash(const Bytes& data) {
+@@ -121,16 +134,101 @@ uint64_t Hash(const Bytes& data) {
      return XXH3_64bits(data.data(), data.size());
  }
  
@@ -13901,10 +13910,16 @@ index 3d44504..ca42d1c 100644
 +        }
 +        Bytes original(reinterpret_cast<const uint8_t*>(address),
 +                       reinterpret_cast<const uint8_t*>(address) + size);
-+        std::array<Bytes, BbPromptIcons::DcStyleCount + 1> looks;
++        std::array<Bytes, BbPromptIcons::DcStyleCount + 2> looks;
 +        for (int style = 0; style < BbPromptIcons::DcStyleCount; ++style)
 +            looks[style] = BbPromptIcons::RenderGravityTexture(texture, style, original);
 +        looks[BbPromptIcons::DcStyleCount] = BbPromptIcons::RenderGravityTexture(texture, -1, original);
++        std::optional<BbPromptIcons::Pixels> key;
++        {
++            std::scoped_lock lock{mutex};
++            if (keyboard_ready) key = keyboard_pixels[texture.icon];
++        }
++        if (key) looks[kKeyboardLook] = BbPromptIcons::RenderGravityTexture(texture, -1, original, &*key);
 +        std::scoped_lock lock{mutex};
 +        for (auto it = entries.begin(); it != entries.end();) {
 +            if (it->base == address && it->gravity) it = entries.erase(it);
@@ -13918,6 +13933,7 @@ index 3d44504..ca42d1c 100644
 +        entry.original = std::move(original);
 +        entry.written = original_hash;
 +        entry.gravity = true;
++        entry.gravity_texture = int(&texture - textures.data());
 +        entry.gravity_looks = std::move(looks);
 +        entries.push_back(std::move(entry));
 +        dirty = true;
@@ -13955,7 +13971,7 @@ index 3d44504..ca42d1c 100644
  } // namespace
  
  void Configure(const char* const* inputs, int count) {
-@@ -138,6 +225,7 @@ void Configure(const char* const* inputs, int count) {
+@@ -138,6 +236,7 @@ void Configure(const char* const* inputs, int count) {
      if (!font || count != BbPromptIcons::Count) return;
      std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
      std::array<Bytes, BbPromptIcons::Count> icons;
@@ -13963,7 +13979,7 @@ index 3d44504..ca42d1c 100644
      for (int i = 0; i < count; ++i) {
          const std::string text = inputs[i] ? inputs[i] : "";
          for (size_t start = 0; start < text.size();) {
-@@ -145,7 +233,8 @@ void Configure(const char* const* inputs, int count) {
+@@ -145,21 +244,69 @@ void Configure(const char* const* inputs, int count) {
              if (end > start) lists[i].push_back(text.substr(start, end - start));
              start = end + 1;
          }
@@ -13973,13 +13989,38 @@ index 3d44504..ca42d1c 100644
          icons[i].assign(icon.begin(), icon.end());
      }
      std::array<Bytes, HudCount> sprites;
-@@ -155,11 +244,35 @@ void Configure(const char* const* inputs, int count) {
+     for (int s = 0; s < HudCount; ++s) {
+         sprites[s] = BbPromptIcons::RenderArea(lists[BbPromptIcons::HudIcon[s]], BbPromptIcons::HudAreas[s]);
+     }
++    // GRport: Gravity Rush 2's prompt textures found so far get the keys too (drawn here, without
++    // the lock; written back to the entries that still hold the same picture).
++    std::vector<std::tuple<uintptr_t, uint64_t, Bytes>> gravity_keys;
++    {
++        std::scoped_lock lock{mutex};
++        for (const Entry& e : entries)
++            if (e.gravity && e.gravity_texture >= 0) gravity_keys.emplace_back(e.base, e.written, Bytes{});
++    }
++    for (auto& [base, written, look] : gravity_keys) {
++        Bytes original;
++        int texture = -1;
++        {
++            std::scoped_lock lock{mutex};
++            for (const Entry& e : entries)
++                if (e.gravity && e.base == base) { original = e.original; texture = e.gravity_texture; }
++        }
++        if (texture < 0) continue;
++        const auto& t = BbPromptIcons::GravityTextures[texture];
++        look = BbPromptIcons::RenderGravityTexture(t, -1, original, &pixels[t.icon]);
++    }
      std::scoped_lock lock{mutex};
      if (!keyboard_ready) DrawPads();
      keyboard_icons = icons;
 +    keyboard_pixels = pixels;
      keyboard_sprites = sprites;
      keyboard_ready = true;
++    for (auto& [base, written, look] : gravity_keys)
++        for (Entry& e : entries)
++            if (e.gravity && e.base == base) e.gravity_looks[kKeyboardLook] = std::move(look);
      dirty = true;
  }
  
@@ -14009,7 +14050,7 @@ index 3d44504..ca42d1c 100644
  void OnInput(Device value) {
      if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
  }
-@@ -192,7 +305,11 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+@@ -192,7 +339,11 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
              }
          }
      }
@@ -14021,7 +14062,7 @@ index 3d44504..ca42d1c 100644
      if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
          // A KG_* icon: the menus' key guides and the buttons in their messages.
          Bytes bytes = Gather(address, -1);
-@@ -203,10 +320,14 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+@@ -203,10 +354,14 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
          return;
      }
      if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
@@ -14038,7 +14079,7 @@ index 3d44504..ca42d1c 100644
          }
          for (int s = 0; s < HudCount; ++s) {
              Bytes bytes = Gather(address, s);
-@@ -215,19 +336,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+@@ -215,19 +370,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
      }
  }
  
@@ -14078,7 +14119,7 @@ index 3d44504..ca42d1c 100644
              icons = keyboard_icons;
              sprites = keyboard_sprites;
          } else if (want != PlayStation) {
-@@ -238,28 +376,47 @@ void Apply() {
+@@ -238,28 +410,48 @@ void Apply() {
      }
      // Written without any lock: a write to a page the texture cache protects faults into it.
      auto* memory = Core::Memory::Instance();
@@ -14093,8 +14134,9 @@ index 3d44504..ca42d1c 100644
 +                                                : Range(e.base, e.sprite, e.dc);
 +        if (!memory->IsValidMapping(start, length)) {
 +            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-+            continue;
-+        }
+             continue;
+         }
+-        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
 +        const Bytes current = e.gravity ? Bytes(reinterpret_cast<const uint8_t*>(e.base),
 +                                                 reinterpret_cast<const uint8_t*>(e.base) + e.original.size())
 +                                        : Gather(e.base, e.sprite, e.dc);
@@ -14103,11 +14145,11 @@ index 3d44504..ca42d1c 100644
 +        // a bigger image at the address). Anything else is a different texture.
 +        if (current_hash != e.written && current_hash != Hash(e.original)) {
 +            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-             continue;
-         }
--        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
++            continue;
++        }
 +        // DriveClub's icons: the chosen look for the controller in use, else the game's own.
-+        const Bytes& mine = e.gravity ? (style >= 0 ? e.gravity_looks[style] : none)
++        const Bytes& mine = e.gravity ? (want == Keyboard ? e.gravity_looks[kKeyboardLook]
++                                         : style >= 0 ? e.gravity_looks[style] : none)
 +                            : e.dc >= 0 ? (style >= 0 && style < BbPromptIcons::DcStyleCount ? e.looks[style] : none)
 +                            : e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
          const Bytes& target = mine.empty() ? e.original : mine;
@@ -14138,7 +14180,7 @@ index 3d44504..ca42d1c 100644
              if (hash) entries[i].written = hash;
              else entries.erase(entries.begin() + i);
              break;
-@@ -272,3 +429,40 @@ void Apply() {
+@@ -272,3 +464,40 @@ void Apply() {
  extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
      BbPrompts::Configure(inputs, count);
  }
@@ -15017,6 +15059,22 @@ index 550e79e..a324b31 100644
              continue;
          }
          switch (event.type) {
+diff --git a/launcher/bbport_input_config.py b/launcher/bbport_input_config.py
+index 3c07b43..7ec5afa 100644
+--- a/launcher/bbport_input_config.py
++++ b/launcher/bbport_input_config.py
+@@ -323,8 +323,9 @@ axis_right_y_plus = down
+ # Hold to halve the left stick (walk): uncomment and pick a key
+ # leftjoystick_halfmode = lalt
+ 
+-# Mouse (uncomment mouse_to_joystick to turn it on; buttons work only while captured)
+-# mouse_to_joystick = right
++# Mouse look: the mouse turns the camera while the game window has it (F7 releases and takes
++# it back, the menu releases it too); comment the line out to play without the mouse.
++mouse_to_joystick = right
+ mouse_movement_params = 0.5, 1, 0.125
+ r1 = leftbutton
+ r2 = rightbutton
 diff --git a/packaging/windows/bb-probe.rc b/packaging/windows/bb-probe.rc
 index 46d615e..87446fa 100644
 --- a/packaging/windows/bb-probe.rc
@@ -20251,10 +20309,41 @@ index 0000000..7eb96c6
 +};
 +uintptr_t runtime_image_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_input_config.c b/src/runtime_input_config.c
-index 0ccd2ce..aa55ca8 100644
+index 0ccd2ce..f7e0657 100644
 --- a/src/runtime_input_config.c
 +++ b/src/runtime_input_config.c
-@@ -590,7 +590,7 @@ void input_config_defaults(InputConfig *out) {
+@@ -532,15 +532,30 @@ static void ParseLine(ParseState *state, char *line) {
+     AddBinding(cfg, out, binding);
+ }
+ 
++/* GRport 0.3.10: input.ini files written before mouse look was on by default hold it commented
++ * out under this exact comment. That untouched pair counts as on; a player's own edit does not. */
++static const char OLD_MOUSE_COMMENT[] =
++    "# Mouse (uncomment mouse_to_joystick to turn it on; buttons work only while captured)";
++static const char OLD_MOUSE_LINE[] = "# mouse_to_joystick = right";
++
+ static void ParseTextPass(ParseState *state, const char *text) {
+     const char *p = text;
+     char raw[LINE_MAX + 2];
++    int after_old_comment = 0;
+     while (*p) {
+         size_t n = 0;
+         while (*p && *p != '\n' && n < sizeof(raw) - 1) raw[n++] = *p++;
+         while (*p && *p != '\n') ++p; /* GUD-004: discard anything past the line cap */
+         if (*p == '\n') ++p;
+         raw[n] = '\0';
++        if (n && raw[n - 1] == '\r') raw[--n] = '\0';
++        if (after_old_comment && !strcmp(raw, OLD_MOUSE_LINE)) {
++            after_old_comment = 0;
++            char enabled[] = "mouse_to_joystick=right";
++            ParseLine(state, enabled);
++            continue;
++        }
++        after_old_comment = !strcmp(raw, OLD_MOUSE_COMMENT);
+ 
+         /* CFG-003: strip all whitespace, then truncate at '#'. */
+         char line[LINE_MAX + 2];
+@@ -590,7 +605,7 @@ void input_config_defaults(InputConfig *out) {
   * single binding of that kind. launcher/bbport_input_config.py has a copy of the whole text
   * (tests/test_input_defaults.py checks that they match). */
  #define DEFAULT_HEADER \
@@ -20263,6 +20352,18 @@ index 0ccd2ce..aa55ca8 100644
  "# A shadPS4 input config (user/input_config/CUSA03173.ini) can be copied over this file.\n" \
  "# F7 toggles the mouse, F8 reloads this file.\n" \
  "\n"
+@@ -632,8 +647,9 @@ void input_config_defaults(InputConfig *out) {
+ "\n"
+ 
+ #define DEFAULT_MOUSE \
+-"# Mouse (uncomment mouse_to_joystick to turn it on; buttons work only while captured)\n" \
+-"# mouse_to_joystick = right\n" \
++"# Mouse look: the mouse turns the camera while the game window has it (F7 releases and takes\n" \
++"# it back, the menu releases it too); comment the line out to play without the mouse.\n" \
++"mouse_to_joystick = right\n" \
+ "mouse_movement_params = 0.5, 1, 0.125\n"
+ 
+ #define DEFAULT_MOUSE_BUTTONS \
 diff --git a/src/runtime_kernel.c b/src/runtime_kernel.c
 index 273a8f8..d84842f 100644
 --- a/src/runtime_kernel.c
@@ -21212,7 +21313,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..9a07534 100644
+index 687bfb5..4a9f329 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -21397,7 +21498,15 @@ index 687bfb5..9a07534 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -554,7 +704,8 @@ static void sample_host(PadData *d) {
+@@ -502,6 +652,7 @@ static void ensure_config_loaded(void) {
+         loaded_config=fresh;
+         if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
+         else printf("Input config: %s loaded\n",path);
++        if (fresh->mouse.stick) printf("Input config: mouse look on (F7 releases the mouse)\n");
+     } else {
+         free(fresh);
+         puts("Input config: using built-in defaults");
+@@ -554,7 +705,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -21407,7 +21516,7 @@ index 687bfb5..9a07534 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,6 +768,8 @@ static void sample_host(PadData *d) {
+@@ -617,6 +769,8 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -21416,7 +21525,7 @@ index 687bfb5..9a07534 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
-@@ -838,7 +991,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +992,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -21433,7 +21542,7 @@ index 687bfb5..9a07534 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1007,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1008,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -21450,7 +21559,7 @@ index 687bfb5..9a07534 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1054,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1055,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -21480,7 +21589,7 @@ index 687bfb5..9a07534 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1084,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1085,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -22676,10 +22785,10 @@ index 0000000..2f58d47
 +}
 diff --git a/tests/run-grport-tests.sh b/tests/run-grport-tests.sh
 new file mode 100644
-index 0000000..42e4af4
+index 0000000..808261c
 --- /dev/null
 +++ b/tests/run-grport-tests.sh
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,20 @@
 +#!/usr/bin/env bash
 +# Focused GRport regressions, run without game content or physical controllers.
 +set -euo pipefail
@@ -22691,6 +22800,8 @@ index 0000000..42e4af4
 +cxx=${CXX:-c++}
 +"$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -I. -Isrc "${sdl_cflags[@]}"     tests/test_pad.c src/runtime_input_config.c "${sdl_libs[@]}" -lm -o out/grport-pad-test
 +out/grport-pad-test
++"$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -I. -Isrc "${sdl_cflags[@]}"     tests/test_input_config.c src/runtime_input_config.c "${sdl_libs[@]}" -o out/grport-input-config-test
++out/grport-input-config-test
 +"$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -I. -Isrc "${sdl_cflags[@]}"     tests/test_audio_routing.c "${sdl_libs[@]}" -lm -o out/grport-audio-test
 +out/grport-audio-test
 +"$cxx" -std=c++23 -O2 -Wall -Wextra -Wno-unknown-pragmas -Wno-unused-function     -Igpu/shim -Igpu/third_party/imgui     "-DBB_TEST_FONT=\"$PWD/gpu/third_party/fonts/DejaVuSans.ttf\""     tests/test_prompt_icons.cpp gpu/shim/bbport_prompt_icons.cpp -o out/grport-prompts-test
@@ -22880,6 +22991,46 @@ index 0000000..1706607
 +    puts("PASS: fractional digit metrics use SceFont outline bounds");
 +    return 0;
 +}
+diff --git a/tests/test_input_config.c b/tests/test_input_config.c
+index 3b8c8d2..12bf19e 100644
+--- a/tests/test_input_config.c
++++ b/tests/test_input_config.c
+@@ -329,13 +329,26 @@ static void TestHalfAxisNames(void) {
+ /* The compiled-in default file must itself parse with only the one documented warning
+  * (override_controller_color is not emitted by our own default, so the true baseline is 0;
+  * this guards against the default text silently drifting out of sync with the parser). */
++/* input.ini files from before mouse look was on by default: the untouched old pair counts as
++ * on; a player's own commented-out line (any other text) stays off. */
++static void TestOldDefaultMouseLineCountsAsOn(void) {
++    InputConfig cfg;
++    input_config_parse(&cfg, "# Mouse (uncomment mouse_to_joystick to turn it on; buttons work only while "
++                             "captured)\r\n# mouse_to_joystick = right\r\ncross = space\n");
++    assert(cfg.mouse.stick == 2);
++    assert(cfg.warnings == 0);
++    InputConfig own;
++    input_config_parse(&own, "# I play without the mouse\n# mouse_to_joystick = right\n");
++    assert(own.mouse.stick == 0);
++}
++
+ static void TestDefaultTextParsesCleanly(void) {
+     InputConfig cfg;
+     input_config_parse(&cfg, input_config_default_text());
+     assert(cfg.warnings == 0);
+     assert(HasKeyBinding(&cfg, OUT_CROSS, SDL_SCANCODE_SPACE));
+     assert(HasCButtonBinding(&cfg, OUT_CROSS, SDL_GAMEPAD_BUTTON_SOUTH));
+-    assert(cfg.mouse.stick == 0); /* mouse_to_joystick left commented out */
++    assert(cfg.mouse.stick == 2); /* mouse look on by default (right stick) */
+     assert(cfg.toggle_scancode == SDL_SCANCODE_F7);
+     assert(cfg.reload_scancode == SDL_SCANCODE_F8);
+ }
+@@ -449,6 +462,7 @@ int main(void) {
+     TestOverlongNameRejected();
+     TestOverlongLineDoesNotCrash();
+     TestHalfAxisNames();
++    TestOldDefaultMouseLineCountsAsOn();
+     TestDefaultTextParsesCleanly();
+     TestShadps4DefaultFileImports();
+     TestLoadCreatesMissingFile();
 diff --git a/tests/test_pad.c b/tests/test_pad.c
 index a477ea9..fe74fc4 100644
 --- a/tests/test_pad.c
