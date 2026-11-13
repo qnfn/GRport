@@ -6046,10 +6046,10 @@ index 6aebb2d..6c38497 100644
      void Create(vk::Device device, vk::Format surface_format);
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp
 new file mode 100644
-index 0000000..bcd8930
+index 0000000..8be8a15
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,479 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 +
@@ -6076,6 +6076,31 @@ index 0000000..bcd8930
 +vk::Buffer buffer{};
 +std::array<std::atomic<u32>, SiteCount> sequence{};
 +std::atomic<bool> reported{false};
++
++// GRport: the latest game draws and dispatches by number (NoteWork), read after a device loss.
++struct WorkItem {
++    std::atomic<u32> number{0}; ///< written last: the entry belongs to this number
++    char kind{};
++    u64 shader0{}, shader1{};
++    u32 size0{}, size1{};
++};
++constexpr u32 WorkRing = 8192;
++std::array<WorkItem, WorkRing> work_items;
++std::atomic<u32> work_number{0};
++
++void PrintWork(u32 number) {
++    const WorkItem& w = work_items[number % WorkRing];
++    if (w.number.load(std::memory_order_acquire) != number) {
++        std::printf("    #%u (no longer recorded)\n", number);
++    } else if (w.kind == 'c') {
++        std::printf("    #%u dispatch cs %016llx, %u x %u groups\n", number,
++                    (unsigned long long)w.shader0, w.size0, w.size1);
++    } else {
++        std::printf("    #%u draw vs %016llx ps %016llx, %u indices x %u instances%s\n", number,
++                    (unsigned long long)w.shader0, (unsigned long long)w.shader1, w.size0,
++                    w.size1, w.kind == 'i' ? " (indirect)" : "");
++    }
++}
 +// DCport: VK_EXT_device_fault, for the faulting address after a loss.
 +VkDevice fault_device = VK_NULL_HANDLE;
 +PFN_vkGetDeviceFaultInfoEXT get_fault_info = nullptr;
@@ -6339,6 +6364,7 @@ index 0000000..bcd8930
 +    case FrameGen: return "frame generation";
 +    case Present: return "present blit";
 +    case HudlessCopy: return "HUD-less copy";
++    case Work: return "game draw/dispatch";
 +    default: return "other";
 +    }
 +}
@@ -6428,15 +6454,59 @@ index 0000000..bcd8930
 +                                (site * 2 + 1) * sizeof(u32), seq);
 +}
 +
++u32 NoteWork(char kind, u64 shader0, u64 shader1, u32 size0, u32 size1) {
++    if (!slots) {
++        return 0;
++    }
++    const u32 number = work_number.fetch_add(1, std::memory_order_relaxed) + 1;
++    WorkItem& w = work_items[number % WorkRing];
++    w.number.store(0, std::memory_order_relaxed);
++    w.kind = kind;
++    w.shader0 = shader0;
++    w.shader1 = shader1;
++    w.size0 = size0;
++    w.size1 = size1;
++    w.number.store(number, std::memory_order_release);
++    return number;
++}
++
++void WorkBegin(vk::CommandBuffer cmdbuf, u32 number) {
++    if (slots && number) {
++        cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eTopOfPipe, buffer,
++                                    Work * 2 * sizeof(u32), number);
++    }
++}
++
++void WorkEnd(vk::CommandBuffer cmdbuf, u32 number) {
++    if (slots && number) {
++        cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eBottomOfPipe, buffer,
++                                    (Work * 2 + 1) * sizeof(u32), number);
++    }
++}
++
 +void Report() {
 +    if (reported.exchange(true)) {
 +        return;
 +    }
 +    if (slots) {
 +        std::printf("GPU markers at the device loss (started / finished / recorded):\n");
++        if (const u32 recorded = work_number.load()) {
++            const u32 started = slots[Work * 2], finished = slots[Work * 2 + 1];
++            std::printf("  game draws/dispatches: last started #%u, last finished #%u, recorded "
++                        "#%u\n",
++                        started, finished, recorded);
++            if (started != finished) {
++                // The GPU finishes them in order: the first unfinished one is where it stopped.
++                std::printf("  running on the GPU:\n");
++                const u32 last = std::min({started, finished + 4, recorded});
++                for (u32 n = finished + 1; n <= last && n != 0; ++n) {
++                    PrintWork(n);
++                }
++            }
++        }
 +        for (u32 site = 0; site < SiteCount; ++site) {
 +            const u32 recorded = sequence[site].load();
-+            if (!recorded) {
++            if (!recorded || site == Work) {
 +                continue;
 +            }
 +            const u32 started = slots[site * 2], finished = slots[site * 2 + 1];
@@ -6461,10 +6531,10 @@ index 0000000..bcd8930
 +} // namespace Vulkan::Breadcrumbs
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.h b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.h
 new file mode 100644
-index 0000000..0187a0a
+index 0000000..e4d267d
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,52 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +#pragma once
 +
@@ -6490,12 +6560,20 @@ index 0000000..0187a0a
 +    FrameGen = 9,
 +    Present = 10,
 +    HudlessCopy = 11,
++    Work = 12, ///< the game's draws and dispatches (NoteWork / WorkBegin / WorkEnd)
 +    SiteCount = 16,
 +};
 +
 +void Init(const Instance& instance);
 +void Begin(vk::CommandBuffer cmdbuf, u32 site);
 +void End(vk::CommandBuffer cmdbuf, u32 site);
++/// GRport: one of the game's draws ('d', 'i' indirect) or dispatches ('c') with its shaders and
++/// sizes; returns its number (0 with the markers off). WorkBegin/WorkEnd recorded around it with
++/// that number let Report name the work the GPU was running at a device loss, which a hang (no
++/// faulting address) does not tell otherwise.
++u32 NoteWork(char kind, u64 shader0, u64 shader1, u32 size0, u32 size1);
++void WorkBegin(vk::CommandBuffer cmdbuf, u32 number);
++void WorkEnd(vk::CommandBuffer cmdbuf, u32 number);
 +/// Prints where the GPU was (once); call before reporting a device loss.
 +void Report();
 +/// DCport: names a GPU address range in fault reports (ranges the driver's address log does not
@@ -8258,7 +8336,7 @@ index 61e4e98..c16b3c4 100644
      VideoCore::Image& RegisterVideoOutSurface(
          const Libraries::VideoOut::BufferAttributeGroup& attribute, VAddr cpu_address) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
-index 2bf5a5d..e781e24 100644
+index 2bf5a5d..cee5ed8 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
 @@ -3,8 +3,13 @@
@@ -8799,7 +8877,26 @@ index 2bf5a5d..e781e24 100644
          (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
          draw_jitter = upscaler->Jitter();
      }
-@@ -1244,7 +1653,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
+@@ -1126,13 +1535,18 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+     const u32 num_instances = regs.num_instances.NumInstances();
+     const u32 first_vertex = vertex_offset;
+     const u32 first_instance = instance_offset;
++    const auto* ps_stage = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
++    const u32 work = Breadcrumbs::NoteWork('d', vs_info.pgm_hash, ps_stage ? ps_stage->pgm_hash : 0,
++                                           num_indices, num_instances);
+     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
++        Breadcrumbs::WorkBegin(cmdbuf, work);
+         if (is_indexed) {
+             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
+         } else {
+             cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+         }
++        Breadcrumbs::WorkEnd(cmdbuf, work);
+     });
+     if (FrameCapture::Active()) {
+         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+@@ -1244,7 +1658,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
      push_data.yoffset *= target_scale[1];
      pipeline->BindResources(set_writes, push_data);
      draw_jitter = {};
@@ -8810,7 +8907,28 @@ index 2bf5a5d..e781e24 100644
          draw_jitter = upscaler->Jitter();
      }
      UpdateDynamicState(pipeline, is_indexed);
-@@ -1319,6 +1730,154 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
+@@ -1258,8 +1674,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
+     const u64 args_offset = base;
+     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
+     const u64 counts_offset = count_address != 0 ? count_offset : 0;
++    const auto* ps_stage = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
++    const u32 work = Breadcrumbs::NoteWork('i', pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
++                                           ps_stage ? ps_stage->pgm_hash : 0, max_count, 0);
+     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
++        Breadcrumbs::WorkBegin(cmdbuf, work);
+         if (is_indexed) {
+             if (counts) {
+                 cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset, max_count,
+@@ -1272,6 +1692,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
+         } else {
+             cmdbuf.drawIndirect(args, args_offset, max_count, stride);
+         }
++        Breadcrumbs::WorkEnd(cmdbuf, work);
+     });
+     DebugState.IncDrawCall();
+ 
+@@ -1319,6 +1740,154 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
      if (upscaler->Enabled()) {
          upscaler->OnDispatch(cs.pgm_hash);
      }
@@ -8965,7 +9083,7 @@ index 2bf5a5d..e781e24 100644
      if (ExecuteShaderHLE(cs, Regs(), cs_program, *this)) {
          return;
      }
-@@ -1340,6 +1899,34 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
+@@ -1340,9 +1909,40 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
      if (FrameCapture::Active()) {
          FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
      }
@@ -8997,10 +9115,30 @@ index 2bf5a5d..e781e24 100644
 +                        dim_y * ty, images.c_str());
 +        }
 +    }
++    const u32 work = Breadcrumbs::NoteWork('c', cs.pgm_hash, 0, dim_x, dim_y * dim_z);
      scheduler.Record([=](vk::CommandBuffer cmdbuf) {
          cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
++        Breadcrumbs::WorkBegin(cmdbuf, work);
          cmdbuf.dispatch(dim_x, dim_y, dim_z);
-@@ -2069,6 +2656,94 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
++        Breadcrumbs::WorkEnd(cmdbuf, work);
+     });
+     DebugState.IncDispatch();
+ 
+@@ -1392,9 +1992,13 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
+     const vk::Pipeline handle = pipeline->Handle();
+     const vk::Buffer args = buffer->Handle();
+     const u64 args_offset = base;
++    const u32 work = Breadcrumbs::NoteWork(
++        'c', pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0, 0, 0);
+     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
++        Breadcrumbs::WorkBegin(cmdbuf, work);
+         cmdbuf.dispatchIndirect(args, args_offset);
++        Breadcrumbs::WorkEnd(cmdbuf, work);
+     });
+     DebugState.IncDispatch();
+ 
+@@ -2069,6 +2673,94 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
      return true;
  }
  
@@ -9095,7 +9233,7 @@ index 2bf5a5d..e781e24 100644
  void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                               Shader::Backend::Bindings& binding,
                               Shader::PushData& push_data, u32& write_index) {
-@@ -2086,6 +2761,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2086,6 +2778,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                      memory->IsValidGpuMapping(ring->address, 0)) {
                      camera_motion->OnConstants(reinterpret_cast<const float*>(ring->address));
                  }
@@ -9103,7 +9241,7 @@ index 2bf5a5d..e781e24 100644
                  push_data.AddOffset(binding.buffer, 0);
              }
              buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
-@@ -2103,8 +2779,15 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2103,8 +2796,15 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                      FrameCapture::Buffer(stage.pgm_hash, binding.buffer, 0,
                                           stage.FlatUserData().data(), ubo_size);
                  }
@@ -9121,7 +9259,7 @@ index 2bf5a5d..e781e24 100644
                  buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
              } else if (desc.buffer_type == Shader::BufferType::ClipPlanes) {
                  // Permutations compiled without enabled planes never read the buffer, so the
-@@ -2149,6 +2832,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2149,6 +2849,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                  memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                  camera_motion->OnConstants(reinterpret_cast<const float*>(vsharp.base_address));
              }
@@ -9129,7 +9267,7 @@ index 2bf5a5d..e781e24 100644
              // Object motion research: the vertex shader buffers of G-buffer draws.
              if (FrameCapture::Active() && gbuffer_draw && stage.sw_stage == Shader::SwStage::Vertex &&
                  vsharp.base_address != 0 && memory->IsValidGpuMapping(vsharp.base_address, 0)) {
-@@ -2167,10 +2851,39 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2167,10 +2868,39 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                       reinterpret_cast<const void*>(vsharp.base_address),
                                       memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
              }
@@ -9170,7 +9308,7 @@ index 2bf5a5d..e781e24 100644
                  if (size != vsharp.GetSize()) {
                      LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                                vsharp.GetSize(), size, stage.pgm_hash);
-@@ -2182,8 +2895,101 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2182,8 +2912,101 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                  if (desc.is_formatted) {
                      flags |= VideoCore::ObtainBufferFlags::IsTexelBuffer;
                  }
@@ -9274,7 +9412,7 @@ index 2bf5a5d..e781e24 100644
                  const u64 offset_aligned = Common::AlignDown(offset, alignment);
                  const u64 adjust = offset - offset_aligned;
                  if (adjust % 4 != 0) {
-@@ -2193,7 +2999,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
+@@ -2193,7 +3016,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                  push_data.AddOffset(binding.buffer, adjust);
                  buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
                  bound_buffers.emplace_back(buffer, offset, size, src_access);
@@ -9283,7 +9421,7 @@ index 2bf5a5d..e781e24 100644
                      // Raw storage-buffer writes can also make an aliased cached image stale.
                      texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
                  }
-@@ -2252,6 +3058,117 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const AmdGpu::
+@@ -2252,6 +3075,117 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const AmdGpu::
      return entry;
  }
  
@@ -9401,7 +9539,7 @@ index 2bf5a5d..e781e24 100644
  void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* prepared,
                                Shader::Backend::Bindings& binding, u32& write_index,
                                bool& barrier, bool on_helper) {
-@@ -2434,9 +3351,34 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
+@@ -2434,9 +3368,34 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
              bound_images.emplace_back(image_id);
  
              auto& image = texture_cache.GetImage(image_id);
@@ -9436,7 +9574,7 @@ index 2bf5a5d..e781e24 100644
  
              // bbport: a proxied scene image sampled with normalized coordinates reads the proxy:
              // no resample to the native size (the native image is not touched).
-@@ -3030,6 +3972,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -3030,6 +3989,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
          state.num_layers = 1;
      }
  
@@ -9472,7 +9610,7 @@ index 2bf5a5d..e781e24 100644
      if (reduced) {
          // Half-resolution passes keep the scene's factor (proxy / native = scene / 1920).
          const auto size = scene_targets->Size();
-@@ -3239,7 +4210,7 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
+@@ -3239,7 +4227,7 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
  }
  
  void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool is_indexed) const {
@@ -9481,7 +9619,7 @@ index 2bf5a5d..e781e24 100644
      UpdateDepthStencilState();
      UpdatePrimitiveState(is_indexed);
      UpdateRasterizationState();
-@@ -3252,8 +4223,15 @@ void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
+@@ -3252,8 +4240,15 @@ void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
                               [&](auto&& command) { scheduler.Record(std::move(command)); });
  }
  
@@ -9498,7 +9636,7 @@ index 2bf5a5d..e781e24 100644
  
      const auto combined_scissor_value_tl = [](s16 scr, s16 win, s16 gen, s16 win_offset) {
          return std::max({scr, s16(win + win_offset), s16(gen + win_offset)});
-@@ -3331,9 +4309,9 @@ void Rasterizer::UpdateViewportScissorState() const {
+@@ -3331,9 +4326,9 @@ void Rasterizer::UpdateViewportScissorState() const {
              viewport.height = float(std::min<u32>(instance.GetMaxViewportHeight(), 16_KB));
          } else {
              const auto xoffset = vp_ctl.xoffset_enable ? vp.xoffset : 0.f;
@@ -13217,10 +13355,10 @@ index 86ef250..a114c5c 100644
 +
  } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
-index c729033..966da0f 100644
+index c729033..53740e1 100644
 --- a/gpu/shim/bbport_prompt_icons.cpp
 +++ b/gpu/shim/bbport_prompt_icons.cpp
-@@ -588,4 +588,505 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
+@@ -588,4 +588,554 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
      return blocks;
  }
  
@@ -13583,7 +13721,19 @@ index c729033..966da0f 100644
 +    {128, 128, 32, 65536, 0x0a0b81ae7e857ef5ull, OK, {0, 0, 128, 128}, 0}, // kashi_sel_btn_2
 +    {128, 128, 32, 65536, 0x6186c03860b8b539ull, Cancel, {0, 0, 128, 128}, 0}, // kashi_sel_btn_3
 +    {128, 128, 32, 65536, 0x14e093cefc0ed068ull, R_L, {0, 0, 128, 128}, 0}, // kashi_sel_btn_4
++    // Gravity Rush Remastered: the pause menu's tab plates (#34).
++    {128, 64, 32, 32768, 0x072e7e7f9ea3c0d2ull, L1, {41, 13, 42, 33}, 0, true},
++    {128, 64, 32, 32768, 0x9a1f209954877296ull, R1, {41, 13, 42, 33}, 0, true},
 +};
++
++namespace {
++/// Byte offset of pixel (x, y) in a 32-bit texture's 8x8 micro-tiled layout.
++size_t Tiled32(uint32_t width, uint32_t x, uint32_t y) {
++    unsigned morton = 0;
++    for (unsigned b = 0; b < 3; ++b) morton |= ((x >> b) & 1) << (2 * b) | ((y >> b) & 1) << (2 * b + 1);
++    return ((size_t(y / 8) * ((width + 7) / 8) + x / 8) * 64 + morton) * 4;
++}
++} // namespace
 +
 +std::vector<uint8_t> RenderGravityTexture(const GravityTexture& t, int style,
 +                                         const std::vector<uint8_t>& original, const Pixels* key) {
@@ -13619,14 +13769,51 @@ index c729033..966da0f 100644
 +        source = generic.data();
 +    }
 +    std::vector<uint8_t> rgba(size_t(t.width) * t.height * 4);
++    const bool plate = t.on_plate && t.bits == 32;
++    if (plate) {
++        // Keep the game's plate; clear its letters with the plate's own colour.
++        for (uint32_t y = 0; y < t.height; ++y)
++            for (uint32_t x = 0; x < t.width; ++x)
++                std::memcpy(&rgba[(size_t(y) * t.width + x) * 4], &original[Tiled32(t.width, x, y)], 4);
++        uint8_t fill[4];
++        std::memcpy(fill, &rgba[(size_t(t.bounds.y) * t.width + t.bounds.x) * 4], 4);
++        for (int y = t.bounds.y; y < t.bounds.y + t.bounds.h; ++y)
++            for (int x = t.bounds.x; x < t.bounds.x + t.bounds.w; ++x)
++                std::memcpy(&rgba[(size_t(y) * t.width + x) * 4], fill, 4);
++    }
++    // On a plate only the button's light symbol is drawn, cropped to its extent and in white
++    // like the game's letters: the button's own dark plate would vanish into the tab's.
++    int sx = 0, sy = 0, cw = sw, ch = sh;
++    const auto light = [&](int x, int y) {
++        const uint8_t* p = &source[(size_t(y) * sw + x) * 4];
++        const int v = std::max({p[0], p[1], p[2]});
++        return v > 96 ? (v - 96) * 255 / 159 * p[3] / 255 : 0;
++    };
++    if (plate) {
++        int x0 = sw, y0 = sh, x1 = -1, y1 = -1;
++        for (int y = 0; y < sh; ++y)
++            for (int x = 0; x < sw; ++x)
++                if (light(x, y) > 64) {
++                    x0 = std::min(x0, x); y0 = std::min(y0, y);
++                    x1 = std::max(x1, x); y1 = std::max(y1, y);
++                }
++        if (x1 >= x0) { sx = x0; sy = y0; cw = x1 - x0 + 1; ch = y1 - y0 + 1; }
++    }
 +    // Preserve the original picture's placement and the drawn button's proportions.
-+    const float scale = std::min(float(t.bounds.w) / sw, float(t.bounds.h) / sh);
-+    const int dw = std::max(1, int(sw * scale)), dh = std::max(1, int(sh * scale));
++    const float scale = std::min(float(t.bounds.w) / cw, float(t.bounds.h) / ch);
++    const int dw = std::max(1, int(cw * scale)), dh = std::max(1, int(ch * scale));
 +    const int ox = t.bounds.x + (t.bounds.w - dw) / 2, oy = t.bounds.y + (t.bounds.h - dh) / 2;
 +    for (int y = 0; y < dh; ++y)
-+        for (int x = 0; x < dw; ++x)
-+            std::memcpy(&rgba[(size_t(y + oy) * t.width + x + ox) * 4],
-+                        &source[(size_t(y * sh / dh) * sw + x * sw / dw) * 4], 4);
++        for (int x = 0; x < dw; ++x) {
++            uint8_t* to = &rgba[(size_t(y + oy) * t.width + x + ox) * 4];
++            const int fx = sx + x * cw / dw, fy = sy + y * ch / dh;
++            if (!plate) {
++                std::memcpy(to, &source[(size_t(fy) * sw + fx) * 4], 4);
++                continue;
++            }
++            const int a = light(fx, fy);
++            for (int k = 0; k < 3; ++k) to[k] = uint8_t((255 * a + to[k] * (255 - a)) / 255);
++        }
 +    // The left/right touchpad pictures must retain which side to press.
 +    if (t.touch_side) {
 +        const int r = std::max(2, int(t.width) / 10);
@@ -13727,10 +13914,10 @@ index c729033..966da0f 100644
 +
  } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompt_icons.h b/gpu/shim/bbport_prompt_icons.h
-index 85b7b33..e7cd132 100644
+index 85b7b33..cdd7d12 100644
 --- a/gpu/shim/bbport_prompt_icons.h
 +++ b/gpu/shim/bbport_prompt_icons.h
-@@ -74,4 +74,50 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
+@@ -74,4 +74,53 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
  /// The same for an icon already drawn (DrawPad).
  std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area);
  
@@ -13755,7 +13942,7 @@ index 85b7b33..e7cd132 100644
 +std::vector<uint8_t> EncodeDc(DcIcon icon, const std::vector<uint8_t>& rgba,
 +                              const std::vector<uint8_t>& original);
 +
-+/// Exact upload signatures of GR2 controller pictures (no game pixel data).
++/// Exact upload signatures of Gravity Rush controller pictures (no game pixel data).
 +struct GravityTexture {
 +    uint32_t width, height, bits;
 +    size_t bytes;
@@ -13763,6 +13950,9 @@ index 85b7b33..e7cd132 100644
 +    Icon icon;
 +    Area bounds;
 +    int touch_side;
++    /// The button's letters sit on a plate of the picture (GR1's menu tabs, 32-bit only):
++    /// the plate stays, `bounds` (its top-left pixel is plate) is cleared and the button drawn on it.
++    bool on_plate = false;
 +};
 +extern const std::vector<GravityTexture> GravityTextures;
 +/// Repaint a recognized texture in its original tiled RGBA8 or BC7 layout.
@@ -21313,7 +21503,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..4a9f329 100644
+index 687bfb5..53675d9 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -21498,7 +21688,34 @@ index 687bfb5..4a9f329 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -502,6 +652,7 @@ static void ensure_config_loaded(void) {
+@@ -407,10 +557,7 @@ static int apply_deadzone(int value, int inner, int outer) {
+  * under 100 ms (imperceptible as lag) while still visibly damping single-pixel-level jitter at
+  * high poll rates (tried 15 ms first; 25 ms cut the residual jitter spread by about a fifth for
+  * under 35 ms of extra settle time, found by sweeping the constant and comparing both).
+- * deadzone_offset no longer gates a floor or a ramp (there is no branch left to gate): it
+- * is unused by this formula and kept in MouseParams only because mouse_movement_params still
+- * carries three values in input.ini and the launcher still exposes a "Smoothness" slider for it
+- * -- T5's follow-up may repurpose or retire it. */
++ * deadzone_offset lifts a moving mouse's target above the game's stick dead zone (see below). */
+ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *mouse, int *out_x, int *out_y) {
+     const double tau_ms=25.0;
+     double alpha=1.0-exp(-dt_ms/tau_ms);
+@@ -436,6 +583,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
+         double offset_fade=magnitude<ramp_mag ? magnitude/ramp_mag : 1.0;
+         double speed=magnitude*mouse->speed+mouse->speed_offset*128.0*offset_fade;
+         if (speed>128.0) speed=128.0;
++        /* deadzone_offset: a game ignores a stick pushed less than its own dead zone (Gravity
++         * Rush 2 turns from ~15%), so a slow mouse move turned the camera slowly or not at all.
++         * A moving mouse's target starts at deadzone_offset*64 (0.5 = a quarter push, faded in
++         * like speed_offset) and keeps the rest of the range above it. It is the target that
++         * is lifted, not the eased output, so the camera still settles at once on a stop. */
++        double lift=(mouse->deadzone_offset<0.0f ? 0.0 : mouse->deadzone_offset>1.0f ? 64.0 :
++                     mouse->deadzone_offset*64.0)*offset_fade;
++        speed=lift+speed*(128.0-lift)/128.0;
+         double angle=atan2(sdy,sdx);
+         target_x=cos(angle)*speed;
+         target_y=sin(angle)*speed;
+@@ -502,6 +657,7 @@ static void ensure_config_loaded(void) {
          loaded_config=fresh;
          if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
          else printf("Input config: %s loaded\n",path);
@@ -21506,7 +21723,7 @@ index 687bfb5..4a9f329 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
-@@ -554,7 +705,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +710,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -21516,7 +21733,7 @@ index 687bfb5..4a9f329 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,6 +769,8 @@ static void sample_host(PadData *d) {
+@@ -617,6 +774,8 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -21525,7 +21742,7 @@ index 687bfb5..4a9f329 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
-@@ -838,7 +992,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +997,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -21542,7 +21759,7 @@ index 687bfb5..4a9f329 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1008,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1013,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -21559,7 +21776,7 @@ index 687bfb5..4a9f329 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1055,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1060,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -21589,7 +21806,7 @@ index 687bfb5..4a9f329 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1085,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1090,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -23032,7 +23249,7 @@ index 3b8c8d2..12bf19e 100644
      TestShadps4DefaultFileImports();
      TestLoadCreatesMissingFile();
 diff --git a/tests/test_pad.c b/tests/test_pad.c
-index a477ea9..fe74fc4 100644
+index a477ea9..48af3d6 100644
 --- a/tests/test_pad.c
 +++ b/tests/test_pad.c
 @@ -3,6 +3,13 @@
@@ -23049,7 +23266,39 @@ index a477ea9..fe74fc4 100644
  static int capture;
  int bbgpu_overlay_captures_input(void) { return capture; }
  uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
-@@ -388,7 +395,7 @@ static void test_mouse_buttons_and_wheel(void) {
+@@ -285,11 +292,28 @@ static void test_mouse_to_axis(void) {
+ 
+     /* Steady state: a constant dx=10 at dt=6.67ms (150 FPS), held long enough for the lerp to
+      * settle, must converge to the un-filtered linear response for that velocity: magnitude =
+-     * 10 * (33/6.67) ~= 49.5, speed = 49.5*1+16 ~= 65.5. The lerp changes the *path* to get
+-     * there, not the destination. */
++     * 10 * (33/6.67) ~= 49.5, speed = 49.5*1+16 ~= 65.5, lifted by deadzone_offset 0.5 (32):
++     * 32 + 65.5*96/128 ~= 81. The lerp changes the *path* to get there, not the destination. */
+     reset_mouse_filter();
+     for (int i=0;i<60;++i) mouse_to_axis(10.0f,0.0f,6.67,&mouse,&x,&y);
+-    assert(x>=63 && x<=67 && y==0);
++    assert(x>=79 && x<=83 && y==0);
++
++    /* #33: a slow, steady move (1 px per 150 FPS frame) clears a game's ~15-25% stick dead
++     * zone, and deadzone_offset 0 keeps the old unlifted response. */
++    reset_mouse_filter();
++    for (int i=0;i<60;++i) mouse_to_axis(1.0f,0.0f,6.67,&mouse,&x,&y);
++    assert(x>=40);
++    {
++        MouseParams flat=mouse; flat.deadzone_offset=0.0f;
++        reset_mouse_filter();
++        for (int i=0;i<60;++i) mouse_to_axis(1.0f,0.0f,6.67,&flat,&x,&y);
++        assert(x>=19 && x<=23);
++    }
++    /* Stopping still settles: the eased output falls back below a 15% dead zone quickly. */
++    reset_mouse_filter();
++    for (int i=0;i<60;++i) mouse_to_axis(10.0f,0.0f,6.67,&mouse,&x,&y);
++    for (int i=0;i<12;++i) mouse_to_axis(0.0f,0.0f,6.67,&mouse,&x,&y); /* 80 ms */
++    assert(x<19);
+ 
+     /* Responsive from a standstill: unlike both earlier designs (hard floor, magnitude ramp),
+      * the target here is the plain unfiltered formula, so a single large flick must already
+@@ -388,7 +412,7 @@ static void test_mouse_buttons_and_wheel(void) {
  /* T5 end to end: a captured mouse moving the right stick through sample_host/pad_read_state,
   * and MOU-006 (mouse bindings are inert while bbgpu_mouse_take reports captured=0). */
  static void test_mouse_end_to_end(void) {
@@ -23058,7 +23307,7 @@ index a477ea9..fe74fc4 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -425,7 +432,7 @@ static void test_mouse_end_to_end(void) {
+@@ -425,7 +449,7 @@ static void test_mouse_end_to_end(void) {
   * still a real regression guard: a bug in ensure_config_loaded/active_config that crashed, hung,
   * or left stale bindings from the earlier test would show up here. */
  static void test_custom_binding_config(void) {
@@ -23067,7 +23316,7 @@ index a477ea9..fe74fc4 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -454,7 +461,7 @@ static void test_custom_binding_config(void) {
+@@ -454,7 +478,7 @@ static void test_custom_binding_config(void) {
   * live binding without restarting the process -- the actual behavior "F8 reloads", not just
   * that the two pieces (input_config_load, reload_config_if_requested) exist in isolation. */
  static void test_reload_on_f8(void) {
@@ -23076,7 +23325,7 @@ index a477ea9..fe74fc4 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -493,7 +500,80 @@ static void test_reload_on_f8(void) {
+@@ -493,7 +517,80 @@ static void test_reload_on_f8(void) {
      puts("PASS: F8 reloads input.ini live (AC-018)");
  }
  
@@ -23157,7 +23406,7 @@ index a477ea9..fe74fc4 100644
      test_binding_evaluation();
      test_combos();
      test_prompt_texts();
-@@ -502,7 +582,7 @@ int main(void) {
+@@ -502,7 +599,7 @@ int main(void) {
      test_mouse_to_axis();
      test_mouse_buttons_and_wheel();
  
@@ -23166,7 +23415,7 @@ index a477ea9..fe74fc4 100644
      int fd=mkstemp(path);
      assert(fd>=0);
      close(fd);
-@@ -534,18 +614,43 @@ int main(void) {
+@@ -534,18 +631,43 @@ int main(void) {
      desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
      desc.button_mask=(1u<<SDL_GAMEPAD_BUTTON_COUNT)-1;
      desc.axis_mask=(1u<<SDL_GAMEPAD_AXIS_COUNT)-1;
@@ -23215,7 +23464,7 @@ index a477ea9..fe74fc4 100644
      SDL_UpdateJoysticks();
      SDL_UpdateGamepads();
      assert(pad_read_state(1,&data)==0);
-@@ -555,14 +660,20 @@ int main(void) {
+@@ -555,14 +677,20 @@ int main(void) {
      capture=1;
      assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
      capture=0;
