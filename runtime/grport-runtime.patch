@@ -1,3 +1,13 @@
+diff --git a/.gitignore b/.gitignore
+index 7075248..64f2bac 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -29,3 +29,5 @@ patches.json
+ # IDE/session-local
+ .claude/
+ .vscode/
++# AMD FSR SDK 2.4 files (tools/fetch_fsr24.py); FSR 4 files never go into git
++fsr24/
 diff --git a/build.sh b/build.sh
 index 70c0c04..2e461f7 100644
 --- a/build.sh
@@ -28,10 +38,10 @@ index 70c0c04..2e461f7 100644
 +    out/trophy-test
  fi
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
-index 529ef05..5d46794 100644
+index 529ef05..28f94d3 100644
 --- a/gpu/CMakeLists.txt
 +++ b/gpu/CMakeLists.txt
-@@ -111,6 +111,10 @@ function(add_host_shader FILENAME SHADER_NAME)
+@@ -111,6 +111,11 @@ function(add_host_shader FILENAME SHADER_NAME)
      set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
  endfunction()
  add_host_shader(color_to_ms_depth.frag color_to_ms_depth_frag)
@@ -39,10 +49,11 @@ index 529ef05..5d46794 100644
 +add_host_shader(dc_motion.comp dc_motion_comp)
 +add_host_shader(dc_merge.comp dc_merge_comp)
 +add_host_shader(gr_motion.comp gr_motion_comp)
++add_host_shader(fsr412_prepare.comp fsr412_prepare_comp)
  add_host_shader(ms_image_blit.frag ms_image_blit_frag)
  add_host_shader(ms_image_blit.frag ms_image_blit_msaa_frag SRC_MSAA=1)
  add_host_shader(fault_buffer_process.comp fault_buffer_process_comp)
-@@ -200,15 +204,18 @@ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_Z
+@@ -200,15 +205,18 @@ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_Z
  # verification failed" (error 10) for The Hunter's Dream on some PCs.
  target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
  target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
@@ -64,7 +75,7 @@ index 529ef05..5d46794 100644
  target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
  target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
  target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
-@@ -274,7 +281,9 @@ if (WIN32)
+@@ -274,7 +282,9 @@ if (WIN32)
              $<$<COMPILE_LANGUAGE:C>:-Wno-error=unused-but-set-global>)
      endif()
      target_include_directories(bb-probe PRIVATE .. ../src)
@@ -2024,6 +2035,85 @@ index 28904ba..00d4d10 100644
      ctx.OpImageWrite(image, fixed_coords, texel, operands.mask, operands.operands);
  }
  
+diff --git a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
+index cded3f1..b583d17 100644
+--- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
++++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <sirit/sirit.h>
+ #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
+ #include "shader_recompiler/runtime_info.h"
+@@ -12,8 +13,8 @@ using Sirit::Id;
+ constexpr u32 SPIRV_VERSION_1_5 = 0x00010500;
+ 
+ struct QuadRectListEmitter : public Sirit::Module {
+-    explicit QuadRectListEmitter(const HwFragmentRuntimeInfo& fs_info_)
+-        : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_} {
++    explicit QuadRectListEmitter(u32 num_vertex_exports_, const HwFragmentRuntimeInfo& fs_info_)
++        : Sirit::Module{SPIRV_VERSION_1_5}, num_vertex_exports{num_vertex_exports_}, fs_info{fs_info_} {
+         void_id = TypeVoid();
+         bool_id = TypeBool();
+         float_id = TypeFloat(32);
+@@ -252,8 +253,9 @@ private:
+         } else {
+             gl_per_vertex = AddOutput(gl_per_vertex_type);
+         }
+-        outputs.reserve(fs_info.num_inputs);
+-        for (int i = 0; i < fs_info.num_inputs; i++) {
++        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
++        outputs.reserve(num_forwards);
++        for (u32 i = 0; i < num_forwards; i++) {
+             const auto& input = fs_info.inputs[i];
+             if (input.IsDefault()) {
+                 continue;
+@@ -276,8 +278,9 @@ private:
+         const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, 32U))};
+         gl_in = AddInput(gl_per_vertex_array);
+         const Id float_arr{TypeArray(vec4_id, Int(32))};
+-        inputs.reserve(fs_info.num_inputs);
+-        for (int i = 0; i < fs_info.num_inputs; i++) {
++        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
++        inputs.reserve(num_forwards);
++        for (u32 i = 0; i < num_forwards; i++) {
+             const auto& input = fs_info.inputs[i];
+             if (input.IsDefault()) {
+                 continue;
+@@ -288,6 +291,7 @@ private:
+     }
+ 
+ private:
++    u32 num_vertex_exports;
+     HwFragmentRuntimeInfo fs_info;
+     Id main;
+     Id void_id;
+@@ -319,8 +323,9 @@ private:
+     std::vector<Id> interfaces;
+ };
+ 
+-std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const HwFragmentRuntimeInfo& fs_info) {
+-    QuadRectListEmitter ctx{fs_info};
++std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, u32 num_vertex_exports,
++                                         const HwFragmentRuntimeInfo& fs_info) {
++    QuadRectListEmitter ctx{num_vertex_exports, fs_info};
+     switch (type) {
+     case AuxShaderType::RectListTCS:
+         ctx.EmitRectListTCS();
+diff --git a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
+index adcfc19..fd6c896 100644
+--- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
++++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
+@@ -19,6 +19,7 @@ enum class AuxShaderType : u32 {
+ };
+ 
+ [[nodiscard]] std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type,
++                                                      u32 num_vertex_exports,
+                                                       const HwFragmentRuntimeInfo& fs_info);
+ 
+ } // namespace Shader::Backend::SPIRV
 diff --git a/gpu/shadps4/shader_recompiler/frontend/control_flow_graph.cpp b/gpu/shadps4/shader_recompiler/frontend/control_flow_graph.cpp
 index f38f077..91898f4 100644
 --- a/gpu/shadps4/shader_recompiler/frontend/control_flow_graph.cpp
@@ -4776,6 +4866,18 @@ index aadb3b0..cde227b 100644
 +              "PushData size is greater than minimum size guaranteed by Vulkan spec");
 +
 +} // namespace Shader
+diff --git a/gpu/shadps4/shader_recompiler/runtime_info.h b/gpu/shadps4/shader_recompiler/runtime_info.h
+index 0a1636b..2451212 100644
+--- a/gpu/shadps4/shader_recompiler/runtime_info.h
++++ b/gpu/shadps4/shader_recompiler/runtime_info.h
+@@ -108,6 +108,7 @@ struct HwExportRuntimeInfo {
+ 
+ struct HwVertexRuntimeInfo {
+     u32 num_outputs;
++    u32 num_exports;
+     std::array<OutputMap, 3> outputs;
+     bool emulate_depth_negative_one_to_one{};
+     bool clip_disable{};
 diff --git a/gpu/shadps4/shader_recompiler/specialization.h b/gpu/shadps4/shader_recompiler/specialization.h
 index 9d208bf..9e38eec 100644
 --- a/gpu/shadps4/shader_recompiler/specialization.h
@@ -5746,6 +5848,35 @@ index 0000000..ab0d5b7
 +        vec2(Ca(100u), Ca(101u)) * prev_clip.xy / prev_clip.w + vec2(Ca(102u), Ca(103u));
 +    imageStore(motion_img, pixel, vec4((prev_uv - uv) * size, 0.0, 0.0));
 +}
+diff --git a/gpu/shadps4/video_core/host_shaders/fsr412_prepare.comp b/gpu/shadps4/video_core/host_shaders/fsr412_prepare.comp
+new file mode 100644
+index 0000000..717820b
+--- /dev/null
++++ b/gpu/shadps4/video_core/host_shaders/fsr412_prepare.comp
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// FSR 4.1.2 inputs: the scene color as RGBA16F and the depth as R32F, reversed (1 = near) unless
++// the game's depth already is.
++#version 450
++layout(local_size_x = 8, local_size_y = 8) in;
++layout(binding = 0) uniform sampler2D color_in;
++layout(binding = 1) uniform sampler2D depth_in;
++layout(binding = 2, rgba16f) uniform writeonly image2D color_out;
++layout(binding = 3, r32f) uniform writeonly image2D depth_out;
++layout(push_constant) uniform Params {
++    uvec2 size;
++    uint reverse_depth;
++} p;
++
++void main() {
++    const ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
++    if (any(greaterThanEqual(uvec2(xy), p.size))) {
++        return;
++    }
++    imageStore(color_out, xy, texelFetch(color_in, xy, 0));
++    const float depth = texelFetch(depth_in, xy, 0).r;
++    imageStore(depth_out, xy, vec4(p.reverse_depth != 0u ? 1.0 - depth : depth));
++}
 diff --git a/gpu/shadps4/video_core/host_shaders/gr_motion.comp b/gpu/shadps4/video_core/host_shaders/gr_motion.comp
 new file mode 100644
 index 0000000..e439f2d
@@ -6622,10 +6753,35 @@ index 3041663..775b196 100644
      void EndCapture(vk::CommandBuffer cmdbuf, std::array<float, 2> jitter, bool motion_valid,
                      Camera camera = {});
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_fsr4.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr4.cpp
-index 2c70bba..ff2041b 100644
+index 2c70bba..1660369 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_fsr4.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr4.cpp
-@@ -133,7 +133,7 @@ struct Fsr4Upscaler::Impl {
+@@ -14,6 +14,7 @@
+ #include "ffx_vk_fsr4_v07_assets.h"
+ #include "bbport_settings.h"
+ #include "video_core/renderer_vulkan/fsr411/fsr411.h"
++#include "video_core/renderer_vulkan/vk_fsr412.h"
+ #include "video_core/renderer_vulkan/vk_instance.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+ 
+@@ -71,9 +72,15 @@ struct Fsr4Upscaler::Impl {
+     std::unique_ptr<Fsr411::Upscaler> fsr411;
+     std::deque<u64> fsr411_ticks; ///< scheduler ticks of its recent frames (constant ring)
+     std::string fsr411_described;
++    // FSR 4.1.2 (AMD's SDK) when its DLL is there; null once it failed: v07 for the session.
++    std::unique_ptr<Fsr412> fsr412;
+ 
+     Impl(const Instance& instance_, Scheduler& scheduler_)
+-        : instance{instance_}, scheduler{scheduler_} {}
++        : instance{instance_}, scheduler{scheduler_} {
++        if (Fsr412::Wanted(instance.GetVendorID())) {
++            fsr412 = std::make_unique<Fsr412>(instance, scheduler);
++        }
++    }
+ 
+     ~Impl() {
+         Destroy();
+@@ -133,7 +140,7 @@ struct Fsr4Upscaler::Impl {
              if (ReadFile(dir + name, data)) {
                  return true;
              }
@@ -6634,7 +6790,7 @@ index 2c70bba..ff2041b 100644
              return false;
          };
          if (!load(assets.pre, code[0])) return false;
-@@ -190,6 +190,9 @@ struct Fsr4Upscaler::Impl {
+@@ -190,6 +197,9 @@ struct Fsr4Upscaler::Impl {
          ffxCreateContextDescUpscale desc{};
          desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
          desc.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
@@ -6644,7 +6800,7 @@ index 2c70bba..ff2041b 100644
          // Any preset's render size fits: the context is not recreated for a size change.
          desc.maxRenderSize = {(ow + 7) & ~7u, (oh + 7) & ~7u};
          desc.maxUpscaleSize = {(ow + 7) & ~7u, (oh + 7) & ~7u};
-@@ -233,7 +236,7 @@ struct Fsr4Upscaler::Impl {
+@@ -233,7 +243,7 @@ struct Fsr4Upscaler::Impl {
  
      bool Record411(const Frame& f) {
          if (!instance.IsFsr411Supported()) {
@@ -6653,7 +6809,7 @@ index 2c70bba..ff2041b 100644
              return false;
          }
          if (!fsr411) {
-@@ -262,8 +265,13 @@ struct Fsr4Upscaler::Impl {
+@@ -262,8 +272,13 @@ struct Fsr4Upscaler::Impl {
          g.reset = f.reset;
          g.auto_exposure = f.auto_exposure;
          if (!fsr411->Record(g)) {
@@ -6669,11 +6825,37 @@ index 2c70bba..ff2041b 100644
              return false;
          }
          fsr411_ticks.push_back(scheduler.CurrentTick());
-@@ -383,6 +391,10 @@ Fsr4Upscaler::Fsr4Upscaler(const Instance& instance, Scheduler& scheduler)
+@@ -279,6 +294,22 @@ struct Fsr4Upscaler::Impl {
+         if (BbSettings::Get().upscaler == BbSettings::UpscalerFsr411) {
+             return Record411(f);
+         }
++        if (fsr412) {
++            if (fsr412->Record(f)) {
++                BbSettings::Get().fsr412_active = true;
++                problem.clear();
++                return true;
++            }
++            if (!fsr412->Fatal()) {
++                problem = "FSR 4.1.2: " + fsr412->Error();
++                return false;
++            }
++            std::printf("Upscaler: FSR 4.1.2 unavailable (%s); FSR 4 uses the v07 model\n",
++                        fsr412->Error().c_str());
++            fsr412->ReleaseWhileRecording();
++            fsr412.reset();
++            BbSettings::Get().fsr412_active = false;
++        }
+         if (fatal) {
+             return false;
+         }
+@@ -383,6 +414,13 @@ Fsr4Upscaler::Fsr4Upscaler(const Instance& instance, Scheduler& scheduler)
  
  Fsr4Upscaler::~Fsr4Upscaler() = default;
  
 +void Fsr4Upscaler::ReleaseWhileRecording() {
++    if (impl->fsr412) {
++        impl->fsr412->ReleaseWhileRecording();
++    }
 +    impl->Destroy(true);
 +}
 +
@@ -6706,6 +6888,583 @@ index 506cc51..6fd582b 100644
      /// Records FSR 4 into `frame.cmdbuf`; the output stays in General. False when FSR 4
      /// cannot run (Problem() says why; missing assets or device features are permanent).
      bool Record(const Frame& frame);
+diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.cpp
+new file mode 100644
+index 0000000..b499ece
+--- /dev/null
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.cpp
+@@ -0,0 +1,527 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "video_core/renderer_vulkan/vk_fsr412.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <deque>
++#include <string>
++#include <vector>
++
++#if defined(_WIN32) && __has_include("../../../../fsr24/sdk/upscalers/include/ffx_upscale.h")
++#define BB_HAVE_FSR412 1
++#include <windows.h>
++#include <vulkan/vulkan.h>
++// SDK 2.4 headers by path: the include path holds FSR-Vulkan's SDK 2.3 copies of the same names.
++#include "../../../../fsr24/sdk/api/include/ffx_api.h"
++// The SDK's loader body is only compiled for _WINDOWS (MSBuild); MinGW defines _WIN32 only.
++#ifndef _WINDOWS
++#define _WINDOWS 1
++#define BB_FSR412_UNDEF_WINDOWS 1
++#endif
++#include "../../../../fsr24/sdk/api/include/ffx_api_loader.h"
++#ifdef BB_FSR412_UNDEF_WINDOWS
++#undef _WINDOWS
++#undef BB_FSR412_UNDEF_WINDOWS
++#endif
++#include "../../../../fsr24/sdk/api/include/vk/ffx_api_vk.h"
++#include "../../../../fsr24/sdk/upscalers/include/ffx_upscale.h"
++#endif
++
++#include "video_core/renderer_vulkan/vk_instance.h"
++#include "video_core/renderer_vulkan/vk_platform.h"
++#include "video_core/renderer_vulkan/vk_scheduler.h"
++#include "video_core/renderer_vulkan/vk_shader_util.h"
++#include "video_core/texture_cache/image.h"
++
++#ifdef BB_HAVE_FSR412
++#include "video_core/host_shaders/fsr412_prepare_comp.h"
++#endif
++
++namespace Vulkan {
++
++#ifdef BB_HAVE_FSR412
++
++namespace {
++
++std::wstring DllPath() {
++    std::wstring path(MAX_PATH, L'\0');
++    for (;;) {
++        const DWORD size = GetModuleFileNameW(nullptr, path.data(), DWORD(path.size()));
++        if (size == 0) {
++            return {};
++        }
++        if (size < path.size()) {
++            path.resize(size);
++            break;
++        }
++        path.resize(path.size() * 2);
++    }
++    path.resize(path.find_last_of(L"\\/") + 1);
++    return path + L"fsr24\\amd_fidelityfx_upscaler_vk.dll";
++}
++
++/// AMD's DLL, loaded once by its full path (never another copy with the same name) and kept
++/// until exit: contexts may outlive their user.
++const ffxFunctions* Api(std::string& error) {
++    static ffxFunctions functions{};
++    static std::string failure;
++    static const bool loaded = [] {
++        const std::wstring path = DllPath();
++        const HMODULE module = path.empty() ? nullptr
++            : LoadLibraryExW(path.c_str(), nullptr,
++                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
++        if (!module) {
++            failure = "cannot load fsr24\\amd_fidelityfx_upscaler_vk.dll (Windows error " +
++                      std::to_string(GetLastError()) + ")";
++            return false;
++        }
++        ffxLoadFunctions(&functions, module);
++        if (!functions.CreateContext || !functions.DestroyContext || !functions.Query ||
++            !functions.Dispatch) {
++            failure = "amd_fidelityfx_upscaler_vk.dll lacks the FSR API";
++            return false;
++        }
++        return true;
++    }();
++    if (!loaded) {
++        error = failure;
++        return nullptr;
++    }
++    return &functions;
++}
++
++bool Is412(const char* name) {
++    return name && std::string_view{name}.starts_with("4.1.2");
++}
++
++} // namespace
++
++bool Fsr412::Wanted(u32 vendor_id) {
++    static const bool wanted = [vendor_id] {
++        const char* env = std::getenv("BB_FSR412");
++        if ((env && env[0] == '0') || vendor_id != 0x1002) {
++            return false;
++        }
++        const std::wstring path = DllPath();
++        return !path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
++    }();
++    return wanted;
++}
++
++struct Fsr412::Impl {
++    const Instance& instance;
++    Scheduler& scheduler;
++    const ffxFunctions* api = nullptr;
++    ffxContext context = nullptr;
++    u32 out_width = 0, out_height = 0;
++    bool context_auto_exposure = false;
++    std::deque<u64> ticks; ///< scheduler ticks of the frames the provider may still use
++    std::string error;
++    bool fatal = false;
++
++    VideoCore::UniqueImage color, depth;
++    vk::UniqueImageView color_view, depth_view;
++    u32 input_width = 0, input_height = 0;
++    vk::UniqueDescriptorSetLayout prepare_set;
++    vk::UniquePipelineLayout prepare_layout;
++    vk::UniquePipeline prepare_pipeline;
++    vk::UniqueSampler sampler;
++
++    Impl(const Instance& instance_, Scheduler& scheduler_)
++        : instance{instance_}, scheduler{scheduler_} {}
++
++    ~Impl() {
++        Destroy(false);
++    }
++
++    void Destroy(bool recording) {
++        if (!context) {
++            return;
++        }
++        if (recording) {
++            scheduler.WaitSubmitted();
++        } else {
++            scheduler.Finish();
++        }
++        api->DestroyContext(&context, nullptr);
++        context = nullptr;
++        ticks.clear();
++    }
++
++    bool Fail(std::string reason, bool permanent) {
++        if (error != reason) {
++            std::printf("Upscaler: FSR 4.1.2: %s\n", reason.c_str());
++        }
++        error = std::move(reason);
++        fatal |= permanent;
++        return false;
++    }
++
++    VkDeviceContext Device() const {
++        return {VkDevice(instance.GetDevice()), VkPhysicalDevice(instance.GetPhysicalDevice()),
++                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr};
++    }
++
++    /// AMD's 4.1.2 provider for this GPU and driver, or 0.
++    u64 Provider() {
++        VkDeviceContext device = Device();
++        u64 count = 0;
++        ffxQueryDescGetVersions query{};
++        query.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
++        query.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++        query.device = &device;
++        query.outputCount = &count;
++        if (api->Query(nullptr, &query.header) != FFX_API_RETURN_OK || count == 0 || count > 64) {
++            return 0;
++        }
++        std::vector<u64> ids(count);
++        std::vector<const char*> names(count);
++        query.versionIds = ids.data();
++        query.versionNames = names.data();
++        if (api->Query(nullptr, &query.header) != FFX_API_RETURN_OK) {
++            return 0;
++        }
++        for (u64 i = 0; i < count && i < ids.size(); ++i) {
++            if (Is412(names[i])) {
++                return ids[i];
++            }
++        }
++        return 0;
++    }
++
++    bool Create(const Fsr4Upscaler::Frame& f) {
++        if (!api && !(api = Api(error))) {
++            return Fail(error, true);
++        }
++        if (!instance.IsFsr412DeviceReady()) {
++            return Fail("the Vulkan device lacks the features AMD's FSR SDK needs", true);
++        }
++        const u64 provider = Provider();
++        if (!provider) {
++            return Fail("AMD's FSR 4.1.2 is not offered for this GPU or driver", true);
++        }
++        ffxCreateBackendVKDesc backend{};
++        backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
++        backend.deviceContext = Device();
++        ffxCreateContextDescUpscaleVersion version{};
++        version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
++        version.version = (4u << 22) | (1u << 12) | 2u;
++        ffxOverrideVersion override_version{};
++        override_version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
++        override_version.versionId = provider;
++        backend.header.pNext = &version.header;
++        version.header.pNext = &override_version.header;
++        ffxCreateContextDescUpscale create{};
++        create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++        create.header.pNext = &backend.header;
++        // The prepare pass hands depth over reversed; Driveclub's is reversed and infinite.
++        create.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
++        if (Fsr4Upscaler::reversed_infinite_depth) {
++            create.flags |= FFX_UPSCALE_ENABLE_DEPTH_INFINITE;
++        }
++        if (f.auto_exposure) {
++            create.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
++        }
++        if (const char* env = std::getenv("BB_FSR24_DEBUG"); env && env[0] == '1') {
++            create.flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
++        }
++        // Any preset's render size fits: no new context for a scale change.
++        create.maxRenderSize = {f.output.width, f.output.height};
++        create.maxUpscaleSize = {f.output.width, f.output.height};
++        create.fpMessage = [](uint32_t type, const wchar_t* message) {
++            if (message) {
++                std::printf("FSR SDK 2.4 message %u: %ls\n", type, message);
++            }
++        };
++        ffxContext created = nullptr;
++        if (const auto rc = api->CreateContext(&created, &create.header, nullptr);
++            rc != FFX_API_RETURN_OK || !created) {
++            return Fail("context creation failed (" + std::to_string(rc) + ")", true);
++        }
++        ffxQueryGetProviderVersion used{};
++        used.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
++        if (api->Query(&created, &used.header) != FFX_API_RETURN_OK || !Is412(used.versionName)) {
++            api->DestroyContext(&created, nullptr);
++            return Fail("AMD's SDK did not pick its 4.1.2 provider", true);
++        }
++        context = created;
++        out_width = f.output.width;
++        out_height = f.output.height;
++        context_auto_exposure = f.auto_exposure;
++        std::printf("Upscaler: FSR %s (AMD FSR SDK 2.4, Vulkan), output %ux%u\n",
++                    used.versionName, out_width, out_height);
++        return true;
++    }
++
++    void CreatePreparePipeline() {
++        const vk::Device device = instance.GetDevice();
++        std::array<vk::DescriptorSetLayoutBinding, 4> bindings{};
++        for (u32 i = 0; i < bindings.size(); ++i) {
++            bindings[i] = {.binding = i,
++                           .descriptorType = i < 2 ? vk::DescriptorType::eCombinedImageSampler
++                                                   : vk::DescriptorType::eStorageImage,
++                           .descriptorCount = 1,
++                           .stageFlags = vk::ShaderStageFlagBits::eCompute};
++        }
++        prepare_set = Check(device.createDescriptorSetLayoutUnique(
++            {.flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
++             .bindingCount = u32(bindings.size()),
++             .pBindings = bindings.data()}));
++        const vk::PushConstantRange push{vk::ShaderStageFlagBits::eCompute, 0, 3 * sizeof(u32)};
++        prepare_layout = Check(device.createPipelineLayoutUnique({.setLayoutCount = 1,
++                                                                  .pSetLayouts = &*prepare_set,
++                                                                  .pushConstantRangeCount = 1,
++                                                                  .pPushConstantRanges = &push}));
++        const auto module = CompileSPV(FSR412_PREPARE_COMP, device);
++        prepare_pipeline = Check(device.createComputePipelineUnique(
++            {}, {.stage = {.stage = vk::ShaderStageFlagBits::eCompute,
++                           .module = module,
++                           .pName = "main"},
++                 .layout = *prepare_layout}));
++        device.destroyShaderModule(module);
++        sampler = Check(device.createSamplerUnique(
++            {.magFilter = vk::Filter::eNearest,
++             .minFilter = vk::Filter::eNearest,
++             .mipmapMode = vk::SamplerMipmapMode::eNearest,
++             .addressModeU = vk::SamplerAddressMode::eClampToEdge,
++             .addressModeV = vk::SamplerAddressMode::eClampToEdge,
++             .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
++    }
++
++    /// Copies the frame's color and depth into the formats and depth direction the SDK is told.
++    void Prepare(const Fsr4Upscaler::Frame& f) {
++        if (!prepare_pipeline) {
++            CreatePreparePipeline();
++        }
++        const u32 w = f.render_width, h = f.render_height;
++        const bool resized = w != input_width || h != input_height;
++        if (resized) {
++            scheduler.WaitSubmitted();
++            const auto make = [&](VideoCore::UniqueImage& image, vk::UniqueImageView& view,
++                                  vk::Format format) {
++                view.reset();
++                image = VideoCore::UniqueImage(instance.GetDevice(), instance.GetAllocator());
++                image.Create({.imageType = vk::ImageType::e2D,
++                              .format = format,
++                              .extent = {w, h, 1},
++                              .mipLevels = 1,
++                              .arrayLayers = 1,
++                              .samples = vk::SampleCountFlagBits::e1,
++                              .tiling = vk::ImageTiling::eOptimal,
++                              .usage = vk::ImageUsageFlagBits::eStorage |
++                                       vk::ImageUsageFlagBits::eSampled,
++                              .initialLayout = vk::ImageLayout::eUndefined});
++                view = Check(instance.GetDevice().createImageViewUnique(
++                    {.image = vk::Image(image),
++                     .viewType = vk::ImageViewType::e2D,
++                     .format = format,
++                     .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}));
++            };
++            make(color, color_view, vk::Format::eR16G16B16A16Sfloat);
++            make(depth, depth_view, vk::Format::eR32Sfloat);
++            input_width = w;
++            input_height = h;
++        }
++        // Earlier readers (last frame's dispatch) are done before the copies overwrite them.
++        std::array<vk::ImageMemoryBarrier2, 2> to_general{};
++        for (u32 i = 0; i < 2; ++i) {
++            to_general[i] = {
++                .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
++                .srcAccessMask = vk::AccessFlagBits2::eMemoryRead,
++                .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
++                .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
++                .oldLayout = resized ? vk::ImageLayout::eUndefined
++                                     : vk::ImageLayout::eShaderReadOnlyOptimal,
++                .newLayout = vk::ImageLayout::eGeneral,
++                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .image = i ? vk::Image(depth) : vk::Image(color),
++                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
++        }
++        f.cmdbuf.pipelineBarrier2(
++            {.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = to_general.data()});
++        const std::array<vk::ImageView, 4> views{f.color.view, f.depth.view, *color_view,
++                                                 *depth_view};
++        std::array<vk::DescriptorImageInfo, 4> infos{};
++        std::array<vk::WriteDescriptorSet, 4> writes{};
++        for (u32 i = 0; i < 4; ++i) {
++            infos[i] = {.sampler = i < 2 ? *sampler : vk::Sampler{},
++                        .imageView = views[i],
++                        .imageLayout = vk::ImageLayout::eGeneral};
++            writes[i] = {.dstBinding = i,
++                         .descriptorCount = 1,
++                         .descriptorType = i < 2 ? vk::DescriptorType::eCombinedImageSampler
++                                                 : vk::DescriptorType::eStorageImage,
++                         .pImageInfo = &infos[i]};
++        }
++        const std::array<u32, 3> constants{w, h,
++                                           Fsr4Upscaler::reversed_infinite_depth ? 0u : 1u};
++        f.cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *prepare_pipeline);
++        f.cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *prepare_layout, 0, writes);
++        f.cmdbuf.pushConstants(*prepare_layout, vk::ShaderStageFlagBits::eCompute, 0,
++                               sizeof(constants), constants.data());
++        f.cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
++    }
++
++    /// The SDK reads its inputs in ShaderReadOnlyOptimal and writes the output in General.
++    /// `before`: around the dispatch; afterwards motion goes back to General (its owner's
++    /// layout) while the prepared images stay readable until the next Prepare.
++    void Transition(const Fsr4Upscaler::Frame& f, bool before) {
++        const vk::ImageLayout general = vk::ImageLayout::eGeneral;
++        const vk::ImageLayout read = vk::ImageLayout::eShaderReadOnlyOptimal;
++        std::array<vk::ImageMemoryBarrier2, 3> images{};
++        const std::array<vk::Image, 3> targets{vk::Image(color), vk::Image(depth), f.motion.image};
++        u32 count = 0;
++        for (u32 i = 0; i < targets.size(); ++i) {
++            if (!before && i < 2) {
++                continue;
++            }
++            images[count++] = {
++                .srcStageMask = before ? vk::PipelineStageFlagBits2::eAllCommands
++                                       : vk::PipelineStageFlagBits2::eComputeShader,
++                .srcAccessMask = before ? vk::AccessFlagBits2::eMemoryWrite
++                                        : vk::AccessFlagBits2::eShaderRead,
++                .dstStageMask = before ? vk::PipelineStageFlagBits2::eComputeShader
++                                       : vk::PipelineStageFlagBits2::eAllCommands,
++                .dstAccessMask = before ? vk::AccessFlagBits2::eShaderRead
++                                        : vk::AccessFlagBits2::eMemoryRead |
++                                              vk::AccessFlagBits2::eMemoryWrite,
++                .oldLayout = before ? general : read,
++                .newLayout = before ? read : general,
++                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .image = targets[i],
++                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
++        }
++        // The output (General): earlier users are done before the SDK writes it, and its
++        // writes are visible to everything after.
++        const vk::MemoryBarrier2 memory{
++            .srcStageMask = before ? vk::PipelineStageFlagBits2::eAllCommands
++                                   : vk::PipelineStageFlagBits2::eComputeShader,
++            .srcAccessMask = before ? vk::AccessFlagBits2::eMemoryRead |
++                                          vk::AccessFlagBits2::eMemoryWrite
++                                    : vk::AccessFlagBits2::eShaderStorageWrite,
++            .dstStageMask = before ? vk::PipelineStageFlagBits2::eComputeShader
++                                   : vk::PipelineStageFlagBits2::eAllCommands,
++            .dstAccessMask = before ? vk::AccessFlagBits2::eShaderStorageRead |
++                                          vk::AccessFlagBits2::eShaderStorageWrite
++                                    : vk::AccessFlagBits2::eMemoryRead |
++                                          vk::AccessFlagBits2::eMemoryWrite,
++        };
++        f.cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1,
++                                   .pMemoryBarriers = &memory,
++                                   .imageMemoryBarrierCount = count,
++                                   .pImageMemoryBarriers = images.data()});
++    }
++
++    static FfxApiResource Resource(vk::Image image, u32 width, u32 height, u32 format,
++                                   bool output) {
++        FfxApiResource r{};
++        r.resource = reinterpret_cast<void*>(VkImage(image));
++        r.description.type = FFX_API_RESOURCE_TYPE_TEXTURE2D;
++        r.description.format = format;
++        r.description.width = width;
++        r.description.height = height;
++        r.description.depth = 1;
++        r.description.mipCount = 1;
++        r.description.usage = output ? FFX_API_RESOURCE_USAGE_UAV : FFX_API_RESOURCE_USAGE_READ_ONLY;
++        r.state = output ? FFX_API_RESOURCE_STATE_UNORDERED_ACCESS
++                         : FFX_API_RESOURCE_STATE_COMPUTE_READ;
++        return r;
++    }
++
++    bool Record(const Fsr4Upscaler::Frame& f) {
++        if (fatal) {
++            return false;
++        }
++        if (f.motion.width != f.render_width || f.motion.height != f.render_height) {
++            return Fail("motion vectors are not at the render size", false);
++        }
++        if (context && (f.output.width != out_width || f.output.height != out_height ||
++                        f.auto_exposure != context_auto_exposure)) {
++            Destroy(true);
++        }
++        if (!context && !Create(f)) {
++            return false;
++        }
++        // The provider's per-frame resources: at most 3 frames in flight.
++        while (ticks.size() >= 3) {
++            scheduler.Wait(ticks.front());
++            ticks.pop_front();
++        }
++        Prepare(f);
++        const u32 w = f.render_width, h = f.render_height;
++        ffxDispatchDescUpscale d{};
++        d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
++        d.commandList = reinterpret_cast<void*>(VkCommandBuffer(f.cmdbuf));
++        d.color = Resource(vk::Image(color), w, h, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, false);
++        d.depth = Resource(vk::Image(depth), w, h, FFX_API_SURFACE_FORMAT_R32_FLOAT, false);
++        d.motionVectors =
++            Resource(f.motion.image, w, h, FFX_API_SURFACE_FORMAT_R16G16_FLOAT, false);
++        d.output = Resource(f.output.image, f.output.width, f.output.height,
++                            FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, true);
++        d.jitterOffset = {f.jitter[0], f.jitter[1]};
++        d.motionVectorScale = {1.0f, 1.0f}; // render pixels
++        d.renderSize = {w, h};
++        d.upscaleSize = {f.output.width, f.output.height};
++        d.enableSharpening = f.sharpen && f.sharpness > 0.0f;
++        d.sharpness = f.sharpness;
++        d.frameTimeDelta = f.frame_ms;
++        d.preExposure = 1.0f;
++        d.reset = f.reset;
++        d.cameraNear = f.near_plane;
++        d.cameraFar = f.far_plane;
++        d.cameraFovAngleVertical = f.vertical_fov;
++        d.viewSpaceToMetersFactor = 1.0f;
++        Transition(f, true);
++        const auto rc = api->Dispatch(&context, &d.header);
++        Transition(f, false);
++        ticks.push_back(scheduler.CurrentTick());
++        if (rc != FFX_API_RETURN_OK) {
++            return Fail("dispatch failed (" + std::to_string(rc) + ")", false);
++        }
++        error.clear();
++        return true;
++    }
++};
++
++#else // no SDK 2.4 headers at build time (tools/fetch_fsr24.py) or not Windows
++
++bool Fsr412::Wanted(u32) {
++    return false;
++}
++
++struct Fsr412::Impl {
++    std::string error{"built without AMD's FSR SDK 2.4"};
++    bool fatal = true;
++    Impl(const Instance&, Scheduler&) {}
++    bool Record(const Fsr4Upscaler::Frame&) {
++        return false;
++    }
++    void Destroy(bool) {}
++};
++
++#endif
++
++Fsr412::Fsr412(const Instance& instance, Scheduler& scheduler)
++    : impl{std::make_unique<Impl>(instance, scheduler)} {}
++
++Fsr412::~Fsr412() = default;
++
++bool Fsr412::Record(const Fsr4Upscaler::Frame& frame) {
++    return impl->Record(frame);
++}
++
++void Fsr412::ReleaseWhileRecording() {
++    impl->Destroy(true);
++}
++
++const std::string& Fsr412::Error() const noexcept {
++    return impl->error;
++}
++
++bool Fsr412::Fatal() const noexcept {
++    return impl->fatal;
++}
++
++} // namespace Vulkan
+diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.h b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.h
+new file mode 100644
+index 0000000..cf9ce4c
+--- /dev/null
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_fsr412.h
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// FSR 4.1.2 through AMD's FSR SDK 2.4 (its signed amd_fidelityfx_upscaler_vk.dll in fsr24\ next
++// to the runtime; tools/fetch_fsr24.py). AMD lists Radeon RX 6000, 7000 and 9000 for it. When the
++// DLL is there, the FSR 4 choice uses it; without it (or BB_FSR412=0, or when AMD's provider is
++// not available on this GPU/driver) FSR 4 stays the v07 INT8 model of Fsr4Upscaler.
++
++#pragma once
++
++#include <memory>
++#include <string>
++#include "video_core/renderer_vulkan/vk_fsr4.h"
++
++namespace Vulkan {
++
++class Fsr412 {
++public:
++    /// AMD GPU, the SDK DLL next to the runtime and not turned off: the device gets the
++    /// features the SDK's shaders use (vk_instance) and FSR 4 tries 4.1.2 first.
++    static bool Wanted(u32 vendor_id);
++
++    Fsr412(const Instance& instance, Scheduler& scheduler);
++    ~Fsr412();
++
++    /// Same contract as Fsr4Upscaler::Record. False: Error() says why; Fatal() when 4.1.2
++    /// cannot run in this session (no provider, context creation failed).
++    bool Record(const Fsr4Upscaler::Frame& frame);
++    /// Frees the context while a frame's command buffer is being recorded.
++    void ReleaseWhileRecording();
++
++    [[nodiscard]] const std::string& Error() const noexcept;
++    [[nodiscard]] bool Fatal() const noexcept;
++
++private:
++    struct Impl;
++    std::unique_ptr<Impl> impl;
++};
++
++} // namespace Vulkan
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_gpu_profiler.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_gpu_profiler.cpp
 index c9e8542..28d3509 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_gpu_profiler.cpp
@@ -6724,19 +7483,55 @@ index c9e8542..28d3509 100644
                  static_cast<unsigned long long>(frames), sorted.size());
      for (size_t i = 0; i < std::min<size_t>(sorted.size(), 30); ++i) {
          const auto& [key, total] = sorted[i];
+diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 73cfa0c..9e579e6 100644
+--- a/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -92,6 +92,12 @@ GraphicsPipeline::GraphicsPipeline(
+ 
+     const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList;
+     const bool is_quad_list = key.prim_type == AmdGpu::PrimitiveType::QuadList;
++    const auto& vertex_runtime = runtime_infos[u32(Shader::SwStage::Vertex)].hw.vs;
++    const auto& fragment_runtime = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
++    const auto* vertex_info = infos[u32(Shader::SwStage::Vertex)];
++    const u32 vertex_exports = vertex_runtime.num_exports +
++        (fragment_runtime.clip_distance_emulation && vertex_info &&
++         vertex_info->stores.GetAny(Shader::IR::Attribute::ClipDistance) ? 1u : 0u);
+     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
+         .patchControlPoints = is_rect_list ? 3U : (is_quad_list ? 4U : key.patch_control_points),
+     };
+@@ -198,7 +204,7 @@ GraphicsPipeline::GraphicsPipeline(
+         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
+         if (!preloading) {
+             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+-            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info);
++            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, vertex_exports, fs_info);
+         }
+         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+             .stage = vk::ShaderStageFlagBits::eTessellationControl,
+@@ -217,7 +223,7 @@ GraphicsPipeline::GraphicsPipeline(
+         if (!preloading) {
+             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+-                AuxShaderType::PassthroughTES, fs_info);
++                AuxShaderType::PassthroughTES, vertex_exports, fs_info);
+         }
+         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp
-index c707b15..bbddfda 100644
+index c707b15..f071752 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
  #include "video_core/renderer_vulkan/liverpool_to_vk.h"
  #include "video_core/renderer_vulkan/vk_dlss.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
++#include "video_core/renderer_vulkan/vk_fsr412.h"
 +#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
  #include "video_core/renderer_vulkan/vk_platform.h"
  
  #include <vk_mem_alloc.h>
-@@ -210,37 +211,8 @@ void Instance::ReportDeviceLost(const char* where) const {
+@@ -210,37 +212,8 @@ void Instance::ReportDeviceLost(const char* where) const {
          return;
      }
      std::printf("GPU: device lost (%s)\n", where);
@@ -6776,16 +7571,17 @@ index c707b15..bbddfda 100644
      std::fflush(stdout);
  }
  
-@@ -275,7 +247,7 @@ bool Instance::CreateDevice() {
+@@ -275,7 +248,8 @@ bool Instance::CreateDevice() {
          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT, vk::PhysicalDeviceShaderClockFeaturesKHR,
          vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR,
          vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
 -        vk::PhysicalDeviceFaultFeaturesEXT>();
-+        vk::PhysicalDeviceFaultFeaturesEXT, vk::PhysicalDeviceAddressBindingReportFeaturesEXT>();
++        vk::PhysicalDeviceFaultFeaturesEXT, vk::PhysicalDeviceAddressBindingReportFeaturesEXT,
++        vk::PhysicalDeviceCooperativeMatrixFeaturesKHR, vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
      features = feature_chain.get().features;
  
      const vk::StructureChain properties_chain = physical_device.getProperties2<
-@@ -334,6 +306,16 @@ bool Instance::CreateDevice() {
+@@ -334,6 +308,16 @@ bool Instance::CreateDevice() {
      // bbport: after a device loss the driver says where the GPU faulted (ReportDeviceLost).
      device_fault = feature_chain.get<vk::PhysicalDeviceFaultFeaturesEXT>().deviceFault &&
                     add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
@@ -6802,7 +7598,7 @@ index c707b15..bbddfda 100644
      maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
      attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
      if (attachment_feedback_loop) {
-@@ -428,6 +410,9 @@ bool Instance::CreateDevice() {
+@@ -428,6 +412,9 @@ bool Instance::CreateDevice() {
              feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
      }
      shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
@@ -6812,27 +7608,109 @@ index c707b15..bbddfda 100644
      if (shader_clock) {
          shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
          LOG_INFO(Render_Vulkan, "- shaderSubgroupClock: {}",
-@@ -638,6 +623,9 @@ bool Instance::CreateDevice() {
+@@ -435,6 +422,16 @@ bool Instance::CreateDevice() {
+     }
+     const bool calibrated_timestamps =
+         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
++    // bbport: FSR 4.1.2 (vk_fsr412): AMD's SDK shaders use these when the GPU has them.
++    // Cooperative matrices and Float8 are optional accelerators (RX 9000); RX 6000 runs without.
++    const bool fsr412 = Fsr412::Wanted(properties.vendorID);
++    const bool fsr412_cooperative =
++        fsr412 && feature_chain.get<vk::PhysicalDeviceCooperativeMatrixFeaturesKHR>().cooperativeMatrix &&
++        add_extension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
++    const auto float8_features = feature_chain.get<vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
++    const bool fsr412_float8 = fsr412_cooperative && float8_features.shaderFloat8 &&
++                               float8_features.shaderFloat8CooperativeMatrix &&
++                               add_extension(VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
+ 
+     const auto family_properties = physical_device.getQueueFamilyProperties();
+     if (family_properties.empty()) {
+@@ -466,6 +463,17 @@ bool Instance::CreateDevice() {
+     const auto vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
+     vk12_features = feature_chain.get<vk::PhysicalDeviceVulkan12Features>();
+     vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
++    const bool fsr412_variable_pointers = fsr412 && vk11_features.variablePointersStorageBuffer;
++    const bool fsr412_memory_model = fsr412 && vk12_features.vulkanMemoryModel;
++    fsr412_device_ready = fsr412 && fsr412_variable_pointers && vk11_features.variablePointers &&
++                          fsr412_memory_model && vk12_features.vulkanMemoryModelDeviceScope &&
++                          vk12_features.descriptorBindingPartiallyBound &&
++                          vk13_features.computeFullSubgroups;
++    if (fsr412) {
++        std::printf("FSR 4.1.2: device features %s (cooperative matrix %d, float8 %d)\n",
++                    fsr412_device_ready ? "on" : "missing", int(fsr412_cooperative),
++                    int(fsr412_float8));
++    }
+     // bbport: DLSS (optional bridge DLL) needs its own device extensions on NVIDIA GPUs.
+     const size_t renderer_extension_count = enabled_extensions.size();
+     std::vector<const char*> dlss_extensions;
+@@ -522,6 +530,8 @@ bool Instance::CreateDevice() {
+         },
+         vk::PhysicalDeviceVulkan11Features{
+             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
++            .variablePointersStorageBuffer = fsr412_variable_pointers,
++            .variablePointers = fsr412_variable_pointers && vk11_features.variablePointers,
+             .shaderDrawParameters = vk11_features.shaderDrawParameters,
+         },
+         vk::PhysicalDeviceVulkan12Features{
+@@ -532,18 +542,24 @@ bool Instance::CreateDevice() {
+             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
+             .shaderFloat16 = vk12_features.shaderFloat16,
+             .shaderInt8 = vk12_features.shaderInt8,
++            .descriptorBindingPartiallyBound =
++                fsr412 && vk12_features.descriptorBindingPartiallyBound,
+             .scalarBlockLayout = vk12_features.scalarBlockLayout,
+             .uniformBufferStandardLayout = vk12_features.uniformBufferStandardLayout,
+             .separateDepthStencilLayouts = vk12_features.separateDepthStencilLayouts,
+             .hostQueryReset = vk12_features.hostQueryReset,
+             .timelineSemaphore = vk12_features.timelineSemaphore,
+             .bufferDeviceAddress = vk12_features.bufferDeviceAddress,
++            .vulkanMemoryModel = fsr412_memory_model,
++            .vulkanMemoryModelDeviceScope =
++                fsr412_memory_model && vk12_features.vulkanMemoryModelDeviceScope,
+             .shaderOutputLayer = vk12_features.shaderOutputLayer,
+         },
+         vk::PhysicalDeviceVulkan13Features{
+             .robustImageAccess = vk13_features.robustImageAccess,
+             .shaderDemoteToHelperInvocation = vk13_features.shaderDemoteToHelperInvocation,
+             .subgroupSizeControl = vk13_features.subgroupSizeControl,
++            .computeFullSubgroups = fsr412 && vk13_features.computeFullSubgroups,
+             .synchronization2 = vk13_features.synchronization2,
+             .dynamicRendering = vk13_features.dynamicRendering,
+             .shaderIntegerDotProduct = vk13_features.shaderIntegerDotProduct,
+@@ -638,6 +654,16 @@ bool Instance::CreateDevice() {
          vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE{
              .shaderMixedFloatDotProductFloat16AccFloat32 = true,
          },
 +        vk::PhysicalDeviceAddressBindingReportFeaturesEXT{
 +            .reportAddressBinding = true,
 +        },
++        vk::PhysicalDeviceCooperativeMatrixFeaturesKHR{
++            .cooperativeMatrix = true,
++        },
++        vk::PhysicalDeviceShaderFloat8FeaturesEXT{
++            .shaderFloat8 = true,
++            .shaderFloat8CooperativeMatrix = true,
++        },
      };
  
      if (!custom_border_color) {
-@@ -701,6 +689,9 @@ bool Instance::CreateDevice() {
+@@ -701,6 +727,15 @@ bool Instance::CreateDevice() {
      if (!mixed_float_dot_product) {
          device_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
      }
 +    if (!address_binding_report) {
 +        device_chain.unlink<vk::PhysicalDeviceAddressBindingReportFeaturesEXT>();
 +    }
++    if (!fsr412_cooperative) {
++        device_chain.unlink<vk::PhysicalDeviceCooperativeMatrixFeaturesKHR>();
++    }
++    if (!fsr412_float8) {
++        device_chain.unlink<vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
++    }
  
      auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
      if (device_result != vk::Result::eSuccess && enabled_extensions.size() > renderer_extension_count) {
-@@ -766,6 +757,7 @@ bool Instance::CreateDevice() {
+@@ -766,6 +801,7 @@ bool Instance::CreateDevice() {
      }
  
      CreateAllocator();
@@ -6841,7 +7719,7 @@ index c707b15..bbddfda 100644
  }
  
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_instance.h b/gpu/shadps4/video_core/renderer_vulkan/vk_instance.h
-index 8c97d25..2b93bca 100644
+index 8c97d25..f36888c 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_instance.h
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_instance.h
 @@ -3,6 +3,7 @@
@@ -6852,9 +7730,15 @@ index 8c97d25..2b93bca 100644
  #include <span>
  #include <unordered_map>
  
-@@ -298,15 +299,60 @@ public:
+@@ -297,16 +298,66 @@ public:
+     /// Returns true when the shaderSubgroupClock feature of
      /// bbport: the FSR 4 v07 INT8/DOT4 shaders can run (Float16, Int8, Int16, packed int8 dot
      /// products, linear compute derivatives, extended storage image formats).
++    /// FSR 4.1.2: the device was created with the features AMD's FSR SDK uses (vk_fsr412).
++    bool IsFsr412DeviceReady() const {
++        return fsr412_device_ready;
++    }
++
      bool IsFsr4Int8Supported() const {
 +        // DCport: Intel Arc never finished setting up the INT8 model (no error, the game stops
 +        // after "FSR 4 inputs"); FSR 3.1 is used there. BB_FSR4_INTEL=1 tries it anyway.
@@ -6915,7 +7799,7 @@ index 8c97d25..2b93bca 100644
      }
  
      /// VK_KHR_shader_clock is supported.
-@@ -589,6 +635,9 @@ private:
+@@ -589,8 +640,12 @@ private:
      bool image_2d_view_of_3d{};
      bool image_view_min_lod{};
      bool shader_clock{};
@@ -6923,8 +7807,12 @@ index 8c97d25..2b93bca 100644
 +    bool full_screen_exclusive{};
 +    bool address_binding_report{};
      bool compute_shader_derivatives{};
-     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
+-    bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
++    bool mixed_float_dot_product{};
++    bool fsr412_device_ready{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
      bool supports_memory_budget{};
+     bool supports_block_texel_view{};
+     u64 total_memory_budget{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_object_motion.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_object_motion.cpp
 index 7203c54..c480c8a 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_object_motion.cpp
@@ -6945,7 +7833,7 @@ index 7203c54..c480c8a 100644
          std::printf("Object motion: off on this AMD GPU (RX 6000 and older lose the device with it; "
                      "BB_OBJECT_MOTION=1 turns it on)\n");
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 6135cbe..56da3f0 100644
+index 6135cbe..b600743 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -3,6 +3,7 @@
@@ -6956,7 +7844,15 @@ index 6135cbe..56da3f0 100644
  #include <cstdlib>
  #include <cstring>
  #include <mutex>
-@@ -837,6 +838,30 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -178,6 +179,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
+         BuildCommon(regs.vs_program);
+         info.hw.vs.user_clip_plane_mask = regs.clipper_control.user_clip_plane_enable;
+         info.hw.vs.num_outputs = MapOutputs(info.hw.vs.outputs, regs.vs_output_control);
++        info.hw.vs.num_exports = regs.vs_output_config.NumExports();
+         info.hw.vs.emulate_depth_negative_one_to_one =
+             !instance.IsDepthClipControlSupported() &&
+             regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
+@@ -837,6 +839,30 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
               perm_idx != 0 ? "(permutation)" : "");
      DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
      CompileTimer timer;
@@ -6987,7 +7883,7 @@ index 6135cbe..56da3f0 100644
  
      const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
      auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
-@@ -913,13 +938,18 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
+@@ -913,13 +939,18 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
      if (it_pgm == program_cache.end()) {
          auto new_program = std::make_unique<Program>(hw_stage, sw_stage, params);
          auto start = binding;
@@ -7010,7 +7906,7 @@ index 6135cbe..56da3f0 100644
          new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
          Program* program = new_program.get();
          {
-@@ -927,7 +957,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
+@@ -927,7 +958,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
              program_cache.emplace(params.hash, std::move(new_program));
          }
          return std::make_tuple(&program->info, module,
@@ -7019,7 +7915,7 @@ index 6135cbe..56da3f0 100644
                                 perm_hash);
      }
  
-@@ -957,12 +987,18 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
+@@ -957,12 +988,18 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage
          program->last_used = std::distance(program->modules.begin(), it);
      }
      if (it == program->modules.end()) {
@@ -7040,7 +7936,7 @@ index 6135cbe..56da3f0 100644
          info.AddBindings(binding);
          module = it->module;
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-index 8b6f955..b89c52c 100644
+index 8b6f955..6a65c7c 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 @@ -14,9 +14,18 @@ namespace Serialization {
@@ -7053,7 +7949,7 @@ index 8b6f955..b89c52c 100644
 +// DCport 13: CFG fallthrough edges kept (shadPS4 #5365).
 +// DCport 15: permutation indices are never reused across sessions (14 caches could pair a
 +// pipeline with another permutation's shader: graphics bugs until the cache was deleted).
-+static constexpr u32 ShaderBinaryVersion = 16u;
++static constexpr u32 ShaderBinaryVersion = 17u;
 +static constexpr u32 ShaderMetaVersion = 9u;
  static constexpr u32 PipelineKeyVersion = 6u;
 +// GRport: shaders made with and without seamless cube sampling differ, so each setting has
@@ -10863,7 +11759,7 @@ index 0000000..0e945b5
 +
 +} // namespace VideoCore
 diff --git a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-index 6c56743..1317b03 100644
+index 6c56743..e580a7d 100644
 --- a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 +++ b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 @@ -24,6 +24,7 @@
@@ -10899,7 +11795,7 @@ index 6c56743..1317b03 100644
          if (new_info.num_samples == 1 &&
              (new_info.resources.layers > old_image.info.resources.layers ||
               new_info.resources.levels > old_image.info.resources.levels)) {
-@@ -394,9 +406,24 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+@@ -382,9 +394,24 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
              cache_image.info.resources.levels == 1 && image_info.resources.layers == 1 &&
              cache_image.info.resources.layers == 1;
  
@@ -10926,7 +11822,7 @@ index 6c56743..1317b03 100644
              auto result_id = merged_image_id ? merged_image_id : cache_image_id;
              const auto& result_image = slot_images[result_id];
              const bool is_compatible =
-@@ -404,9 +431,9 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
+@@ -392,9 +419,9 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
              return {is_compatible ? result_id : ImageId{}, -1, -1};
          }
  
@@ -10963,7 +11859,7 @@ index 6c56743..1317b03 100644
              }
          }
      }
-@@ -575,8 +594,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -575,8 +609,18 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
      auto& src_image = slot_images[image_id];
      auto& new_image = slot_images[new_image_id];
  
@@ -10983,7 +11879,7 @@ index 6c56743..1317b03 100644
  
      if (src_image.binding.is_bound || src_image.binding.is_target) {
          src_image.binding.needs_rebind = 1u;
-@@ -584,7 +613,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+@@ -584,7 +628,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
  
      TrackImage(new_image_id);
      new_image.flags &= ~ImageFlagBits::Dirty;
@@ -10994,7 +11890,7 @@ index 6c56743..1317b03 100644
      FreeImage(image_id);
  
      return new_image_id;
-@@ -774,6 +805,9 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
+@@ -774,6 +820,9 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
      if (refresh) {
          UpdateImage(image_id);
      }
@@ -11004,7 +11900,7 @@ index 6c56743..1317b03 100644
      if (memo && !BbToggle::Disabled(BbToggle::TextureViewMemo)) {
          if (memo->image_id == image_id && memo->backing == image.backing && memo->view_id) {
              return slot_image_views[memo->view_id];
-@@ -824,6 +858,7 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
+@@ -824,6 +873,7 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
      }
      image.usage.render_target = 1u;
      UpdateImage(image_id);
@@ -11012,7 +11908,7 @@ index 6c56743..1317b03 100644
  
      // Register meta data for this color buffer
      const VAddr cmask_addr = desc.info.meta_info.cmask_addr;
-@@ -885,7 +920,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
+@@ -885,7 +935,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
  }
  
  void TextureCache::AssociateStencil(ImageId depth_id, const ImageInfo& depth_info) {
@@ -11022,7 +11918,7 @@ index 6c56743..1317b03 100644
          return;
      }
      ImageId stencil_id{};
-@@ -1217,13 +1253,22 @@ void TextureCache::GarbageCollectImages() {
+@@ -1217,13 +1268,22 @@ void TextureCache::GarbageCollectImages() {
          // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
          // collector evicted images used two or three frames ago on every submission and wrote
          // GPU-written ones back. Compare with the driver's current budget instead.
@@ -11050,7 +11946,7 @@ index 6c56743..1317b03 100644
              if (budget != 0) {
                  trigger_gc_memory = budget / 10 * 7;
                  pressure_gc_memory = budget / 100 * 85;
-@@ -1245,7 +1290,11 @@ void TextureCache::GarbageCollectImages() {
+@@ -1245,7 +1305,11 @@ void TextureCache::GarbageCollectImages() {
          gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
      }
      ReportMemory();
@@ -11063,7 +11959,7 @@ index 6c56743..1317b03 100644
          return;
      }
      static const u64 idle_seconds = [] {
-@@ -1277,8 +1326,8 @@ void TextureCache::GarbageCollectImages() {
+@@ -1277,8 +1341,8 @@ void TextureCache::GarbageCollectImages() {
  
      // emergency: still over the critical mark after evicting what was unused for a second.
      const auto configure = [&](bool allow_aggressive, bool emergency = false) {
@@ -11074,7 +11970,7 @@ index 6c56743..1317b03 100644
          const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
          below_tick = gc_tick - ticks_to_destroy;
          if (!pressured && !aggresive) {
-@@ -1353,13 +1402,13 @@ void TextureCache::GarbageCollectImages() {
+@@ -1353,13 +1417,13 @@ void TextureCache::GarbageCollectImages() {
          }
          ++gc_evictions;
          FreeImage(image_id);
@@ -11090,7 +11986,7 @@ index 6c56743..1317b03 100644
                  num_deletions >>= 1;
                  pressured = false;
              }
-@@ -1372,13 +1421,13 @@ void TextureCache::GarbageCollectImages() {
+@@ -1372,13 +1436,13 @@ void TextureCache::GarbageCollectImages() {
      gc_kept = gc_kept_bytes = 0;
      image_lru_cache.ForEachItemBelow(below_tick, clean_up);
  
@@ -11106,7 +12002,7 @@ index 6c56743..1317b03 100644
          // Still over it: what was used a moment ago goes too (out of memory otherwise).
          configure(true, true);
          image_lru_cache.ForEachItemBelow(below_tick, clean_up);
-@@ -1387,12 +1436,14 @@ void TextureCache::GarbageCollectImages() {
+@@ -1387,12 +1451,14 @@ void TextureCache::GarbageCollectImages() {
      if (pressured || gc_downloads != 0) {
          const auto now = std::chrono::steady_clock::now();
          if (now - gc_report_time >= std::chrono::seconds(5)) {
@@ -11123,7 +12019,7 @@ index 6c56743..1317b03 100644
                          (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
                          (unsigned long long)gc_kept, (unsigned long long)(gc_kept_bytes >> 20),
                          (unsigned long long)gc_dropped);
-@@ -1568,6 +1619,7 @@ void TextureCache::DeleteImage(ImageId image_id, bool now) {
+@@ -1568,6 +1634,7 @@ void TextureCache::DeleteImage(ImageId image_id, bool now) {
  }
  
  void TextureCache::EraseImage(ImageId image_id) {
@@ -11227,7 +12123,7 @@ index 3a73ecf..315b936 100644
      if (!g_window) return 0;
      g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..7c6386a 100644
+index 651b74e..6edca2c 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
 @@ -9,11 +9,19 @@
@@ -11979,7 +12875,7 @@ index 651b74e..7c6386a 100644
  void FpsCounter() {
      const ImGuiViewport* viewport = ImGui::GetMainViewport();
      const float pad = 12.0f * base_scale;
-@@ -524,14 +704,19 @@ void FpsCounter() {
+@@ -524,14 +704,20 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -11995,7 +12891,8 @@ index 651b74e..7c6386a 100644
 +    static const char* aa[] = {"", "FSR 3.1", "FSR 4", "FSR 4.1.1", "TAA", "DLSS"};
 +    const auto& settings = BbSettings::Get();
 +    char label[32];
-+    std::snprintf(label, sizeof(label), "%s%s%s", aa[settings.upscaler],
++    const bool fsr412 = settings.upscaler == BbSettings::UpscalerFsr4 && settings.fsr412_active;
++    std::snprintf(label, sizeof(label), "%s%s%s", fsr412 ? "FSR 4.1.2" : aa[settings.upscaler],
 +                  settings.upscaler && settings.fsr1 ? " + " : "", settings.fsr1 ? "FSR 1" : "");
 +    const char* upscaler = label;
 +    char size[24] = "";
@@ -12007,7 +12904,7 @@ index 651b74e..7c6386a 100644
      ImGui::End();
  }
  
-@@ -548,14 +733,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +734,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -12064,7 +12961,7 @@ index 651b74e..7c6386a 100644
  
      ImFontConfig font_config;
      font_config.FontDataOwnedByAtlas = false;
-@@ -703,11 +928,201 @@ bool HandleEvent(const SDL_Event& event) {
+@@ -703,11 +929,201 @@ bool HandleEvent(const SDL_Event& event) {
  }
  
  bool Visible() {
@@ -12268,7 +13165,7 @@ index 651b74e..7c6386a 100644
  }
  
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
-@@ -776,6 +1191,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+@@ -776,6 +1192,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
      if (text_entry_active) {
          TextEntryBox();
      }
@@ -12319,432 +13216,8 @@ index 86ef250..a114c5c 100644
 +            std::size_t png_size);
 +
  } // namespace BbOverlay
-diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
-index ca00643..eb98b1a 100644
---- a/gpu/shim/bbport_prompts.cpp
-+++ b/gpu/shim/bbport_prompts.cpp
-@@ -9,6 +9,7 @@
- #include <cstdio>
- #include <cstdlib>
- #include <cstring>
-+#include <map>
- #include <mutex>
- #include <set>
- #include <tuple>
-@@ -38,20 +39,26 @@ struct Entry {
-     int sprite;     // BbPromptIcons::HudSprite, or -1
-     Bytes original;
-     uint64_t written;
-+    int dc = -1;    // DCport: a BbPromptIcons::DcIcon (a whole DriveClub icon texture), or -1
-+    std::array<Bytes, BbPromptIcons::DcStyleCount> looks; // DCport: that icon in each DcStyle
-+    bool gravity = false;
-+    std::array<Bytes, BbPromptIcons::DcStyleCount + 1> gravity_looks; // Xbox 360, One, PS5, Switch
- };
- 
- std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
- std::vector<Entry> entries;
- std::array<Bytes, BbPromptIcons::Count> keyboard_icons;
-+std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> keyboard_pixels; // the symbol font
- std::array<Bytes, HudCount> keyboard_sprites;
- bool keyboard_ready = false;
- // Xbox and Switch (BbPromptIcons::Pad order); empty for an icon that stays the game's own.
- std::array<std::array<Bytes, BbPromptIcons::Count>, BbPromptIcons::PadCount> pad_icons;
- std::array<std::array<Bytes, HudCount>, BbPromptIcons::PadCount> pad_sprites;
--std::set<uintptr_t> searched;      // HUD atlases already looked at
-+std::map<uintptr_t, uint64_t> searched; // HUD atlases, by their first icon's picture
- std::atomic<int> device{-1};       // -1 nothing seen yet, else a Device
- std::atomic<bool> dirty{false};    // something to write: a new picture, a device or binding change
- int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
-+int shown_style = -1;              // DCport: the DcStyle (or -1, the game's own) Apply last chose
- 
- Device Want() {
-     switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
-@@ -86,10 +93,12 @@ void DrawPads() {
- 
- /// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
- /// sprite's area in the atlas's tiled layout.
--std::vector<size_t> Pieces(int sprite) {
-+std::vector<size_t> Pieces(int sprite, int dc = -1) {
-     std::vector<size_t> out;
-     if (sprite < 0) {
--        for (size_t at = 0; at < size_t(BbPromptIcons::Bytes); at += 16) out.push_back(at);
-+        const size_t bytes = dc >= 0 ? BbPromptIcons::DcBytes(BbPromptIcons::DcIcon(dc))
-+                                     : size_t(BbPromptIcons::Bytes);
-+        for (size_t at = 0; at < bytes; at += 16) out.push_back(at);
-         return out;
-     }
-     const auto& area = BbPromptIcons::HudAreas[sprite];
-@@ -101,9 +110,9 @@ std::vector<size_t> Pieces(int sprite) {
-     return out;
- }
- 
--Bytes Gather(uintptr_t base, int sprite) {
-+Bytes Gather(uintptr_t base, int sprite, int dc = -1) {
-     Bytes out;
--    for (size_t at : Pieces(sprite)) {
-+    for (size_t at : Pieces(sprite, dc)) {
-         const auto* p = reinterpret_cast<const uint8_t*>(base + at);
-         out.insert(out.end(), p, p + 16);
-     }
-@@ -111,8 +120,8 @@ Bytes Gather(uintptr_t base, int sprite) {
- }
- 
- /// The guest range an entry touches (to check that it is mapped and to invalidate it).
--std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite) {
--    const auto pieces = Pieces(sprite);
-+std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite, int dc = -1) {
-+    const auto pieces = Pieces(sprite, dc);
-     const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
-     return {base + *lo, *hi + 16 - *lo};
- }
-@@ -121,16 +130,94 @@ uint64_t Hash(const Bytes& data) {
-     return XXH3_64bits(data.data(), data.size());
- }
- 
--void Add(uintptr_t base, int icon, int sprite, Bytes original) {
-+void Add(uintptr_t base, int icon, int sprite, Bytes original, int dc = -1,
-+         std::array<Bytes, BbPromptIcons::DcStyleCount> looks = {}) {
-     std::scoped_lock lock{mutex};
--    for (const Entry& e : entries) {
--        if (e.base == base && e.sprite == sprite) return;
--    }
-     const uint64_t hash = Hash(original);
--    entries.push_back({base, icon, sprite, std::move(original), hash});
-+    for (auto it = entries.begin(); it != entries.end(); ++it) {
-+        if (it->base != base || it->sprite != sprite) continue;
-+        // The picture is already tracked.
-+        if (it->icon == icon && Hash(it->original) == hash) return;
-+        // The games reuse texture memory constantly, so this address can hold another picture
-+        // by now. Refusing the upload used to leave the new texture the game's own: Apply
-+        // dropped the stale entry a frame later, and nothing replaced what took its place.
-+        entries.erase(it);
-+        break;
-+    }
-+    entries.push_back({base, icon, sprite, std::move(original), hash, dc, std::move(looks)});
-     dirty = true;
- }
- 
-+/// DCport: a DriveClub icon texture (one of BbPromptIcons::DcTextures), with its Xbox 360
-+/// button drawn and encoded now (once per address; the game reuses few).
-+bool AddGravity(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t bits) {
-+    const auto& textures = BbPromptIcons::GravityTextures;
-+    bool candidate = false;
-+    for (const auto& texture : textures)
-+        candidate |= texture.width == width && texture.height == height && texture.bits == bits && texture.bytes == size;
-+    if (!candidate) return false;
-+    const uint64_t hash = XXH3_64bits(reinterpret_cast<const void*>(address), size);
-+    for (const auto& texture : textures) {
-+        if (texture.width != width || texture.height != height || texture.bits != bits ||
-+            texture.bytes != size || texture.hash != hash) continue;
-+        {
-+            std::scoped_lock lock{mutex};
-+            for (const Entry& e : entries)
-+                if (e.base == address && e.gravity && e.written == hash) return true;
-+        }
-+        Bytes original(reinterpret_cast<const uint8_t*>(address),
-+                       reinterpret_cast<const uint8_t*>(address) + size);
-+        std::array<Bytes, BbPromptIcons::DcStyleCount + 1> looks;
-+        for (int style = 0; style < BbPromptIcons::DcStyleCount; ++style)
-+            looks[style] = BbPromptIcons::RenderGravityTexture(texture, style, original);
-+        looks[BbPromptIcons::DcStyleCount] = BbPromptIcons::RenderGravityTexture(texture, -1, original);
-+        std::scoped_lock lock{mutex};
-+        for (auto it = entries.begin(); it != entries.end();) {
-+            if (it->base == address && it->gravity) it = entries.erase(it);
-+            else ++it;
-+        }
-+        const uint64_t original_hash = Hash(original);
-+        Entry entry{};
-+        entry.base = address;
-+        entry.icon = -1;
-+        entry.sprite = -1;
-+        entry.original = std::move(original);
-+        entry.written = original_hash;
-+        entry.gravity = true;
-+        entry.gravity_looks = std::move(looks);
-+        entries.push_back(std::move(entry));
-+        dirty = true;
-+        return true;
-+    }
-+    return false;
-+}
-+
-+bool AddDriveclub(uintptr_t address, size_t size, uint32_t width, uint32_t height) {
-+    for (int i = 0; i < BbPromptIcons::DcCount; ++i) {
-+        const auto icon = BbPromptIcons::DcIcon(i);
-+        const auto& t = BbPromptIcons::DcTextures[i];
-+        if (uint32_t(t.width) != width || uint32_t(t.height) != height || BbPromptIcons::DcBytes(icon) != size) {
-+            continue;
-+        }
-+        Bytes bytes = Gather(address, -1, i);
-+        if (Hash(bytes) != t.hash) continue;
-+        {
-+            std::scoped_lock lock{mutex};
-+            for (const Entry& e : entries) {
-+                if (e.base == address && e.dc == i) return true;
-+            }
-+        }
-+        static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
-+        std::array<Bytes, BbPromptIcons::DcStyleCount> looks;
-+        for (int style = 0; font && style < BbPromptIcons::DcStyleCount; ++style) {
-+            looks[style] = BbPromptIcons::EncodeDc(icon, BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style)), bytes);
-+        }
-+        Add(address, -1, -1, std::move(bytes), i, std::move(looks));
-+        return true;
-+    }
-+    return false;
-+}
-+
- } // namespace
- 
- void Configure(const char* const* inputs, int count) {
-@@ -138,6 +225,7 @@ void Configure(const char* const* inputs, int count) {
-     if (!font || count != BbPromptIcons::Count) return;
-     std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
-     std::array<Bytes, BbPromptIcons::Count> icons;
-+    std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> pixels;
-     for (int i = 0; i < count; ++i) {
-         const std::string text = inputs[i] ? inputs[i] : "";
-         for (size_t start = 0; start < text.size();) {
-@@ -145,7 +233,8 @@ void Configure(const char* const* inputs, int count) {
-             if (end > start) lists[i].push_back(text.substr(start, end - start));
-             start = end + 1;
-         }
--        const auto icon = BbPromptIcons::Render(lists[i]);
-+        pixels[i] = BbPromptIcons::Draw(lists[i]);
-+        const auto icon = BbPromptIcons::Encode(pixels[i]);
-         icons[i].assign(icon.begin(), icon.end());
-     }
-     std::array<Bytes, HudCount> sprites;
-@@ -155,11 +244,35 @@ void Configure(const char* const* inputs, int count) {
-     std::scoped_lock lock{mutex};
-     if (!keyboard_ready) DrawPads();
-     keyboard_icons = icons;
-+    keyboard_pixels = pixels;
-     keyboard_sprites = sprites;
-     keyboard_ready = true;
-     dirty = true;
- }
- 
-+bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
-+                   int pitch) {
-+    if (!coverage || width <= 0 || height <= 0 || pitch < width) return false;
-+    const int icon = BbPromptIcons::GlyphIcon(second_game, code);
-+    if (icon >= BbPromptIcons::Count) return false;
-+    BbPromptIcons::Pixels pixels;
-+    {
-+        std::scoped_lock lock{mutex};
-+        if (!keyboard_ready) return false;
-+        pixels = keyboard_pixels[icon];
-+    }
-+    // The same way the controller icons are drawn into this cache: monochrome coverage.
-+    const int size = BbPromptIcons::Size;
-+    for (int y = 0; y < height; ++y) {
-+        for (int x = 0; x < width; ++x) {
-+            const size_t source = ((y * size / height) * size + x * size / width) * 4;
-+            const int brightness = std::max({pixels[source], pixels[source + 1], pixels[source + 2]});
-+            coverage[y * pitch + x] = uint8_t(brightness * pixels[source + 3] / 255);
-+        }
-+    }
-+    return true;
-+}
-+
- void OnInput(Device value) {
-     if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
- }
-@@ -192,7 +305,11 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
-             }
-         }
-     }
-+    if (AddGravity(address, size, width, height, bits)) return;
-+    // Gravity hashes describe mip 0, whose address and size are passed above.
-+    // A texture may still have lower-resolution mip levels.
-     if (levels != 1 || bits != 128) return;
-+    if (AddDriveclub(address, size, width, height)) return;
-     if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
-         // A KG_* icon: the menus' key guides and the buttons in their messages.
-         Bytes bytes = Gather(address, -1);
-@@ -203,10 +320,14 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
-         return;
-     }
-     if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
--        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3.
-+        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3. Another atlas
-+        // can be uploaded at the same address later, so remember the picture, not the address.
-+        const uint64_t first = Hash(Gather(address, 0));
-         {
-             std::scoped_lock lock{mutex};
--            if (!searched.insert(address).second) return;
-+            const auto [found, added] = searched.try_emplace(address, first);
-+            if (!added && found->second == first) return;
-+            found->second = first;
-         }
-         for (int s = 0; s < HudCount; ++s) {
-             Bytes bytes = Gather(address, s);
-@@ -215,19 +336,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
-     }
- }
- 
-+Device WantLayout() {
-+    return Want();
-+}
-+
-+int StyleFor(Device want) {
-+    const auto& settings = BbSettings::Get();
-+    return want == Xbox ? (settings.xbox_buttons ? BbPromptIcons::DcXboxOne : BbPromptIcons::DcXbox360)
-+         : want == PlayStation && settings.playstation_buttons ? BbPromptIcons::DcPs5
-+         : want == Switch ? BbPromptIcons::DcStyleCount : -1;
-+}
-+
- void Apply() {
-     const Device want = Want();
--    if (!dirty.exchange(false) && want == shown) return;
-+    // DCport: Driveclub's icons follow the controller in its chosen look (settings
-+    // xbox_buttons, playstation_buttons); the game's own for a PS4 look or the keyboard.
-+    const int style = StyleFor(want);
-+    if (!dirty.exchange(false) && want == shown && style == shown_style) return;
-     shown = want;
-+    shown_style = style;
- 
-     std::vector<Entry> snapshot;
-     std::array<Bytes, BbPromptIcons::Count> icons; // empty: the game's own
-     std::array<Bytes, HudCount> sprites;
-     {
-         std::scoped_lock lock{mutex};
--        if (want != PlayStation && !keyboard_ready) return;
-         snapshot = entries;
--        if (want == Keyboard) {
-+        // Without the keyboard pictures (input.ini not read yet) the key-guide icons stay the
-+        // game's for now; DriveClub's icons need none of them.
-+        if (!keyboard_ready) {
-+        } else if (want == Keyboard) {
-             icons = keyboard_icons;
-             sprites = keyboard_sprites;
-         } else if (want != PlayStation) {
-@@ -238,28 +376,47 @@ void Apply() {
-     }
-     // Written without any lock: a write to a page the texture cache protects faults into it.
-     auto* memory = Core::Memory::Instance();
--    std::vector<std::tuple<uintptr_t, int, uint64_t>> written; // hash 0: the entry is gone
-+    std::vector<std::tuple<uintptr_t, int, bool, uint64_t>> written; // hash 0: the entry is gone
-+    static const Bytes none;
-     for (const Entry& e : snapshot) {
--        const auto [start, length] = Range(e.base, e.sprite);
--        if (!memory->IsValidMapping(start, length) || Hash(Gather(e.base, e.sprite)) != e.written) {
--            written.emplace_back(e.base, e.sprite, 0); // unmapped, or the game put something else there
-+        const auto [start, length] = e.gravity ? std::pair<uintptr_t, size_t>{e.base, e.original.size()}
-+                                                : Range(e.base, e.sprite, e.dc);
-+        if (!memory->IsValidMapping(start, length)) {
-+            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-+            continue;
-+        }
-+        const Bytes current = e.gravity ? Bytes(reinterpret_cast<const uint8_t*>(e.base),
-+                                                 reinterpret_cast<const uint8_t*>(e.base) + e.original.size())
-+                                        : Gather(e.base, e.sprite, e.dc);
-+        const uint64_t current_hash = Hash(current);
-+        // The game's own picture: it re-uploaded the texture the cache did not report (a view,
-+        // a bigger image at the address). Anything else is a different texture.
-+        if (current_hash != e.written && current_hash != Hash(e.original)) {
-+            written.emplace_back(e.base, e.sprite, e.gravity, 0);
-             continue;
-         }
--        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
-+        // DriveClub's icons: the chosen look for the controller in use, else the game's own.
-+        const Bytes& mine = e.gravity ? (style >= 0 ? e.gravity_looks[style] : none)
-+                            : e.dc >= 0 ? (style >= 0 && style < BbPromptIcons::DcStyleCount ? e.looks[style] : none)
-+                            : e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
-         const Bytes& target = mine.empty() ? e.original : mine;
-         const uint64_t target_hash = Hash(target);
--        if (target_hash == e.written) continue;
--        const auto pieces = Pieces(e.sprite);
--        for (size_t i = 0; i < pieces.size(); ++i) {
--            std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
-+        if (target_hash == current_hash) continue;
-+        if (e.gravity) {
-+            std::memcpy(reinterpret_cast<void*>(e.base), target.data(), target.size());
-+        } else {
-+            const auto pieces = Pieces(e.sprite, e.dc);
-+            for (size_t i = 0; i < pieces.size(); ++i) {
-+                std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
-+            }
-         }
-         memory->InvalidateMemory(start, length);
--        written.emplace_back(e.base, e.sprite, target_hash);
-+        written.emplace_back(e.base, e.sprite, e.gravity, target_hash);
-     }
-     std::scoped_lock lock{mutex};
--    for (const auto& [base, sprite, hash] : written) {
-+    for (const auto& [base, sprite, gravity, hash] : written) {
-         for (size_t i = 0; i < entries.size(); ++i) {
--            if (entries[i].base != base || entries[i].sprite != sprite) continue;
-+            if (entries[i].base != base || entries[i].sprite != sprite || entries[i].gravity != gravity) continue;
-             if (hash) entries[i].written = hash;
-             else entries.erase(entries.begin() + i);
-             break;
-@@ -272,3 +429,40 @@ void Apply() {
- extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
-     BbPrompts::Configure(inputs, count);
- }
-+
-+// Diagnosis (BB_PROMPT_GLYPH=1): which layout the symbol font resolves to, and which codes
-+// the games ask it for, to find the pictures the menus draw with the font.
-+static const bool kGlyphTrace = std::getenv("BB_PROMPT_GLYPH") != nullptr;
-+
-+extern "C" int bbgpu_gr_prompt_glyph(int second_game, uint32_t code, uint8_t* coverage,
-+                                    int width, int height, int pitch) {
-+    // The same layout the textures follow: with "auto" that is the device in use, not
-+    // nothing. Menus, photo mode and the comic panels draw their prompts from this font.
-+    const BbPrompts::Device want = BbPrompts::WantLayout();
-+    const int style = BbPrompts::StyleFor(want);
-+    if (want == BbPrompts::Keyboard) {
-+        // Keyboard and mouse: the key caps drawn from input.ini, as the textures show them.
-+        const bool drawn = BbPrompts::KeyboardGlyph(second_game != 0, code, coverage, width, height,
-+                                                    pitch);
-+        if (kGlyphTrace)
-+            std::fprintf(stderr, "Glyph prompt: keyboard code %u (%dx%d) drawn %d\n", code, width,
-+                         height, drawn ? 1 : 0);
-+        return drawn;
-+    }
-+    const bool ps5 = style == BbPromptIcons::DcPs5;
-+    const int draw_style = style < BbPromptIcons::DcStyleCount ? style : -1;
-+    if (want != BbPrompts::Xbox && want != BbPrompts::Switch && !ps5) {
-+        if (kGlyphTrace)
-+            std::fprintf(stderr, "Glyph prompt: want %d style %d code %u left alone\n",
-+                         static_cast<int>(want), style, code);
-+        return 0;
-+    }
-+    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
-+    const bool drawn = font && BbPromptIcons::DrawGravityGlyph(second_game != 0, code,
-+        want == BbPrompts::Switch ? BbPromptIcons::PadSwitch : BbPromptIcons::PadXbox,
-+        coverage, width, height, pitch, draw_style);
-+    if (kGlyphTrace)
-+        std::fprintf(stderr, "Glyph prompt: want %d style %d code %u (%dx%d) drawn %d\n",
-+                     static_cast<int>(want), style, code, width, height, drawn ? 1 : 0);
-+    return drawn;
-+}
-diff --git a/gpu/shim/bbport_prompts.h b/gpu/shim/bbport_prompts.h
-index 69dd07f..195d17b 100644
---- a/gpu/shim/bbport_prompts.h
-+++ b/gpu/shim/bbport_prompts.h
-@@ -19,6 +19,17 @@ void Configure(const char* const* inputs, int count);
- /// What the prompts show: the keyboard and mouse, or a kind of controller.
- enum Device : int { Keyboard, PlayStation, Xbox, Switch };
- 
-+/// The layout the pictures follow: the chosen setting, or the device in use for "auto".
-+Device WantLayout();
-+/// The look for that layout (a BbPromptIcons::DcStyle), or -1 for the game's own pictures.
-+int StyleFor(Device want);
-+
-+/// The keyboard and mouse key caps for the symbol font (menus and photo mode): the codepoint's
-+/// icon drawn from input.ini's bindings into the glyph's coverage. False when the bindings are not
-+/// read yet or nothing is bound.
-+bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
-+                   int pitch);
-+
- /// Window thread: an input event from the keyboard or mouse, or a controller of that kind.
- void OnInput(Device device);
- /// Window thread: a controller of that kind is connected. Before any input, the prompts are
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
-index 6ddc6da..f1ec6a2 100644
+index c729033..99c1078 100644
 --- a/gpu/shim/bbport_prompt_icons.cpp
 +++ b/gpu/shim/bbport_prompt_icons.cpp
 @@ -588,4 +588,503 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
@@ -13252,7 +13725,7 @@ index 6ddc6da..f1ec6a2 100644
 +
  } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompt_icons.h b/gpu/shim/bbport_prompt_icons.h
-index a93cd08..fb77be3 100644
+index 85b7b33..8064a08 100644
 --- a/gpu/shim/bbport_prompt_icons.h
 +++ b/gpu/shim/bbport_prompt_icons.h
 @@ -74,4 +74,48 @@ std::vector<uint8_t> RenderArea(const Inputs& inputs, const Area& area);
@@ -13304,6 +13777,430 @@ index a93cd08..fb77be3 100644
 +                      int width, int height, int pitch, int dc_style = -1);
 +
  } // namespace BbPromptIcons
+diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
+index 3d44504..ca42d1c 100644
+--- a/gpu/shim/bbport_prompts.cpp
++++ b/gpu/shim/bbport_prompts.cpp
+@@ -9,6 +9,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <map>
+ #include <mutex>
+ #include <set>
+ #include <tuple>
+@@ -38,20 +39,26 @@ struct Entry {
+     int sprite;     // BbPromptIcons::HudSprite, or -1
+     Bytes original;
+     uint64_t written;
++    int dc = -1;    // DCport: a BbPromptIcons::DcIcon (a whole DriveClub icon texture), or -1
++    std::array<Bytes, BbPromptIcons::DcStyleCount> looks; // DCport: that icon in each DcStyle
++    bool gravity = false;
++    std::array<Bytes, BbPromptIcons::DcStyleCount + 1> gravity_looks; // Xbox 360, One, PS5, Switch
+ };
+ 
+ std::mutex mutex; // entries, the keyboard pictures, searched; never held while guest memory is written
+ std::vector<Entry> entries;
+ std::array<Bytes, BbPromptIcons::Count> keyboard_icons;
++std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> keyboard_pixels; // the symbol font
+ std::array<Bytes, HudCount> keyboard_sprites;
+ bool keyboard_ready = false;
+ // Xbox and Switch (BbPromptIcons::Pad order); empty for an icon that stays the game's own.
+ std::array<std::array<Bytes, BbPromptIcons::Count>, BbPromptIcons::PadCount> pad_icons;
+ std::array<std::array<Bytes, HudCount>, BbPromptIcons::PadCount> pad_sprites;
+-std::set<uintptr_t> searched;      // HUD atlases already looked at
++std::map<uintptr_t, uint64_t> searched; // HUD atlases, by their first icon's picture
+ std::atomic<int> device{-1};       // -1 nothing seen yet, else a Device
+ std::atomic<bool> dirty{false};    // something to write: a new picture, a device or binding change
+ int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
++int shown_style = -1;              // DCport: the DcStyle (or -1, the game's own) Apply last chose
+ 
+ Device Want() {
+     switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
+@@ -86,10 +93,12 @@ void DrawPads() {
+ 
+ /// Byte offsets from `base` of an entry's 16-byte pieces: the whole icon, or each block of the
+ /// sprite's area in the atlas's tiled layout.
+-std::vector<size_t> Pieces(int sprite) {
++std::vector<size_t> Pieces(int sprite, int dc = -1) {
+     std::vector<size_t> out;
+     if (sprite < 0) {
+-        for (size_t at = 0; at < size_t(BbPromptIcons::Bytes); at += 16) out.push_back(at);
++        const size_t bytes = dc >= 0 ? BbPromptIcons::DcBytes(BbPromptIcons::DcIcon(dc))
++                                     : size_t(BbPromptIcons::Bytes);
++        for (size_t at = 0; at < bytes; at += 16) out.push_back(at);
+         return out;
+     }
+     const auto& area = BbPromptIcons::HudAreas[sprite];
+@@ -101,9 +110,9 @@ std::vector<size_t> Pieces(int sprite) {
+     return out;
+ }
+ 
+-Bytes Gather(uintptr_t base, int sprite) {
++Bytes Gather(uintptr_t base, int sprite, int dc = -1) {
+     Bytes out;
+-    for (size_t at : Pieces(sprite)) {
++    for (size_t at : Pieces(sprite, dc)) {
+         const auto* p = reinterpret_cast<const uint8_t*>(base + at);
+         out.insert(out.end(), p, p + 16);
+     }
+@@ -111,8 +120,8 @@ Bytes Gather(uintptr_t base, int sprite) {
+ }
+ 
+ /// The guest range an entry touches (to check that it is mapped and to invalidate it).
+-std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite) {
+-    const auto pieces = Pieces(sprite);
++std::pair<uintptr_t, size_t> Range(uintptr_t base, int sprite, int dc = -1) {
++    const auto pieces = Pieces(sprite, dc);
+     const auto [lo, hi] = std::minmax_element(pieces.begin(), pieces.end());
+     return {base + *lo, *hi + 16 - *lo};
+ }
+@@ -121,16 +130,94 @@ uint64_t Hash(const Bytes& data) {
+     return XXH3_64bits(data.data(), data.size());
+ }
+ 
+-void Add(uintptr_t base, int icon, int sprite, Bytes original) {
++void Add(uintptr_t base, int icon, int sprite, Bytes original, int dc = -1,
++         std::array<Bytes, BbPromptIcons::DcStyleCount> looks = {}) {
+     std::scoped_lock lock{mutex};
+-    for (const Entry& e : entries) {
+-        if (e.base == base && e.sprite == sprite) return;
+-    }
+     const uint64_t hash = Hash(original);
+-    entries.push_back({base, icon, sprite, std::move(original), hash});
++    for (auto it = entries.begin(); it != entries.end(); ++it) {
++        if (it->base != base || it->sprite != sprite) continue;
++        // The picture is already tracked.
++        if (it->icon == icon && Hash(it->original) == hash) return;
++        // The games reuse texture memory constantly, so this address can hold another picture
++        // by now. Refusing the upload used to leave the new texture the game's own: Apply
++        // dropped the stale entry a frame later, and nothing replaced what took its place.
++        entries.erase(it);
++        break;
++    }
++    entries.push_back({base, icon, sprite, std::move(original), hash, dc, std::move(looks)});
+     dirty = true;
+ }
+ 
++/// DCport: a DriveClub icon texture (one of BbPromptIcons::DcTextures), with its Xbox 360
++/// button drawn and encoded now (once per address; the game reuses few).
++bool AddGravity(uintptr_t address, size_t size, uint32_t width, uint32_t height, uint32_t bits) {
++    const auto& textures = BbPromptIcons::GravityTextures;
++    bool candidate = false;
++    for (const auto& texture : textures)
++        candidate |= texture.width == width && texture.height == height && texture.bits == bits && texture.bytes == size;
++    if (!candidate) return false;
++    const uint64_t hash = XXH3_64bits(reinterpret_cast<const void*>(address), size);
++    for (const auto& texture : textures) {
++        if (texture.width != width || texture.height != height || texture.bits != bits ||
++            texture.bytes != size || texture.hash != hash) continue;
++        {
++            std::scoped_lock lock{mutex};
++            for (const Entry& e : entries)
++                if (e.base == address && e.gravity && e.written == hash) return true;
++        }
++        Bytes original(reinterpret_cast<const uint8_t*>(address),
++                       reinterpret_cast<const uint8_t*>(address) + size);
++        std::array<Bytes, BbPromptIcons::DcStyleCount + 1> looks;
++        for (int style = 0; style < BbPromptIcons::DcStyleCount; ++style)
++            looks[style] = BbPromptIcons::RenderGravityTexture(texture, style, original);
++        looks[BbPromptIcons::DcStyleCount] = BbPromptIcons::RenderGravityTexture(texture, -1, original);
++        std::scoped_lock lock{mutex};
++        for (auto it = entries.begin(); it != entries.end();) {
++            if (it->base == address && it->gravity) it = entries.erase(it);
++            else ++it;
++        }
++        const uint64_t original_hash = Hash(original);
++        Entry entry{};
++        entry.base = address;
++        entry.icon = -1;
++        entry.sprite = -1;
++        entry.original = std::move(original);
++        entry.written = original_hash;
++        entry.gravity = true;
++        entry.gravity_looks = std::move(looks);
++        entries.push_back(std::move(entry));
++        dirty = true;
++        return true;
++    }
++    return false;
++}
++
++bool AddDriveclub(uintptr_t address, size_t size, uint32_t width, uint32_t height) {
++    for (int i = 0; i < BbPromptIcons::DcCount; ++i) {
++        const auto icon = BbPromptIcons::DcIcon(i);
++        const auto& t = BbPromptIcons::DcTextures[i];
++        if (uint32_t(t.width) != width || uint32_t(t.height) != height || BbPromptIcons::DcBytes(icon) != size) {
++            continue;
++        }
++        Bytes bytes = Gather(address, -1, i);
++        if (Hash(bytes) != t.hash) continue;
++        {
++            std::scoped_lock lock{mutex};
++            for (const Entry& e : entries) {
++                if (e.base == address && e.dc == i) return true;
++            }
++        }
++        static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
++        std::array<Bytes, BbPromptIcons::DcStyleCount> looks;
++        for (int style = 0; font && style < BbPromptIcons::DcStyleCount; ++style) {
++            looks[style] = BbPromptIcons::EncodeDc(icon, BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style)), bytes);
++        }
++        Add(address, -1, -1, std::move(bytes), i, std::move(looks));
++        return true;
++    }
++    return false;
++}
++
+ } // namespace
+ 
+ void Configure(const char* const* inputs, int count) {
+@@ -138,6 +225,7 @@ void Configure(const char* const* inputs, int count) {
+     if (!font || count != BbPromptIcons::Count) return;
+     std::array<BbPromptIcons::Inputs, BbPromptIcons::Count> lists;
+     std::array<Bytes, BbPromptIcons::Count> icons;
++    std::array<BbPromptIcons::Pixels, BbPromptIcons::Count> pixels;
+     for (int i = 0; i < count; ++i) {
+         const std::string text = inputs[i] ? inputs[i] : "";
+         for (size_t start = 0; start < text.size();) {
+@@ -145,7 +233,8 @@ void Configure(const char* const* inputs, int count) {
+             if (end > start) lists[i].push_back(text.substr(start, end - start));
+             start = end + 1;
+         }
+-        const auto icon = BbPromptIcons::Render(lists[i]);
++        pixels[i] = BbPromptIcons::Draw(lists[i]);
++        const auto icon = BbPromptIcons::Encode(pixels[i]);
+         icons[i].assign(icon.begin(), icon.end());
+     }
+     std::array<Bytes, HudCount> sprites;
+@@ -155,11 +244,35 @@ void Configure(const char* const* inputs, int count) {
+     std::scoped_lock lock{mutex};
+     if (!keyboard_ready) DrawPads();
+     keyboard_icons = icons;
++    keyboard_pixels = pixels;
+     keyboard_sprites = sprites;
+     keyboard_ready = true;
+     dirty = true;
+ }
+ 
++bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
++                   int pitch) {
++    if (!coverage || width <= 0 || height <= 0 || pitch < width) return false;
++    const int icon = BbPromptIcons::GlyphIcon(second_game, code);
++    if (icon >= BbPromptIcons::Count) return false;
++    BbPromptIcons::Pixels pixels;
++    {
++        std::scoped_lock lock{mutex};
++        if (!keyboard_ready) return false;
++        pixels = keyboard_pixels[icon];
++    }
++    // The same way the controller icons are drawn into this cache: monochrome coverage.
++    const int size = BbPromptIcons::Size;
++    for (int y = 0; y < height; ++y) {
++        for (int x = 0; x < width; ++x) {
++            const size_t source = ((y * size / height) * size + x * size / width) * 4;
++            const int brightness = std::max({pixels[source], pixels[source + 1], pixels[source + 2]});
++            coverage[y * pitch + x] = uint8_t(brightness * pixels[source + 3] / 255);
++        }
++    }
++    return true;
++}
++
+ void OnInput(Device value) {
+     if (device.exchange(value, std::memory_order_relaxed) != value) dirty = true;
+ }
+@@ -192,7 +305,11 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+             }
+         }
+     }
++    if (AddGravity(address, size, width, height, bits)) return;
++    // Gravity hashes describe mip 0, whose address and size are passed above.
++    // A texture may still have lower-resolution mip levels.
+     if (levels != 1 || bits != 128) return;
++    if (AddDriveclub(address, size, width, height)) return;
+     if (width == BbPromptIcons::Size && height == BbPromptIcons::Size && size == size_t(BbPromptIcons::Bytes)) {
+         // A KG_* icon: the menus' key guides and the buttons in their messages.
+         Bytes bytes = Gather(address, -1);
+@@ -203,10 +320,14 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+         return;
+     }
+     if (width == uint32_t(BbPromptIcons::HudAtlasWidth) && height == uint32_t(BbPromptIcons::HudAtlasHeight)) {
+-        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3.
++        // The HUD atlas: the prompts in the world draw its Circle, Cross and L3. Another atlas
++        // can be uploaded at the same address later, so remember the picture, not the address.
++        const uint64_t first = Hash(Gather(address, 0));
+         {
+             std::scoped_lock lock{mutex};
+-            if (!searched.insert(address).second) return;
++            const auto [found, added] = searched.try_emplace(address, first);
++            if (!added && found->second == first) return;
++            found->second = first;
+         }
+         for (int s = 0; s < HudCount; ++s) {
+             Bytes bytes = Gather(address, s);
+@@ -215,19 +336,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+     }
+ }
+ 
++Device WantLayout() {
++    return Want();
++}
++
++int StyleFor(Device want) {
++    const auto& settings = BbSettings::Get();
++    return want == Xbox ? (settings.xbox_buttons ? BbPromptIcons::DcXboxOne : BbPromptIcons::DcXbox360)
++         : want == PlayStation && settings.playstation_buttons ? BbPromptIcons::DcPs5
++         : want == Switch ? BbPromptIcons::DcStyleCount : -1;
++}
++
+ void Apply() {
+     const Device want = Want();
+-    if (!dirty.exchange(false) && want == shown) return;
++    // DCport: Driveclub's icons follow the controller in its chosen look (settings
++    // xbox_buttons, playstation_buttons); the game's own for a PS4 look or the keyboard.
++    const int style = StyleFor(want);
++    if (!dirty.exchange(false) && want == shown && style == shown_style) return;
+     shown = want;
++    shown_style = style;
+ 
+     std::vector<Entry> snapshot;
+     std::array<Bytes, BbPromptIcons::Count> icons; // empty: the game's own
+     std::array<Bytes, HudCount> sprites;
+     {
+         std::scoped_lock lock{mutex};
+-        if (want != PlayStation && !keyboard_ready) return;
+         snapshot = entries;
+-        if (want == Keyboard) {
++        // Without the keyboard pictures (input.ini not read yet) the key-guide icons stay the
++        // game's for now; DriveClub's icons need none of them.
++        if (!keyboard_ready) {
++        } else if (want == Keyboard) {
+             icons = keyboard_icons;
+             sprites = keyboard_sprites;
+         } else if (want != PlayStation) {
+@@ -238,28 +376,47 @@ void Apply() {
+     }
+     // Written without any lock: a write to a page the texture cache protects faults into it.
+     auto* memory = Core::Memory::Instance();
+-    std::vector<std::tuple<uintptr_t, int, uint64_t>> written; // hash 0: the entry is gone
++    std::vector<std::tuple<uintptr_t, int, bool, uint64_t>> written; // hash 0: the entry is gone
++    static const Bytes none;
+     for (const Entry& e : snapshot) {
+-        const auto [start, length] = Range(e.base, e.sprite);
+-        if (!memory->IsValidMapping(start, length) || Hash(Gather(e.base, e.sprite)) != e.written) {
+-            written.emplace_back(e.base, e.sprite, 0); // unmapped, or the game put something else there
++        const auto [start, length] = e.gravity ? std::pair<uintptr_t, size_t>{e.base, e.original.size()}
++                                                : Range(e.base, e.sprite, e.dc);
++        if (!memory->IsValidMapping(start, length)) {
++            written.emplace_back(e.base, e.sprite, e.gravity, 0);
++            continue;
++        }
++        const Bytes current = e.gravity ? Bytes(reinterpret_cast<const uint8_t*>(e.base),
++                                                 reinterpret_cast<const uint8_t*>(e.base) + e.original.size())
++                                        : Gather(e.base, e.sprite, e.dc);
++        const uint64_t current_hash = Hash(current);
++        // The game's own picture: it re-uploaded the texture the cache did not report (a view,
++        // a bigger image at the address). Anything else is a different texture.
++        if (current_hash != e.written && current_hash != Hash(e.original)) {
++            written.emplace_back(e.base, e.sprite, e.gravity, 0);
+             continue;
+         }
+-        const Bytes& mine = e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
++        // DriveClub's icons: the chosen look for the controller in use, else the game's own.
++        const Bytes& mine = e.gravity ? (style >= 0 ? e.gravity_looks[style] : none)
++                            : e.dc >= 0 ? (style >= 0 && style < BbPromptIcons::DcStyleCount ? e.looks[style] : none)
++                            : e.sprite < 0 ? icons[e.icon] : sprites[e.sprite];
+         const Bytes& target = mine.empty() ? e.original : mine;
+         const uint64_t target_hash = Hash(target);
+-        if (target_hash == e.written) continue;
+-        const auto pieces = Pieces(e.sprite);
+-        for (size_t i = 0; i < pieces.size(); ++i) {
+-            std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
++        if (target_hash == current_hash) continue;
++        if (e.gravity) {
++            std::memcpy(reinterpret_cast<void*>(e.base), target.data(), target.size());
++        } else {
++            const auto pieces = Pieces(e.sprite, e.dc);
++            for (size_t i = 0; i < pieces.size(); ++i) {
++                std::memcpy(reinterpret_cast<void*>(e.base + pieces[i]), &target[i * 16], 16);
++            }
+         }
+         memory->InvalidateMemory(start, length);
+-        written.emplace_back(e.base, e.sprite, target_hash);
++        written.emplace_back(e.base, e.sprite, e.gravity, target_hash);
+     }
+     std::scoped_lock lock{mutex};
+-    for (const auto& [base, sprite, hash] : written) {
++    for (const auto& [base, sprite, gravity, hash] : written) {
+         for (size_t i = 0; i < entries.size(); ++i) {
+-            if (entries[i].base != base || entries[i].sprite != sprite) continue;
++            if (entries[i].base != base || entries[i].sprite != sprite || entries[i].gravity != gravity) continue;
+             if (hash) entries[i].written = hash;
+             else entries.erase(entries.begin() + i);
+             break;
+@@ -272,3 +429,40 @@ void Apply() {
+ extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
+     BbPrompts::Configure(inputs, count);
+ }
++
++// Diagnosis (BB_PROMPT_GLYPH=1): which layout the symbol font resolves to, and which codes
++// the games ask it for, to find the pictures the menus draw with the font.
++static const bool kGlyphTrace = std::getenv("BB_PROMPT_GLYPH") != nullptr;
++
++extern "C" int bbgpu_gr_prompt_glyph(int second_game, uint32_t code, uint8_t* coverage,
++                                    int width, int height, int pitch) {
++    // The same layout the textures follow: with "auto" that is the device in use, not
++    // nothing. Menus, photo mode and the comic panels draw their prompts from this font.
++    const BbPrompts::Device want = BbPrompts::WantLayout();
++    const int style = BbPrompts::StyleFor(want);
++    if (want == BbPrompts::Keyboard) {
++        // Keyboard and mouse: the key caps drawn from input.ini, as the textures show them.
++        const bool drawn = BbPrompts::KeyboardGlyph(second_game != 0, code, coverage, width, height,
++                                                    pitch);
++        if (kGlyphTrace)
++            std::fprintf(stderr, "Glyph prompt: keyboard code %u (%dx%d) drawn %d\n", code, width,
++                         height, drawn ? 1 : 0);
++        return drawn;
++    }
++    const bool ps5 = style == BbPromptIcons::DcPs5;
++    const int draw_style = style < BbPromptIcons::DcStyleCount ? style : -1;
++    if (want != BbPrompts::Xbox && want != BbPrompts::Switch && !ps5) {
++        if (kGlyphTrace)
++            std::fprintf(stderr, "Glyph prompt: want %d style %d code %u left alone\n",
++                         static_cast<int>(want), style, code);
++        return 0;
++    }
++    static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
++    const bool drawn = font && BbPromptIcons::DrawGravityGlyph(second_game != 0, code,
++        want == BbPrompts::Switch ? BbPromptIcons::PadSwitch : BbPromptIcons::PadXbox,
++        coverage, width, height, pitch, draw_style);
++    if (kGlyphTrace)
++        std::fprintf(stderr, "Glyph prompt: want %d style %d code %u (%dx%d) drawn %d\n",
++                     static_cast<int>(want), style, code, width, height, drawn ? 1 : 0);
++    return drawn;
++}
+diff --git a/gpu/shim/bbport_prompts.h b/gpu/shim/bbport_prompts.h
+index 84dac01..62e643f 100644
+--- a/gpu/shim/bbport_prompts.h
++++ b/gpu/shim/bbport_prompts.h
+@@ -19,6 +19,17 @@ void Configure(const char* const* inputs, int count);
+ /// What the prompts show: the keyboard and mouse, or a kind of controller.
+ enum Device : int { Keyboard, PlayStation, Xbox, Switch };
+ 
++/// The layout the pictures follow: the chosen setting, or the device in use for "auto".
++Device WantLayout();
++/// The look for that layout (a BbPromptIcons::DcStyle), or -1 for the game's own pictures.
++int StyleFor(Device want);
++
++/// The keyboard and mouse key caps for the symbol font (menus and photo mode): the codepoint's
++/// icon drawn from input.ini's bindings into the glyph's coverage. False when the bindings are not
++/// read yet or nothing is bound.
++bool KeyboardGlyph(bool second_game, uint32_t code, uint8_t* coverage, int width, int height,
++                   int pitch);
++
+ /// Window thread: an input event from the keyboard or mouse, or a controller of that kind.
+ void OnInput(Device device);
+ /// Window thread: a controller of that kind is connected. Before any input, the prompts are
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
 index 5b985a4..81538f9 100644
 --- a/gpu/shim/bbport_settings.cpp
@@ -13904,7 +14801,7 @@ index 5b985a4..81538f9 100644
 +
 +} // namespace BbSettings
 diff --git a/gpu/shim/bbport_settings.h b/gpu/shim/bbport_settings.h
-index c0e7334..2b58b29 100644
+index c0e7334..8a41730 100644
 --- a/gpu/shim/bbport_settings.h
 +++ b/gpu/shim/bbport_settings.h
 @@ -76,18 +76,30 @@ struct Values {
@@ -13940,7 +14837,16 @@ index c0e7334..2b58b29 100644
      // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
      std::atomic<bool> fsr4_auto_exposure{true};
      std::atomic<bool> fsr4_invert_jitter{false};
-@@ -126,6 +138,9 @@ struct Values {
+@@ -106,6 +118,8 @@ struct Values {
+     std::atomic<int> live_resolution{0};
+     /// Why FSR 4 cannot run (assets, device features), or null. Set by the renderer.
+     std::atomic<const char*> fsr4_problem{nullptr};
++    /// FSR 4 runs as AMD's FSR 4.1.2 (vk_fsr412), not the v07 model: the FPS counter says so.
++    std::atomic<bool> fsr412_active{false};
+     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false};
+     /// DLSS (bbport_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
+     std::atomic<bool> dlss_supported{false};
+@@ -126,6 +140,9 @@ struct Values {
      /// The game's own frame rate (presenter, game frames only), shown beside the total when
      /// frame generation adds frames.
      std::atomic<float> game_fps{0.0f};
@@ -14111,30 +15017,6 @@ index 550e79e..a324b31 100644
              continue;
          }
          switch (event.type) {
-diff --git a/gpu/third_party/fsr-vulkan b/gpu/third_party/fsr-vulkan
---- a/gpu/third_party/fsr-vulkan
-+++ b/gpu/third_party/fsr-vulkan
-@@ -1 +1 @@
--Subproject commit c64f093404125e960813f95f1996c14780f0dd69
-+Subproject commit c64f093404125e960813f95f1996c14780f0dd69-dirty
-diff --git a/gpu/third_party/magic_enum b/gpu/third_party/magic_enum
---- a/gpu/third_party/magic_enum
-+++ b/gpu/third_party/magic_enum
-@@ -1 +1 @@
--Subproject commit e046b69a3736d314fad813e159b1c192eaef92cd
-+Subproject commit e046b69a3736d314fad813e159b1c192eaef92cd-dirty
-diff --git a/gpu/third_party/miniz b/gpu/third_party/miniz
---- a/gpu/third_party/miniz
-+++ b/gpu/third_party/miniz
-@@ -1 +1 @@
--Subproject commit 2948eebafc5b9f1c69bebed80333e403a09bd62d
-+Subproject commit 2948eebafc5b9f1c69bebed80333e403a09bd62d-dirty
-diff --git a/gpu/third_party/xbyak b/gpu/third_party/xbyak
---- a/gpu/third_party/xbyak
-+++ b/gpu/third_party/xbyak
-@@ -1 +1 @@
--Subproject commit cd6bad3cad2e07a3e277c23d2b1f065320024717
-+Subproject commit cd6bad3cad2e07a3e277c23d2b1f065320024717-dirty
 diff --git a/packaging/windows/bb-probe.rc b/packaging/windows/bb-probe.rc
 index 46d615e..87446fa 100644
 --- a/packaging/windows/bb-probe.rc
@@ -18491,10 +19373,10 @@ index c64c0f9..4bff266 100644
      struct stat s;
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
-index 0000000..9cab29f
+index 0000000..12c6ca0
 --- /dev/null
 +++ b/src/runtime_font.c
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,367 @@
 +/* libSceFont on FreeType (Driveclub).
 + *
 + * The game opens its own TrueType/OpenType fonts from memory, sets a pixel scale and
@@ -18778,7 +19660,12 @@ index 0000000..9cab29f
 +        return FONT_ERROR_NO_SUPPORT_GLYPH;
 +    }
 +    metrics(f, m);
-+    load_glyph(f, code, fx, fy, 1);
++    if (!load_glyph(f, code, fx, fy, 1)) {
++        memset(m, 0, sizeof(*m));
++        memset(out, 0, sizeof(*out));
++        pthread_mutex_unlock(&lock);
++        return FONT_ERROR_NO_SUPPORT_GLYPH;
++    }
 +    const FT_GlyphSlot slot = f->face->glyph;
 +    const FT_Bitmap *bitmap = &slot->bitmap;
 +    // Restrict substitutions to each game's exact symbol font. Ordinary text uses some
@@ -18789,7 +19676,6 @@ index 0000000..9cab29f
 +                             (int)bitmap->width,(int)bitmap->rows,bitmap->pitch);
 +    const int32_t left = slot->bitmap_left, top = slot->bitmap_top;
 +    const int32_t gw = (int32_t)bitmap->width, gh = (int32_t)bitmap->rows;
-+    const int32_t right = left + gw;
 +    const int32_t dest_x = (int32_t)floorf(x) + left, dest_y = (int32_t)floorf(y) - top;
 +    const int32_t bpp = s->pixel_size_byte > 0 ? s->pixel_size_byte : 1;
 +    int32_t ux0 = dest_x, uy0 = dest_y, uw = 0, uh = 0;
@@ -18816,13 +19702,28 @@ index 0000000..9cab29f
 +                                             (size_t)out->update_rect.x * (size_t)bpp : NULL;
 +    out->surface_image.width_byte = (uint32_t)s->width_byte;
 +    out->surface_image.pixel_size_byte = (uint8_t)bpp;
-+    const float advance_end = ceilf(x + m->horizontal.advance);
-+    out->image_metrics.bearing_x = (float)((int32_t)floorf(x) + left) - x;
-+    out->image_metrics.bearing_y = (float)top + floorf(y) - y;
-+    out->image_metrics.advance = advance_end - x;
-+    out->image_metrics.stride = fmaxf(advance_end, floorf(x) + (float)right) - x;
-+    out->image_metrics.width = (uint32_t)gw;
-+    out->image_metrics.height = (uint32_t)gh;
++    /* SceFont reports snapped outline bounds, which are not always identical to
++       the FreeType bitmap bounds at fractional pen positions (shadPS4 font HLE). */
++    const float left_f = x + m->horizontal.bearing_x;
++    const float top_f = y + m->horizontal.bearing_y;
++    const float right_f = left_f + m->width;
++    const float bottom_f = top_f - m->height;
++    const int32_t left_i = (int32_t)floorf(left_f), top_i = (int32_t)ceilf(top_f);
++    const int32_t right_i = (int32_t)ceilf(right_f), bottom_i = (int32_t)floorf(bottom_f);
++    const float advance_f = x + m->horizontal.advance;
++    const int32_t advance_i = (int32_t)ceilf(advance_f);
++    int32_t stride_i = advance_i;
++    if (advance_f != (float)advance_i) {
++        const int32_t tmp_i = (int32_t)(((float)right_i - right_f) + advance_f);
++        stride_i = advance_f <= right_f ? tmp_i : right_i + 1;
++        if (stride_i < tmp_i) stride_i = tmp_i;
++    }
++    out->image_metrics.bearing_x = (float)left_i - x;
++    out->image_metrics.bearing_y = (float)top_i - y;
++    out->image_metrics.advance = (float)advance_i - x;
++    out->image_metrics.stride = (float)stride_i - x;
++    out->image_metrics.width = (uint32_t)max_i(0, right_i - left_i);
++    out->image_metrics.height = (uint32_t)max_i(0, top_i - bottom_i);
 +    pthread_mutex_unlock(&lock);
 +    return 0;
 +}
@@ -20311,7 +21212,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..a79b33a 100644
+index 687bfb5..9a07534 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -20515,7 +21416,24 @@ index 687bfb5..a79b33a 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
-@@ -846,7 +999,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +991,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+     if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
+     if (index) return ERR_INVALID_ARG;
+     pthread_mutex_lock(&lock);
+-    int already=opened; opened=1;
++    int already=opened;
++    if (!already) {
++        opened=1;
++        motion_enabled=1;
++        reset_motion();
++        SDL_Gamepad *g=current_motion_gamepad(current_gamepad());
++        configure_motion(g);
++        report_motion_capabilities(g,"enabled at pad open");
++    }
+     pthread_mutex_unlock(&lock);
+     if (already) return ERR_ALREADY_OPENED;
+     puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
+@@ -846,7 +1007,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -20532,7 +21450,7 @@ index 687bfb5..a79b33a 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1046,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1054,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -20562,7 +21480,7 @@ index 687bfb5..a79b33a 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1076,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1084,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -21835,6 +22753,49 @@ index 0000000..e930ab9
 +    assert(audio_close(main_port)==0 && audio_close(pad_port)==0);
 +    puts("PASS: controller speaker mute preserves main audio; global mute still covers both");
 +}
+diff --git a/tests/test_aux_tess_exports.cpp b/tests/test_aux_tess_exports.cpp
+new file mode 100644
+index 0000000..bd562c1
+--- /dev/null
++++ b/tests/test_aux_tess_exports.cpp
+@@ -0,0 +1,37 @@
++#include <cassert>
++#include <cstdint>
++#include <fstream>
++#include <string>
++#include <vector>
++#include <spirv/unified1/spirv.hpp11>
++#include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
++#include "shader_recompiler/runtime_info.h"
++
++int main() {
++    Shader::HwFragmentRuntimeInfo fs{};
++    fs.num_inputs = 3;
++    for (unsigned i = 0; i < fs.num_inputs; ++i) fs.inputs[i].param_index = i;
++    using Shader::Backend::SPIRV::AuxShaderType;
++    using Shader::Backend::SPIRV::EmitAuxilaryTessShader;
++    const AuxShaderType types[] = {AuxShaderType::RectListTCS, AuxShaderType::QuadListTCS,
++                                   AuxShaderType::PassthroughTES};
++    for (unsigned t = 0; t < 3; ++t) {
++        for (unsigned limit : {0u, 1u, 3u, 5u}) {
++            auto code = EmitAuxilaryTessShader(types[t], limit, fs);
++            unsigned locations = 0;
++            for (size_t i = 5; i < code.size();) {
++                const unsigned words = code[i] >> 16;
++                assert(words && i + words <= code.size());
++                if ((code[i] & 0xffffu) == static_cast<unsigned>(spv::Op::OpDecorate) &&
++                    words >= 4 && code[i + 2] == static_cast<unsigned>(spv::Decoration::Location))
++                    ++locations;
++                i += words;
++            }
++            assert(locations == 2 * (limit < fs.num_inputs ? limit : fs.num_inputs));
++            std::ofstream file("tess-" + std::to_string(t) + "-" + std::to_string(limit) + ".spv",
++                               std::ios::binary);
++            file.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(code[0]));
++            assert(file.good());
++        }
++    }
++}
 diff --git a/tests/test_avplayer_wait.cpp b/tests/test_avplayer_wait.cpp
 new file mode 100644
 index 0000000..6d4d62c
@@ -21871,8 +22832,56 @@ index 0000000..6d4d62c
 +    }
 +    std::puts("PASS: empty decoder queue wakes on EOF, packet arrival, and cancellation");
 +}
+diff --git a/tests/test_font_metrics.c b/tests/test_font_metrics.c
+new file mode 100644
+index 0000000..1706607
+--- /dev/null
++++ b/tests/test_font_metrics.c
+@@ -0,0 +1,42 @@
++/* Compare the SceFont outline bounds against real fractional-position glyphs. */
++#include <assert.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include "../src/runtime_font.c"
++
++uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid) {
++    (void)table; (void)count; (void)nid; return 0;
++}
++int bbgpu_gr_prompt_glyph(int game, uint32_t code, uint8_t *data, int w, int h, int pitch) {
++    (void)game; (void)code; (void)data; (void)w; (void)h; (void)pitch; return 0;
++}
++int main(int argc, char **argv) {
++    assert(argc==2);
++    FILE *file=fopen(argv[1],"rb"); assert(file);
++    assert(fseek(file,0,SEEK_END)==0); long n=ftell(file); assert(n>0); rewind(file);
++    void *bytes=malloc((size_t)n); assert(bytes && fread(bytes,1,(size_t)n,file)==(size_t)n);
++    fclose(file);
++    Font *f=open_font(bytes,(size_t)n,"test"); free(bytes); assert(f);
++    assert(set_scale_pixel(f,22,22)==0);
++    uint8_t pixels[128*128]={0}; RenderSurface surface;
++    render_surface_init(&surface,pixels,128,1,128,128);
++    unsigned different=0;
++    for (int ch='0';ch<='9';++ch) for (int sub=0;sub<4;++sub) {
++        const float x=64.0f+sub*0.25f, y=64.0f+sub*0.25f;
++        GlyphMetrics m; RenderOutput out;
++        assert(render_glyph(f,(uint32_t)ch,&surface,x,y,&m,&out)==0);
++        const float l=x+m.horizontal.bearing_x, t=y+m.horizontal.bearing_y;
++        const int w=(int)ceilf(l+m.width)-(int)floorf(l);
++        const int h=(int)ceilf(t)-(int)floorf(t-m.height);
++        assert(out.image_metrics.width==(uint32_t)w && out.image_metrics.height==(uint32_t)h);
++        assert(fabsf(out.image_metrics.bearing_x-(floorf(l)-x))<0.0001f);
++        assert(fabsf(out.image_metrics.bearing_y-(ceilf(t)-y))<0.0001f);
++        if ((int)out.image_metrics.width!=(int)f->face->glyph->bitmap.width ||
++            (int)out.image_metrics.height!=(int)f->face->glyph->bitmap.rows) ++different;
++    }
++    assert(different>0);
++    close_font(f);
++    puts("PASS: fractional digit metrics use SceFont outline bounds");
++    return 0;
++}
 diff --git a/tests/test_pad.c b/tests/test_pad.c
-index a477ea9..761d1c5 100644
+index a477ea9..fe74fc4 100644
 --- a/tests/test_pad.c
 +++ b/tests/test_pad.c
 @@ -3,6 +3,13 @@
@@ -21916,7 +22925,7 @@ index a477ea9..761d1c5 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -493,7 +500,73 @@ static void test_reload_on_f8(void) {
+@@ -493,7 +500,80 @@ static void test_reload_on_f8(void) {
      puts("PASS: F8 reloads input.ini live (AC-018)");
  }
  
@@ -21954,7 +22963,11 @@ index a477ea9..761d1c5 100644
 +    PadData d;
 +    assert(pad_set_motion(0,1)==ERR_INVALID_HANDLE);
 +    assert(pad_reset_orientation(0)==ERR_INVALID_HANDLE);
-+    assert(pad_set_motion(1,1)==0);
++    /* Games may never call scePadSetMotionSensorState. Reopening the pad must
++       discover and enable the sensor, and explicit disable must still work. */
++    assert(pad_close(1)==0);
++    assert(pad_open(1,0,0,NULL)==1);
++    assert(motion_enabled);
 +    assert(motion_gamepad && motion_gamepad!=gamepad);
 +    assert(SDL_GamepadHasSensor(motion_gamepad,SDL_SENSOR_GYRO));
 +    assert(SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
@@ -21982,6 +22995,9 @@ index a477ea9..761d1c5 100644
 +    assert(pad_set_motion(1,0)==0);
 +    assert(!SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
 +    assert(pad_read_state(1,&d)==0 && d.angular_velocity[0]==0 && d.orientation[3]==1.0f);
++    assert(pad_close(1)==0);
++    assert(pad_open(1,0,0,NULL)==1);
++    assert(motion_gamepad && SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
 +    puts("PASS: gyro-capable SDL pad discovery, sensor enablement, units, quaternion, reset and overlay capture");
 +}
 +
@@ -21990,7 +23006,7 @@ index a477ea9..761d1c5 100644
      test_binding_evaluation();
      test_combos();
      test_prompt_texts();
-@@ -502,7 +575,7 @@ int main(void) {
+@@ -502,7 +582,7 @@ int main(void) {
      test_mouse_to_axis();
      test_mouse_buttons_and_wheel();
  
@@ -21999,7 +23015,7 @@ index a477ea9..761d1c5 100644
      int fd=mkstemp(path);
      assert(fd>=0);
      close(fd);
-@@ -534,18 +607,43 @@ int main(void) {
+@@ -534,18 +614,43 @@ int main(void) {
      desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
      desc.button_mask=(1u<<SDL_GAMEPAD_BUTTON_COUNT)-1;
      desc.axis_mask=(1u<<SDL_GAMEPAD_AXIS_COUNT)-1;
@@ -22048,7 +23064,7 @@ index a477ea9..761d1c5 100644
      SDL_UpdateJoysticks();
      SDL_UpdateGamepads();
      assert(pad_read_state(1,&data)==0);
-@@ -555,14 +653,20 @@ int main(void) {
+@@ -555,14 +660,20 @@ int main(void) {
      capture=1;
      assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
      capture=0;
@@ -22072,18 +23088,21 @@ index a477ea9..761d1c5 100644
      SDL_Quit();
      unlink(path);
 diff --git a/tests/test_prompt_icons.cpp b/tests/test_prompt_icons.cpp
-index a5edf37..9ddc564 100644
+index a5edf37..5458968 100644
 --- a/tests/test_prompt_icons.cpp
 +++ b/tests/test_prompt_icons.cpp
-@@ -4,3 +4,4 @@
+@@ -4,6 +4,7 @@
+ // <name>.bc7 (encoded, tiled) for viewing.
  #include "bbport_prompt_icons.h"
--
-+
+ 
 +#include <algorithm>
  #include <cassert>
-@@ -87,3 +87,48 @@ int main(int argc, char** argv) {
+ #include <cmath>
+ #include <cstdio>
+@@ -85,6 +86,51 @@ int main(int argc, char** argv) {
+     std::ifstream font_file(BB_TEST_FONT, std::ios::binary);
+     std::vector<unsigned char> font((std::istreambuf_iterator<char>(font_file)), {});
      assert(SetFont(font.data()));
--
 +    // Verify every supported prompt mapping in both games, including L1/R1 and both triggers.
 +    struct GlyphCase { bool gr2; uint32_t code; Icon icon; };
 +    const GlyphCase glyphs[] = {
@@ -22129,9 +23148,12 @@ index a5edf37..9ddc564 100644
 +    assert(std::all_of(unchanged.begin(), unchanged.end(), [](uint8_t value) { return value == 0xcc; }));
 +    assert(!DrawGravityGlyph(false, 'h', PadXbox, unchanged.data(), 32, 32, 10));
 +    std::puts("PASS: all mapped GR1/GR2 glyphs, L1/R1, triggers, styles, pitch padding");
-+
+ 
      assert(KeyLabel("e") == "E" && KeyLabel("space") == "Space" && KeyLabel("lshift") == "Shift");
-@@ -159,4 +206,52 @@ int main(int argc, char** argv) {
+     assert(KeyLabel("f11") == "F11" && KeyLabel("kp5") == "Num5" && KeyLabel("leftbutton").empty());
+@@ -157,8 +203,56 @@ int main(int argc, char** argv) {
+         assert(alpha(area.w / 2, area.h / 2) > 200);
+     }
  
 -    // PSNR above ~30 dB: differences no one sees at 32x32 in a menu.
 -    assert(worst < 65.0);
@@ -22186,7 +23208,8 @@ index a5edf37..9ddc564 100644
 +    // PSNR above ~30 dB: differences no one sees at 32x32 in a menu (the DriveClub icons too).
 +    assert(worst < 65.0 && dc_worst < 65.0);
      std::printf("prompt icons: all tests passed (worst mse %.1f)\n", worst);
-
+     return 0;
+ }
 diff --git a/tests/test_trophy.c b/tests/test_trophy.c
 new file mode 100644
 index 0000000..b66b116
@@ -32011,6 +33034,62 @@ index 0000000..e4b32ed
 +WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 +------------------------------------------------------------------------------
 +*/
+diff --git a/tools/fetch_fsr24.py b/tools/fetch_fsr24.py
+new file mode 100644
+index 0000000..dc981fb
+--- /dev/null
++++ b/tools/fetch_fsr24.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Fetches AMD FSR SDK 2.4.0 files for FSR 4.1.2 into fsr24/ (git-ignored, never committed).
++
++fsr24/sdk/...                          headers the build needs (vk_fsr412.cpp)
++fsr24/amd_fidelityfx_upscaler_vk.dll   AMD's signed upscaler, shipped in bin/fsr24/ of FSR editions
++fsr24/AMD-FSR-SDK-LICENSE.md           AMD's license, shipped next to it
++"""
++import hashlib
++import sys
++import urllib.request
++from pathlib import Path
++
++COMMIT = "7539ae8b6568ad29ed78a753404351daf3b5cca7"  # SDK v2.4.0
++BASE = f"https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/{COMMIT}/"
++KIT = "Kits/FidelityFX/"
++FILES = {
++    "sdk/api/include/ffx_api.h": KIT + "api/include/ffx_api.h",
++    "sdk/api/include/ffx_api_types.h": KIT + "api/include/ffx_api_types.h",
++    "sdk/api/include/ffx_api_loader.h": KIT + "api/include/ffx_api_loader.h",
++    "sdk/api/include/vk/ffx_api_vk.h": KIT + "api/include/vk/ffx_api_vk.h",
++    "sdk/upscalers/include/ffx_upscale.h": KIT + "upscalers/include/ffx_upscale.h",
++    "AMD-FSR-SDK-LICENSE.md": "docs/license.md",
++    "amd_fidelityfx_upscaler_vk.dll": KIT + "signedbin/amd_fidelityfx_upscaler_vk.dll",
++}
++PINNED = {"amd_fidelityfx_upscaler_vk.dll":
++          "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"}
++
++
++def main() -> int:
++    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "fsr24"
++    for name, source in FILES.items():
++        target = out / name
++        if target.is_file() and (name not in PINNED or
++                                 hashlib.sha256(target.read_bytes()).hexdigest() == PINNED[name]):
++            continue
++        with urllib.request.urlopen(BASE + source, timeout=120) as response:
++            data = response.read()
++        if name in PINNED and hashlib.sha256(data).hexdigest() != PINNED[name]:
++            print(f"fetch_fsr24: {name} does not match the pinned SDK 2.4.0 file", file=sys.stderr)
++            return 1
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_bytes(data)
++        print(f"fetch_fsr24: {name} ({len(data)} bytes)")
++    print(f"fetch_fsr24: SDK 2.4.0 files ready in {out}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
 diff --git a/tools/fsr4cap/extract.py b/tools/fsr4cap/extract.py
 index 3e4c88f..6e4d9c6 100644
 --- a/tools/fsr4cap/extract.py
@@ -32380,334 +33459,3 @@ index 0000000..7dc9edb
 +
 +if __name__ == "__main__":
 +    sys.exit(main(sys.argv[1:]))
-
---- a/src/runtime_pad.c
-+++ b/src/runtime_pad.c
-@@ -991,7 +991,15 @@
-     if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
-     if (index) return ERR_INVALID_ARG;
-     pthread_mutex_lock(&lock);
--    int already=opened; opened=1;
-+    int already=opened;
-+    if (!already) {
-+        opened=1;
-+        motion_enabled=1;
-+        reset_motion();
-+        SDL_Gamepad *g=current_motion_gamepad(current_gamepad());
-+        configure_motion(g);
-+        report_motion_capabilities(g,"enabled at pad open");
-+    }
-     pthread_mutex_unlock(&lock);
-     if (already) return ERR_ALREADY_OPENED;
-     puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
---- a/tests/test_pad.c
-+++ b/tests/test_pad.c
-@@ -534,7 +534,11 @@
-     PadData d;
-     assert(pad_set_motion(0,1)==ERR_INVALID_HANDLE);
-     assert(pad_reset_orientation(0)==ERR_INVALID_HANDLE);
--    assert(pad_set_motion(1,1)==0);
-+    /* Games may never call scePadSetMotionSensorState. Reopening the pad must
-+       discover and enable the sensor, and explicit disable must still work. */
-+    assert(pad_close(1)==0);
-+    assert(pad_open(1,0,0,NULL)==1);
-+    assert(motion_enabled);
-     assert(motion_gamepad && motion_gamepad!=gamepad);
-     assert(SDL_GamepadHasSensor(motion_gamepad,SDL_SENSOR_GYRO));
-     assert(SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
-@@ -562,6 +566,9 @@
-     assert(pad_set_motion(1,0)==0);
-     assert(!SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
-     assert(pad_read_state(1,&d)==0 && d.angular_velocity[0]==0 && d.orientation[3]==1.0f);
-+    assert(pad_close(1)==0);
-+    assert(pad_open(1,0,0,NULL)==1);
-+    assert(motion_gamepad && SDL_GamepadSensorEnabled(motion_gamepad,SDL_SENSOR_GYRO));
-     puts("PASS: gyro-capable SDL pad discovery, sensor enablement, units, quaternion, reset and overlay capture");
- }
- 
-
---- a/gpu/shadps4/shader_recompiler/runtime_info.h
-+++ b/gpu/shadps4/shader_recompiler/runtime_info.h
-@@ -108,6 +108,7 @@
- 
- struct HwVertexRuntimeInfo {
-     u32 num_outputs;
-+    u32 num_exports;
-     std::array<OutputMap, 3> outputs;
-     bool emulate_depth_negative_one_to_one{};
-     bool clip_disable{};
---- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-+++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-@@ -179,6 +179,7 @@
-         BuildCommon(regs.vs_program);
-         info.hw.vs.user_clip_plane_mask = regs.clipper_control.user_clip_plane_enable;
-         info.hw.vs.num_outputs = MapOutputs(info.hw.vs.outputs, regs.vs_output_control);
-+        info.hw.vs.num_exports = regs.vs_output_config.NumExports();
-         info.hw.vs.emulate_depth_negative_one_to_one =
-             !instance.IsDepthClipControlSupported() &&
-             regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
---- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
-+++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
-@@ -19,6 +19,7 @@
- };
- 
- [[nodiscard]] std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type,
-+                                                      u32 num_vertex_exports,
-                                                       const HwFragmentRuntimeInfo& fs_info);
- 
- } // namespace Shader::Backend::SPIRV
---- a/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
-+++ b/gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
-@@ -1,6 +1,7 @@
- // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
- // SPDX-License-Identifier: GPL-2.0-or-later
- 
-+#include <algorithm>
- #include <sirit/sirit.h>
- #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
- #include "shader_recompiler/runtime_info.h"
-@@ -12,8 +13,8 @@
- constexpr u32 SPIRV_VERSION_1_5 = 0x00010500;
- 
- struct QuadRectListEmitter : public Sirit::Module {
--    explicit QuadRectListEmitter(const HwFragmentRuntimeInfo& fs_info_)
--        : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_} {
-+    explicit QuadRectListEmitter(u32 num_vertex_exports_, const HwFragmentRuntimeInfo& fs_info_)
-+        : Sirit::Module{SPIRV_VERSION_1_5}, num_vertex_exports{num_vertex_exports_}, fs_info{fs_info_} {
-         void_id = TypeVoid();
-         bool_id = TypeBool();
-         float_id = TypeFloat(32);
-@@ -252,8 +253,9 @@
-         } else {
-             gl_per_vertex = AddOutput(gl_per_vertex_type);
-         }
--        outputs.reserve(fs_info.num_inputs);
--        for (int i = 0; i < fs_info.num_inputs; i++) {
-+        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
-+        outputs.reserve(num_forwards);
-+        for (u32 i = 0; i < num_forwards; i++) {
-             const auto& input = fs_info.inputs[i];
-             if (input.IsDefault()) {
-                 continue;
-@@ -276,8 +278,9 @@
-         const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, 32U))};
-         gl_in = AddInput(gl_per_vertex_array);
-         const Id float_arr{TypeArray(vec4_id, Int(32))};
--        inputs.reserve(fs_info.num_inputs);
--        for (int i = 0; i < fs_info.num_inputs; i++) {
-+        const auto num_forwards = std::min(num_vertex_exports, fs_info.num_inputs);
-+        inputs.reserve(num_forwards);
-+        for (u32 i = 0; i < num_forwards; i++) {
-             const auto& input = fs_info.inputs[i];
-             if (input.IsDefault()) {
-                 continue;
-@@ -288,6 +291,7 @@
-     }
- 
- private:
-+    u32 num_vertex_exports;
-     HwFragmentRuntimeInfo fs_info;
-     Id main;
-     Id void_id;
-@@ -319,8 +323,9 @@
-     std::vector<Id> interfaces;
- };
- 
--std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const HwFragmentRuntimeInfo& fs_info) {
--    QuadRectListEmitter ctx{fs_info};
-+std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, u32 num_vertex_exports,
-+                                         const HwFragmentRuntimeInfo& fs_info) {
-+    QuadRectListEmitter ctx{num_vertex_exports, fs_info};
-     switch (type) {
-     case AuxShaderType::RectListTCS:
-         ctx.EmitRectListTCS();
---- a/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-+++ b/gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-@@ -92,6 +92,12 @@
- 
-     const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList;
-     const bool is_quad_list = key.prim_type == AmdGpu::PrimitiveType::QuadList;
-+    const auto& vertex_runtime = runtime_infos[u32(Shader::SwStage::Vertex)].hw.vs;
-+    const auto& fragment_runtime = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
-+    const auto* vertex_info = infos[u32(Shader::SwStage::Vertex)];
-+    const u32 vertex_exports = vertex_runtime.num_exports +
-+        (fragment_runtime.clip_distance_emulation && vertex_info &&
-+         vertex_info->stores.GetAny(Shader::IR::Attribute::ClipDistance) ? 1u : 0u);
-     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
-         .patchControlPoints = is_rect_list ? 3U : (is_quad_list ? 4U : key.patch_control_points),
-     };
-@@ -198,7 +204,7 @@
-         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
-         if (!preloading) {
-             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
--            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info);
-+            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, vertex_exports, fs_info);
-         }
-         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
-             .stage = vk::ShaderStageFlagBits::eTessellationControl,
-@@ -217,7 +223,7 @@
-         if (!preloading) {
-             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
-             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
--                AuxShaderType::PassthroughTES, fs_info);
-+                AuxShaderType::PassthroughTES, vertex_exports, fs_info);
-         }
-         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
-             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
---- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-+++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-@@ -18,7 +18,7 @@
- // DCport 13: CFG fallthrough edges kept (shadPS4 #5365).
- // DCport 15: permutation indices are never reused across sessions (14 caches could pair a
- // pipeline with another permutation's shader: graphics bugs until the cache was deleted).
--static constexpr u32 ShaderBinaryVersion = 16u;
-+static constexpr u32 ShaderBinaryVersion = 17u;
- static constexpr u32 ShaderMetaVersion = 9u;
- static constexpr u32 PipelineKeyVersion = 6u;
- // GRport: shaders made with and without seamless cube sampling differ, so each setting has
---- /dev/null
-+++ b/tests/test_aux_tess_exports.cpp
-@@ -0,0 +1,37 @@
-+#include <cassert>
-+#include <cstdint>
-+#include <fstream>
-+#include <string>
-+#include <vector>
-+#include <spirv/unified1/spirv.hpp11>
-+#include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
-+#include "shader_recompiler/runtime_info.h"
-+
-+int main() {
-+    Shader::HwFragmentRuntimeInfo fs{};
-+    fs.num_inputs = 3;
-+    for (unsigned i = 0; i < fs.num_inputs; ++i) fs.inputs[i].param_index = i;
-+    using Shader::Backend::SPIRV::AuxShaderType;
-+    using Shader::Backend::SPIRV::EmitAuxilaryTessShader;
-+    const AuxShaderType types[] = {AuxShaderType::RectListTCS, AuxShaderType::QuadListTCS,
-+                                   AuxShaderType::PassthroughTES};
-+    for (unsigned t = 0; t < 3; ++t) {
-+        for (unsigned limit : {0u, 1u, 3u, 5u}) {
-+            auto code = EmitAuxilaryTessShader(types[t], limit, fs);
-+            unsigned locations = 0;
-+            for (size_t i = 5; i < code.size();) {
-+                const unsigned words = code[i] >> 16;
-+                assert(words && i + words <= code.size());
-+                if ((code[i] & 0xffffu) == static_cast<unsigned>(spv::Op::OpDecorate) &&
-+                    words >= 4 && code[i + 2] == static_cast<unsigned>(spv::Decoration::Location))
-+                    ++locations;
-+                i += words;
-+            }
-+            assert(locations == 2 * (limit < fs.num_inputs ? limit : fs.num_inputs));
-+            std::ofstream file("tess-" + std::to_string(t) + "-" + std::to_string(limit) + ".spv",
-+                               std::ios::binary);
-+            file.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(code[0]));
-+            assert(file.good());
-+        }
-+    }
-+}
-
---- a/src/runtime_font.c
-+++ b/src/runtime_font.c
-@@ -281,7 +281,12 @@
-         return FONT_ERROR_NO_SUPPORT_GLYPH;
-     }
-     metrics(f, m);
--    load_glyph(f, code, fx, fy, 1);
-+    if (!load_glyph(f, code, fx, fy, 1)) {
-+        memset(m, 0, sizeof(*m));
-+        memset(out, 0, sizeof(*out));
-+        pthread_mutex_unlock(&lock);
-+        return FONT_ERROR_NO_SUPPORT_GLYPH;
-+    }
-     const FT_GlyphSlot slot = f->face->glyph;
-     const FT_Bitmap *bitmap = &slot->bitmap;
-     // Restrict substitutions to each game's exact symbol font. Ordinary text uses some
-@@ -292,7 +297,6 @@
-                              (int)bitmap->width,(int)bitmap->rows,bitmap->pitch);
-     const int32_t left = slot->bitmap_left, top = slot->bitmap_top;
-     const int32_t gw = (int32_t)bitmap->width, gh = (int32_t)bitmap->rows;
--    const int32_t right = left + gw;
-     const int32_t dest_x = (int32_t)floorf(x) + left, dest_y = (int32_t)floorf(y) - top;
-     const int32_t bpp = s->pixel_size_byte > 0 ? s->pixel_size_byte : 1;
-     int32_t ux0 = dest_x, uy0 = dest_y, uw = 0, uh = 0;
-@@ -319,13 +323,28 @@
-                                              (size_t)out->update_rect.x * (size_t)bpp : NULL;
-     out->surface_image.width_byte = (uint32_t)s->width_byte;
-     out->surface_image.pixel_size_byte = (uint8_t)bpp;
--    const float advance_end = ceilf(x + m->horizontal.advance);
--    out->image_metrics.bearing_x = (float)((int32_t)floorf(x) + left) - x;
--    out->image_metrics.bearing_y = (float)top + floorf(y) - y;
--    out->image_metrics.advance = advance_end - x;
--    out->image_metrics.stride = fmaxf(advance_end, floorf(x) + (float)right) - x;
--    out->image_metrics.width = (uint32_t)gw;
--    out->image_metrics.height = (uint32_t)gh;
-+    /* SceFont reports snapped outline bounds, which are not always identical to
-+       the FreeType bitmap bounds at fractional pen positions (shadPS4 font HLE). */
-+    const float left_f = x + m->horizontal.bearing_x;
-+    const float top_f = y + m->horizontal.bearing_y;
-+    const float right_f = left_f + m->width;
-+    const float bottom_f = top_f - m->height;
-+    const int32_t left_i = (int32_t)floorf(left_f), top_i = (int32_t)ceilf(top_f);
-+    const int32_t right_i = (int32_t)ceilf(right_f), bottom_i = (int32_t)floorf(bottom_f);
-+    const float advance_f = x + m->horizontal.advance;
-+    const int32_t advance_i = (int32_t)ceilf(advance_f);
-+    int32_t stride_i = advance_i;
-+    if (advance_f != (float)advance_i) {
-+        const int32_t tmp_i = (int32_t)(((float)right_i - right_f) + advance_f);
-+        stride_i = advance_f <= right_f ? tmp_i : right_i + 1;
-+        if (stride_i < tmp_i) stride_i = tmp_i;
-+    }
-+    out->image_metrics.bearing_x = (float)left_i - x;
-+    out->image_metrics.bearing_y = (float)top_i - y;
-+    out->image_metrics.advance = (float)advance_i - x;
-+    out->image_metrics.stride = (float)stride_i - x;
-+    out->image_metrics.width = (uint32_t)max_i(0, right_i - left_i);
-+    out->image_metrics.height = (uint32_t)max_i(0, top_i - bottom_i);
-     pthread_mutex_unlock(&lock);
-     return 0;
- }
---- /dev/null
-+++ b/tests/test_font_metrics.c
-@@ -0,0 +1,42 @@
-+/* Compare the SceFont outline bounds against real fractional-position glyphs. */
-+#include <assert.h>
-+#include <math.h>
-+#include <stdio.h>
-+#include <stdlib.h>
-+#include "../src/runtime_font.c"
-+
-+uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid) {
-+    (void)table; (void)count; (void)nid; return 0;
-+}
-+int bbgpu_gr_prompt_glyph(int game, uint32_t code, uint8_t *data, int w, int h, int pitch) {
-+    (void)game; (void)code; (void)data; (void)w; (void)h; (void)pitch; return 0;
-+}
-+int main(int argc, char **argv) {
-+    assert(argc==2);
-+    FILE *file=fopen(argv[1],"rb"); assert(file);
-+    assert(fseek(file,0,SEEK_END)==0); long n=ftell(file); assert(n>0); rewind(file);
-+    void *bytes=malloc((size_t)n); assert(bytes && fread(bytes,1,(size_t)n,file)==(size_t)n);
-+    fclose(file);
-+    Font *f=open_font(bytes,(size_t)n,"test"); free(bytes); assert(f);
-+    assert(set_scale_pixel(f,22,22)==0);
-+    uint8_t pixels[128*128]={0}; RenderSurface surface;
-+    render_surface_init(&surface,pixels,128,1,128,128);
-+    unsigned different=0;
-+    for (int ch='0';ch<='9';++ch) for (int sub=0;sub<4;++sub) {
-+        const float x=64.0f+sub*0.25f, y=64.0f+sub*0.25f;
-+        GlyphMetrics m; RenderOutput out;
-+        assert(render_glyph(f,(uint32_t)ch,&surface,x,y,&m,&out)==0);
-+        const float l=x+m.horizontal.bearing_x, t=y+m.horizontal.bearing_y;
-+        const int w=(int)ceilf(l+m.width)-(int)floorf(l);
-+        const int h=(int)ceilf(t)-(int)floorf(t-m.height);
-+        assert(out.image_metrics.width==(uint32_t)w && out.image_metrics.height==(uint32_t)h);
-+        assert(fabsf(out.image_metrics.bearing_x-(floorf(l)-x))<0.0001f);
-+        assert(fabsf(out.image_metrics.bearing_y-(ceilf(t)-y))<0.0001f);
-+        if ((int)out.image_metrics.width!=(int)f->face->glyph->bitmap.width ||
-+            (int)out.image_metrics.height!=(int)f->face->glyph->bitmap.rows) ++different;
-+    }
-+    assert(different>0);
-+    close_font(f);
-+    puts("PASS: fractional digit metrics use SceFont outline bounds");
-+    return 0;
-+}

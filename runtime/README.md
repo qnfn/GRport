@@ -26,6 +26,11 @@ applied, builds it in MSYS2 CLANG64 and installs `out\bb-probe.exe` as
 `runtime\GRport-runtime.exe`, keeping the previous one as `.bak`. The launcher sees the new
 runtime and prepares each game once more before PLAY.
 
+FSR 4.1.2 uses AMD's FSR SDK 2.4 (`vk_fsr412.cpp`): `python tools/fetch_fsr24.py` puts its
+headers, AMD's signed `amd_fidelityfx_upscaler_vk.dll` and AMD's license into `fsr24/` before
+the build (without them the runtime builds without FSR 4.1.2). The release puts the DLL in
+`runtime\fsr24\` of the FSR edition only.
+
 The FSR 4 model files are not part of this source; they ship only in the FSR edition release
 zip, with their license.
 
