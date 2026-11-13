@@ -142,6 +142,23 @@ def test_keyboard_mouse_prompt_choice_is_available_per_game(app):
         assert ini.read_ini(app.paths.root / "user" / key / "grport.ini")["button_prompts"] == "keyboard"
 
 
+def test_prompt_choice_defaults_to_auto_as_the_runtime(app):
+    """The runtime follows the device in use when grport.ini has no choice; the launcher shows
+    that, and an "auto" saved by the in-game menu is shown as Auto, not as PlayStation."""
+    from grport import ini
+    from grport.ui.setup import PICTURE
+    prompt = next(entry for entry in PICTURE if entry[0] == "button_prompts")
+    assert prompt[3] == "auto" and "auto" in dict(prompt[2])
+    app.show("setup")
+    page = app.pages["setup"]
+    page.select_game("gr1")
+    assert page.picture_choices["button_prompts"].value == "auto"
+    page.set_picture("button_prompts", "xbox")
+    page.set_picture("button_prompts", "auto")
+    assert ini.read_ini(app.paths.root / "user" / "gr1" / "grport.ini")["button_prompts"] == "auto"
+    assert page.picture_choices["button_prompts"].value == "auto"
+
+
 def test_setup_row_labels_fit(app):
     """Every row label is shown whole ('FSR 1 to the screen', 'Mute in background')."""
     import tkinter as tk

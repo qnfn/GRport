@@ -47,8 +47,9 @@ PICTURE = (
     ("fsr1", "FSR 1 to the screen", ON_OFF, "1"),
     ("show_fps", "FPS counter", ON_OFF, "1"),
     ("mute_unfocused", "Mute in background", ON_OFF, "0"),
-    ("button_prompts", "Button prompts", (("playstation", "PlayStation"), ("xbox", "Xbox"),
-                                           ("switch", "Switch"), ("keyboard", "Keyboard and mouse")), "playstation"),
+    ("button_prompts", "Button prompts", (("auto", "Auto (what you play with)"),
+                                           ("playstation", "PlayStation"), ("xbox", "Xbox"),
+                                           ("switch", "Switch"), ("keyboard", "Keyboard and mouse")), "auto"),
     ("xbox_buttons", "Xbox look", (("0", "Xbox 360"), ("1", "Xbox One")), "0"),
     ("playstation_buttons", "PlayStation look", (("0", "PS4"), ("1", "PS5")), "0"),
 )
