@@ -102,6 +102,11 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         "BB_FPS_LOG": "1",
         "BB_LANGUAGE": str(next(code for key, _, code in LANGUAGES if key == s.language)),
     })
+    # Older CPUs: gr-prepare keeps legacy-cpu-plan.json in the data folder only when it translated
+    # the game's BMI1/LZCNT/MOVBE instructions; the runtime then starts on such a CPU.
+    out.pop("BB_CPU_COMPAT", None)
+    if (data_dir(paths, info.game.key) / "legacy-cpu-plan.json").is_file():
+        out["BB_CPU_COMPAT"] = "1"
     # SETUP > Threading: Auto is on (much faster in both games); Off for a PC it crashes on.
     out["BB_THREADED_RECORDING"] = "0" if g.threading == "0" else "1"
     # SETUP > Stick dead zone: radial, on both controller sticks; 0 is off.

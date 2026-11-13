@@ -19,7 +19,7 @@ let
         || lib.hasPrefix "launcher/grport/" rel || lib.hasPrefix "launcher/assets/" rel
         || lib.hasPrefix "prepare/" rel || lib.hasPrefix "linux/" rel);
   };
-  python = pkgs.python3.withPackages (ps: [ ps.tkinter ps.pillow ps.capstone ]);
+  python = pkgs.python3.withPackages (ps: [ ps.tkinter ps.pillow ps.capstone ps.keystone-engine ]);
   icds = lib.concatMapStringsSep ":" (name: "${pkgs.mesa}/share/vulkan/icd.d/${name}")
     [ "radeon_icd.x86_64.json" "intel_icd.x86_64.json" ];
   fontsConf = pkgs.writeText "grport-fonts.conf" ''

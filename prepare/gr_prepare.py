@@ -12,6 +12,8 @@ The modules are the .prx files in the game's sce_module folder, libc first. When
 again when either changes).
 """
 import hashlib
+import json
+import os
 import struct
 import sys
 import traceback
@@ -19,12 +21,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import content_profile  # noqa: E402
+import cpu_compat  # noqa: E402
 import link_modules  # noqa: E402
 import prepare  # noqa: E402
 import respell  # noqa: E402
 
 KEEP = {"boot-linked.bin", "content.bin", "source.txt", "analysis.json", "link.json",
-        "prepare.log"}  # the launcher writes our output there
+        "prepare.log", "legacy-cpu-plan.json"}  # the launcher writes our output there
+PLAN = "legacy-cpu-plan.json"
 
 
 def modules(game: Path) -> list:
@@ -110,6 +114,37 @@ def validate_gr1_cheats(boot: Path, patch: Path) -> None:
         pos += 16 + length
 
 
+def legacy_cpu_plan(game: Path, data: Path, mods: list) -> bool:
+    """CPUs without BMI1, LZCNT or MOVBE (Intel 3rd generation and older): build the instruction
+    translations from the player's own eboot and modules (a few minutes, once; kept in the data
+    folder while the files are the same; no game bytes ship with GRport). The launcher reads
+    legacy-cpu-plan.json in the data folder as "the game is translated" (BB_CPU_COMPAT).
+    Returns False when this game can't be translated (only Gravity Rush Remastered's libc is
+    the one the translations were checked against)."""
+    plan = data / PLAN
+    libc = link_modules.module(game / "sce_module" / "libc.prx")
+    if libc["sha256"] != cpu_compat.LIBC_SHA256:
+        print("Older CPU (no BMI1/LZCNT/MOVBE): this game can't be translated for it; "
+              "it needs a newer CPU.", flush=True)
+        plan.unlink(missing_ok=True)
+        os.environ["BB_LEGACY_CPU"] = "0"
+        return False
+    try:
+        made_for = json.loads(plan.read_text(encoding="utf-8"))["modules"]
+    except (OSError, ValueError, KeyError, TypeError):
+        made_for = None
+    current = {"eboot.bin": link_modules.module(game / "eboot.bin")["sha256"]}
+    for m in mods:
+        current[m] = link_modules.module(game / "sce_module" / m)["sha256"]
+    if made_for != current:
+        print("Older CPU (no BMI1/LZCNT/MOVBE): building its instruction translations from your "
+              "game files, once (a few minutes)...", flush=True)
+        import cpu_plan
+        cpu_plan.build(game, plan, mods)
+    os.environ["BB_LEGACY_CPU_PLAN"] = str(plan)
+    return True
+
+
 def main(argv) -> int:
     if len(argv) not in (3, 4):
         print(__doc__)
@@ -125,6 +160,8 @@ def main(argv) -> int:
     data.mkdir(parents=True, exist_ok=True)
     (data / "source.txt").unlink(missing_ok=True)
     prepare.prepare(game, data)
+    if not (cpu_compat.enabled() and legacy_cpu_plan(game, data, mods)):
+        (data / PLAN).unlink(missing_ok=True)
     if patch:
         try:
             validate_gr1_cheats(data / "boot.bin", patch)

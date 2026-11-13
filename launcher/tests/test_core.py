@@ -111,6 +111,18 @@ def test_runtime_command_and_env(paths, tmp_path):
     assert not runtime.is_prepared(paths, info)
 
 
+def test_env_cpu_compat_follows_the_prepared_plan(paths, tmp_path):
+    """Older CPUs: the runtime starts without BMI1/LZCNT/MOVBE only when gr-prepare translated the
+    game (it keeps legacy-cpu-plan.json in the data folder exactly then)."""
+    info = games.inspect(make_game(tmp_path / "CUSA01113", "CUSA01113", "01.00"))
+    s = LauncherSettings()
+    assert "BB_CPU_COMPAT" not in runtime.env(paths, s, info, base={"BB_CPU_COMPAT": "1"})
+    data = runtime.data_dir(paths, info.game.key)
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "legacy-cpu-plan.json").write_text("{}", encoding="utf-8")
+    assert runtime.env(paths, s, info, base={})["BB_CPU_COMPAT"] == "1"
+
+
 def test_window_size_is_read_safely():
     s = LauncherSettings()
     s.window_size = "100x100"
