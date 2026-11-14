@@ -72,13 +72,15 @@ def is_prepared(paths: AppPaths, info: GameFolder, patch: "Path | None" = None) 
 
 def prepare_command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None) -> list:
     return [str(prepare_exe(paths)), str(info.folder), str(data_dir(paths, info.game.key)),
-            str(exe(paths))] + ([str(patch)] if patch else [])
+            str(exe(paths))] + ([str(patch)] if patch else []) + (
+        ["--update", str(info.update)] if info.update else [])
 
 
 def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None) -> list:
     data = data_dir(paths, info.game.key)
     return [str(exe(paths)), str(data / "boot-linked.bin"), "--content-profile",
-            str(data / "content.bin"), "--app0", str(info.folder),
+            str(data / "content.bin"), "--app0", str(info.folder)] + (
+        ["--app0-update", str(info.update)] if info.update else []) + [
             "--user", str(user_dir(paths, info.game.key)), "--timeout", "0"] + (
         ["--patches", str(patch)] if patch else [])
 

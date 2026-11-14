@@ -31,14 +31,25 @@ def make_sfo(path: Path, values: dict) -> None:
 
 
 def make_game(folder: Path, serial: str, version: str, eboot: bool = True,
-              content_id: str = "", title: str = "Test") -> Path:
+              content_id: str = "", title: str = "Test", libc: bool = True,
+              category: str = "") -> Path:
     values = {"TITLE_ID": serial, "APP_VER": version, "TITLE": title}
     if content_id:
         values["CONTENT_ID"] = content_id
+    if category:
+        values["CATEGORY"] = category
     make_sfo(folder / "sce_sys" / "param.sfo", values)
     if eboot:
         (folder / "eboot.bin").write_bytes(b"\x7fELF")
+    if libc:
+        (folder / "sce_module").mkdir(parents=True, exist_ok=True)
+        (folder / "sce_module" / "libc.prx").write_bytes(b"\x7fELF")
     return folder
+
+
+def make_update(folder: Path, serial: str, version: str) -> Path:
+    """An update on its own: its eboot and param.sfo, no system modules."""
+    return make_game(folder, serial, version, libc=False, category="gp")
 
 
 @pytest.fixture
@@ -78,6 +89,50 @@ def test_missing_eboot_and_other_games_are_explained(tmp_path):
     other = games.inspect(make_game(tmp_path / "b", "CUSA00003", "01.28"))
     assert other.game is None and "not a Gravity Rush game" in other.problem
     assert "no game" in games.inspect(tmp_path / "empty").problem
+
+
+@pytest.mark.parametrize("name", ["CUSA04943-patch", "CUSA04943-UPDATE", "Gravity Rush 2 v1.11"])
+def test_an_update_in_its_own_folder_joins_the_game_whichever_is_chosen(tmp_path, name):
+    base = make_game(tmp_path / "CUSA04943", "CUSA04943", "01.00", category="gd")
+    update = make_update(tmp_path / name, "CUSA04943", "01.11")
+    for chosen in (base, update):
+        info = games.inspect(chosen)
+        assert info.ok, info.problem
+        assert info.folder == base and info.update == update and info.version == "01.11"
+        assert info.eboot == update / "eboot.bin"
+        assert info.file("sce_module/libc.prx") == base / "sce_module" / "libc.prx"
+
+
+def test_an_update_copied_over_the_game_is_the_game(tmp_path):
+    merged = make_game(tmp_path / "CUSA04943", "CUSA04943", "01.11", category="gp")
+    info = games.inspect(merged)
+    assert info.ok and info.update is None and info.folder == merged and info.version == "01.11"
+
+
+def test_an_update_without_its_game_is_explained(tmp_path):
+    info = games.inspect(make_update(tmp_path / "CUSA04943-patch", "CUSA04943", "01.11"))
+    assert not info.ok and "only the game's update" in info.problem
+    make_game(tmp_path / "CUSA04934", "CUSA04934", "01.00")  # another region is not its game
+    assert not games.inspect(tmp_path / "CUSA04943-patch").ok
+
+
+def test_a_game_without_its_system_modules_is_explained(tmp_path):
+    info = games.inspect(make_game(tmp_path / "CUSA04943", "CUSA04943", "01.00", libc=False))
+    assert "libc.prx" in info.problem
+
+
+def test_prepare_and_runtime_get_the_update_folder(paths, tmp_path):
+    base = make_game(tmp_path / "CUSA04943", "CUSA04943", "01.00")
+    update = make_update(tmp_path / "CUSA04943-patch", "CUSA04943", "01.11")
+    info = games.inspect(base)
+    cmd = runtime.command(paths, info)
+    assert cmd[cmd.index("--app0") + 1] == str(base)
+    assert cmd[cmd.index("--app0-update") + 1] == str(update)
+    prep = runtime.prepare_command(paths, info)
+    assert prep[1] == str(base) and prep[prep.index("--update") + 1] == str(update)
+    alone = games.inspect(make_game(tmp_path / "x" / "CUSA03694", "CUSA03694", "01.11"))
+    assert "--app0-update" not in runtime.command(paths, alone)
+    assert "--update" not in runtime.prepare_command(paths, alone)
 
 
 def test_find_games_finds_one_folder_per_game(tmp_path):

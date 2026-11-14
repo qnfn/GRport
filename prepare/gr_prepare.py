@@ -2,7 +2,10 @@
 linked, the content profile and the imports respelled for the runtime (GRport's copy of
 DCport's prepare steps). Nothing from the game ends up anywhere but <data dir>.
 
-Usage: gr_prepare <game dir> <data dir> <runtime exe> [patches.bin]
+Usage: gr_prepare <game dir> <data dir> <runtime exe> [patches.bin] [--update <update dir>]
+
+--update: the game's update kept in a folder of its own (shadPS4's <game>-UPDATE); its eboot,
+param.sfo and modules replace the game's. An update copied over the game needs nothing.
 
 patches.bin (BBPATCH2, the launcher's frame-rate patch): its writes keep their bytes (no
 red-zone rewrite there) and the modules start 8 MiB after the eboot (the patch's code cave).
@@ -14,6 +17,7 @@ again when either changes).
 import hashlib
 import json
 import os
+import shutil
 import struct
 import sys
 import traceback
@@ -39,11 +43,33 @@ def modules(game: Path) -> list:
     return found
 
 
-def stamp(game: Path, runtime: Path) -> str:
+def stamp(eboot: Path, runtime: Path) -> str:
     def describe(p: Path) -> str:
         st = p.stat()
         return f"{p} {st.st_size} {st.st_mtime_ns}"
-    return describe(game / "eboot.bin") + "\n" + describe(runtime) + "\n"
+    return describe(eboot) + "\n" + describe(runtime) + "\n"
+
+
+VIEW = "game-view"
+
+
+def game_view(game: Path, update: Path, data: Path) -> Path:
+    """The files preparing reads (eboot, param.sfo, modules) with the update's copy first, in
+    <data>/game-view: hard links where the drive allows, else copies (removed when done)."""
+    view = data / VIEW
+    shutil.rmtree(view, ignore_errors=True)
+    mods = {p.name for folder in (game, update) for p in (folder / "sce_module").glob("*.prx")}
+    for name in ["eboot.bin", "sce_sys/param.sfo"] + [f"sce_module/{m}" for m in sorted(mods)]:
+        source = update / name if (update / name).is_file() else game / name
+        if not source.is_file():
+            continue
+        target = view / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+    return view
 
 
 def patched_offsets(path: Path) -> list:
@@ -146,19 +172,34 @@ def legacy_cpu_plan(game: Path, data: Path, mods: list) -> bool:
 
 
 def main(argv) -> int:
+    argv = list(argv)
+    update = None
+    if "--update" in argv:
+        i = argv.index("--update")
+        if i + 1 >= len(argv):
+            print(__doc__)
+            return 2
+        update = Path(argv[i + 1])
+        del argv[i:i + 2]
     if len(argv) not in (3, 4):
         print(__doc__)
         return 2
     game, data, runtime = (Path(a) for a in argv[:3])
     patch = Path(argv[3]) if len(argv) == 4 else None
-    for name in ("eboot.bin", "sce_sys/param.sfo"):
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "source.txt").unlink(missing_ok=True)
+    eboot = game / "eboot.bin"
+    if update is not None:
+        print(f"Update: {update}")
+        if (update / "eboot.bin").is_file():
+            eboot = update / "eboot.bin"
+        game = game_view(game, update, data)
+    for name in ("eboot.bin", "sce_sys/param.sfo", "sce_module/libc.prx"):
         if not (game / name).is_file():
-            print(f"Missing {name} in {game}: choose the game's folder")
+            print(f"Missing {name} in {game}: choose the game's folder (not only its update)")
             return 1
     mods = modules(game)
     print("Modules: " + ", ".join(mods))
-    data.mkdir(parents=True, exist_ok=True)
-    (data / "source.txt").unlink(missing_ok=True)
     prepare.prepare(game, data)
     if not (cpu_compat.enabled() and legacy_cpu_plan(game, data, mods)):
         (data / PLAN).unlink(missing_ok=True)
@@ -186,7 +227,8 @@ def main(argv) -> int:
                 f.unlink()
             except OSError:
                 pass  # a leftover intermediate file does no harm
-    (data / "source.txt").write_text(stamp(game, runtime) + ("patches " + hashlib.sha1(patch.read_bytes()).hexdigest()[:16] + "\n" if patch else ""),
+    shutil.rmtree(data / VIEW, ignore_errors=True)
+    (data / "source.txt").write_text(stamp(eboot, runtime) +("patches " + hashlib.sha1(patch.read_bytes()).hexdigest()[:16] + "\n" if patch else ""),
                                      encoding="utf-8")
     print("Game files prepared.")
     return 0

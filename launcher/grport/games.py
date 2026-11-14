@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The two games, and reading a dumped game folder: which game, region and version it is."""
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -95,10 +95,19 @@ class GameFolder:
     region: str
     version: str
     problem: str = ""   # empty when the folder is ready to play
+    # The game's update kept in a folder of its own (shadPS4's <game>-UPDATE): its files replace
+    # the game's. None when there is none, or it was copied over the game (that works as well).
+    update: "Path | None" = None
+
+    def file(self, name: str) -> Path:
+        """A game file as the game sees it: the update's copy when it has one."""
+        if self.update is not None and (self.update / name).exists():
+            return self.update / name
+        return self.folder / name
 
     @property
     def eboot(self) -> Path:
-        return self.folder / "eboot.bin"
+        return self.file("eboot.bin")
 
     @property
     def ok(self) -> bool:
@@ -108,10 +117,70 @@ class GameFolder:
     def art(self) -> "Path | None":
         """The game's own background picture from the player's dump, for the card."""
         for name in ("pic1.png", "pic0.png"):
-            path = self.folder / "sce_sys" / name
+            path = self.file(f"sce_sys/{name}")
             if path.is_file():
                 return path
         return None
+
+
+UPDATE_SUFFIXES = ("-update", "-patch")  # shadPS4's and GR2port's names for the update folder
+LIBC = Path("sce_module") / "libc.prx"   # in the game itself; an update rarely has one
+
+
+def _sfo_or_none(folder: Path) -> "dict | None":
+    try:
+        return read_sfo(folder / "sce_sys" / "param.sfo")
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _is_update_only(folder: Path, sfo: dict) -> bool:
+    """The update on its own: only the files it changes (no libc), a patch package (category gp)
+    or a folder named like one. A game with its update copied over it has everything."""
+    if (folder / LIBC).is_file():
+        return False
+    return (str(sfo.get("CATEGORY", "")).startswith("gp")
+            or folder.name.lower().endswith(UPDATE_SUFFIXES))
+
+
+def _siblings(folder: Path, serial: str) -> list:
+    """(folder, param.sfo) of the other game folders next to `folder` with the same serial."""
+    try:
+        children = sorted(p for p in folder.parent.iterdir() if p.is_dir() and p != folder)
+    except OSError:
+        return []
+    out = []
+    for child in children:
+        sfo = _sfo_or_none(child)
+        if sfo is not None and str(sfo.get("TITLE_ID", "")).strip() == serial:
+            out.append((child, sfo))
+    return out
+
+
+def _version_key(sfo: dict) -> tuple:
+    text = str(sfo.get("APP_VER") or sfo.get("VERSION") or "")
+    return tuple(int(x) if x.isdigit() else 0 for x in text.split("."))
+
+
+def find_base(update: Path, serial: str) -> "Path | None":
+    """The game folder next to an update folder: <name> for <name>-UPDATE first."""
+    bases = [p for p, sfo in _siblings(update, serial) if not _is_update_only(p, sfo)]
+    stem = update.name.lower()
+    for suffix in UPDATE_SUFFIXES:
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+    bases.sort(key=lambda p: p.name.lower() != stem)
+    return bases[0] if bases else None
+
+
+def find_update(base: Path, serial: str) -> "Path | None":
+    """The update folder next to a game folder: <name>-UPDATE / <name>-patch first, else the
+    newest update of the same game."""
+    updates = [(p, sfo) for p, sfo in _siblings(base, serial) if _is_update_only(p, sfo)]
+    named = {base.name.lower() + s for s in UPDATE_SUFFIXES}
+    updates.sort(key=lambda u: (u[0].name.lower() not in named,
+                                tuple(-v for v in _version_key(u[1]))))
+    return updates[0][0] if updates else None
 
 
 def _candidate(folder: Path) -> Path:
@@ -145,12 +214,27 @@ def inspect(folder: "Path | str") -> GameFolder:
         return GameFolder(folder, None, serial, "", version,
                           f"This is {title} ({serial}), not a Gravity Rush game.")
     region = region_of(sfo, game, serial)
-    problem = ""
-    if not (folder / "eboot.bin").is_file():
-        problem = "eboot.bin is missing. Extract the whole game into this folder."
+    update = None
+    if _is_update_only(folder, sfo):
+        base = find_base(folder, serial)
+        if base is None:
+            return GameFolder(folder, game, serial, region, version,
+                              f"This folder is only the game's update (v{version}). Choose the "
+                              "game's own folder: keep the update next to it, or copy the "
+                              "update's files over the game.")
+        folder, update = base, folder
     else:
-        problem = damaged_archives(folder)
-    return GameFolder(folder, game, serial, region, version, problem)
+        update = find_update(folder, serial)
+        if update is not None:
+            version = str((_sfo_or_none(update) or {}).get("APP_VER") or version).strip()
+    info = GameFolder(folder, game, serial, region, version, "", update)
+    if not info.eboot.is_file():
+        problem = "eboot.bin is missing. Extract the whole game into this folder."
+    elif not (folder / LIBC).is_file():
+        problem = "sce_module/libc.prx is missing. Extract the whole game into this folder."
+    else:
+        problem = damaged_archives(folder) or (damaged_archives(update) if update else "")
+    return replace(info, problem=problem)
 
 
 def psarc_missing_bytes(path: Path) -> int:
