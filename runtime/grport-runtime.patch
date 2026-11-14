@@ -17644,7 +17644,7 @@ index 0000000..30235fc
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
-index 988d694..6d0379a 100644
+index 988d694..09de83e 100644
 --- a/src/probe.c
 +++ b/src/probe.c
 @@ -5,6 +5,7 @@
@@ -18052,7 +18052,42 @@ index 988d694..6d0379a 100644
              slots[nslots++]=target;
          }
          memcpy(image+offset,data,length);
-@@ -513,6 +797,11 @@ int main(int argc, char **argv) {
+@@ -468,19 +752,20 @@ int main(int argc, char **argv) {
+ #endif
+     int cpu_only = 0, strict_imports = 0;
+     unsigned timeout_seconds = 10;
+-    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL;
++    const char *content_profile=NULL, *app0=NULL, *app0_update=NULL, *user_dir=NULL, *patch_file=NULL;
+     for (int i = 2; i < argc; ++i) {
+         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
+         else if (!strcmp(argv[i], "--strict-imports")) strict_imports = 1;
+         else if (!strcmp(argv[i], "--content-profile") && i+1<argc) content_profile=argv[++i];
+         else if (!strcmp(argv[i], "--app0") && i+1<argc) app0=argv[++i];
++        else if (!strcmp(argv[i], "--app0-update") && i+1<argc) app0_update=argv[++i];
+         else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
+         else if (!strcmp(argv[i], "--patches") && i+1<argc) patch_file=argv[++i];
+         else if (!strcmp(argv[i], "--timeout") && i+1<argc) timeout_seconds=(unsigned)strtoul(argv[++i],NULL,10);
+         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
+     }
+     if (argc < 2) {
+-        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
++        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir [--app0-update dir]] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
+         return 1;
+     }
+     if (content_profile) {
+@@ -497,9 +782,9 @@ int main(int argc, char **argv) {
+         runtime_content_configure(values);
+     }
+     if (app0) {
+-        runtime_file_configure(app0, user_dir ? user_dir : "user");
++        runtime_file_configure(app0, app0_update, user_dir ? user_dir : "user");
+         char sfo[4096], id[16]="";
+-        snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);
++        if (runtime_file_translate("/app0/sce_sys/param.sfo",sfo,sizeof(sfo))) snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);
+         if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
+             runtime_savedata_configure(id);
+         char serial[16]="", title[128]="", version[16]="";
+@@ -513,6 +798,11 @@ int main(int argc, char **argv) {
      SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
      AddVectoredExceptionHandler(1, vectored_fault);
      SetUnhandledExceptionFilter(unhandled_fault);
@@ -18064,7 +18099,7 @@ index 988d694..6d0379a 100644
      if (getenv("BB_STRICT_HANDLES")) {
          PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
          strict.RaiseExceptionOnInvalidHandleReference=1;
-@@ -521,6 +810,7 @@ int main(int argc, char **argv) {
+@@ -521,6 +811,7 @@ int main(int argc, char **argv) {
              fprintf(stderr,"BB_STRICT_HANDLES: policy not set (%lu)\n",GetLastError());
      }
      (void)timeout_seconds; /* no watchdog on Windows */
@@ -18072,7 +18107,7 @@ index 988d694..6d0379a 100644
  #else
      page_size = (size_t)sysconf(_SC_PAGESIZE);
      struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
-@@ -581,7 +871,7 @@ int main(int argc, char **argv) {
+@@ -581,7 +872,7 @@ int main(int argc, char **argv) {
              LinkedModule *x=&modules[m];
              if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                  (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
@@ -18081,7 +18116,7 @@ index 988d694..6d0379a 100644
                  fail("invalid linked module metadata");
          }
          if (nb>import_count) fail("invalid binding count");
-@@ -632,11 +922,12 @@ int main(int argc, char **argv) {
+@@ -632,19 +923,27 @@ int main(int argc, char **argv) {
              if (!executable) fail("native function is not executable");
          }
      }
@@ -18094,9 +18129,11 @@ index 988d694..6d0379a 100644
 -        char title[128]="Bloodborne", serial[16]="UNKNOWN", sfo[4096];
 +        char title[128]="GRport", serial[16]="UNKNOWN", sfo[4096];
          uint32_t attributes=0;
-         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
+-        snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
++        if (!app0 || runtime_file_translate("/app0/sce_sys/param.sfo",sfo,sizeof(sfo)))
++            snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
          sfo_value(sfo,"TITLE",title,sizeof(title),NULL);
-@@ -644,7 +935,13 @@ int main(int argc, char **argv) {
+         sfo_value(sfo,"TITLE_ID",serial,sizeof(serial),NULL);
          sfo_value(sfo,"ATTRIBUTE",NULL,0,&attributes);
          uint64_t sdk=0;
          if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
@@ -18111,7 +18148,7 @@ index 988d694..6d0379a 100644
          gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
          if (bbgpu_init(&gpu)) fail("GPU initialization failed");
          printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
-@@ -684,13 +981,14 @@ int main(int argc, char **argv) {
+@@ -684,13 +983,14 @@ int main(int argc, char **argv) {
      printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
  #endif
      protect(traps, round_page((import_count + 1) * 32), 5);
@@ -18127,7 +18164,7 @@ index 988d694..6d0379a 100644
      if (!executable_entry) fail("entry is not executable");
      printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
      if (native_libc) {
-@@ -717,7 +1015,20 @@ int main(int argc, char **argv) {
+@@ -717,7 +1017,20 @@ int main(int argc, char **argv) {
      bbnet_initialize(); /* the online session starts with the game */
      printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
      entered_game=1;
@@ -18230,7 +18267,7 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..4065c76 100644
+index 773ee79..de11ed5 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -45,6 +45,10 @@ void runtime_thread_attach_main(void);
@@ -18244,7 +18281,7 @@ index 773ee79..4065c76 100644
  unsigned runtime_sema_waiters(uint32_t id);
  uintptr_t runtime_time_resolve(const char *name);
  void runtime_content_configure(const uint32_t values[5]);
-@@ -55,6 +59,7 @@ typedef struct { const char *name; void *function; } RuntimeExport;
+@@ -55,10 +59,11 @@ typedef struct { const char *name; void *function; } RuntimeExport;
  const char *runtime_symbol(const char *nid);
  uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
  uintptr_t runtime_kernel_resolve(const char *name);
@@ -18252,6 +18289,11 @@ index 773ee79..4065c76 100644
  uintptr_t runtime_file_resolve(const char *name);
  uintptr_t runtime_services_resolve(const char *name);
  void runtime_file_report(void);
+-void runtime_file_configure(const char *app0, const char *user);
++void runtime_file_configure(const char *app0, const char *update, const char *user);
+ int runtime_file_mount(const char *guest, const char *host);
+ void runtime_file_unmount(const char *guest);
+ int runtime_file_translate(const char *guest, char *out, size_t size);
 @@ -80,13 +85,36 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
@@ -19590,27 +19632,69 @@ index 0000000..a85e4bf
 +    pthread_mutex_unlock(&lock);
 +}
 diff --git a/src/runtime_file.c b/src/runtime_file.c
-index c64c0f9..4bff266 100644
+index c64c0f9..265dd51 100644
 --- a/src/runtime_file.c
 +++ b/src/runtime_file.c
-@@ -105,11 +105,13 @@ void runtime_file_unmount(const char *guest) {
+@@ -1,5 +1,6 @@
+ /* Guest file system: PS4 mount points mapped onto host directories.
+- *   /app0, /hostapp  -> game package root (read-only by convention)
++ *   /app0, /hostapp  -> game package root (read-only by convention); with an update folder
++ *                       (--app0-update) its files come first and the game's fill the rest
+  *   /temp0, /download0, /data, and mounts added by SaveData -> user directory
+  * Guest descriptors are small integers in our own table; stdio 0-2 pass through.
+  * Paths containing ".." components are rejected rather than normalized. */
+@@ -105,11 +106,15 @@ void runtime_file_unmount(const char *guest) {
      }
      pthread_mutex_unlock(&lock);
  }
 -static char user_root[512]="user";
-+static char user_root[512]="user", app_root[512]="";
++static char user_root[512]="user", app_root[512]="", update_root[512]="";
  const char *runtime_file_user_dir(void) { return user_root; }
+-void runtime_file_configure(const char *app0,const char *user) {
 +const char *runtime_file_app_dir(void) { return app_root; }
- void runtime_file_configure(const char *app0,const char *user) {
++void runtime_file_configure(const char *app0,const char *update,const char *user) {
      char path[600];
      snprintf(user_root,sizeof(user_root),"%s",user);
 +    snprintf(app_root,sizeof(app_root),"%s",app0);
++    snprintf(update_root,sizeof(update_root),"%s",update ? update : "");
++    if (update_root[0]) printf("Runtime: game update folder %s (its files replace the game's)\n",update_root);
      runtime_file_mount("/app0",app0);
      runtime_file_mount("/hostapp",app0);
      const char *writable[]={"temp0","download0","data"};
-@@ -140,7 +142,8 @@ static int translate(const char *guest,char *out,size_t size) {
+@@ -121,6 +126,18 @@ void runtime_file_configure(const char *app0,const char *user) {
+         runtime_file_mount(guest,path);
+     }
+ }
++/* The same place in the other game folder (update <-> game); 0 when there is no update folder
++ * or `path` is in neither. */
++static int other_root(const char *path,char *out,size_t size) {
++    if (!update_root[0]) return 0;
++    const char *roots[2][2]={{update_root,app_root},{app_root,update_root}}; /* update first: it may extend the game's name */
++    for (int i=0;i<2;++i) {
++        size_t n=strlen(roots[i][0]);
++        if (!strncmp(path,roots[i][0],n) && (path[n]=='/' || path[n]=='\\' || !path[n]))
++            return (size_t)snprintf(out,size,"%s%s",roots[i][1],path+n)<size;
++    }
++    return 0;
++}
+ /* Resolve a guest path to a host path; returns 0 or a host errno. */
+ static int translate(const char *guest,char *out,size_t size) {
+     if (!guest || !*guest) return ENOENT;
+@@ -135,12 +152,19 @@ static int translate(const char *guest,char *out,size_t size) {
+         size_t n=strlen(mounts[i].guest);
+         if (!strncmp(buffer,mounts[i].guest,n) && (buffer[n]=='/' || !buffer[n]) && n>best) { best=n; m=&mounts[i]; }
+     }
+-    int result=0;
++    int result=0, app=m && update_root[0] && (!strcmp(m->guest,"/app0") || !strcmp(m->guest,"/hostapp"));
+     if (!m) result=ENOENT;
      else if ((size_t)snprintf(out,size,"%s%s",m->host,buffer+best)>=size) result=ENAMETOOLONG;
      pthread_mutex_unlock(&lock);
++    if (!result && app) {
++        /* A file the update has replaces the game's (shadPS4's <game>-UPDATE folder). */
++        char updated[1024]; HostStat file;
++        if (other_root(out,updated,sizeof(updated)) && !host_stat(updated,&file) &&
++            (size_t)snprintf(out,size,"%s",updated)>=size) result=ENAMETOOLONG;
++    }
      if (!result && strstr(out,"/dvdroot_ps4/")) {
 -        const char *language=getenv("BB_LANGUAGE");
 +        const char *language=getenv("DC_LANGUAGE");
@@ -19618,10 +19702,35 @@ index c64c0f9..4bff266 100644
          if (language && !strcmp(language,"17")) {
              /* Some game paths use the Portuguese or English fallback directory. */
              const char *folders[]={"/msg/porpt/","/menu/porpt/","/msg/engus/","/menu/engus/"};
-@@ -267,6 +270,13 @@ static int game_path(const char *p) {
+@@ -267,6 +291,38 @@ static int game_path(const char *p) {
      return (!strncmp(p,"/app0",5) && (!p[5] || p[5]=='/')) ||
             (!strncmp(p,"/hostapp",8) && (!p[8] || p[8]=='/'));
  }
++/* A game directory lists the update's entries and the game's (each name once). */
++static Listing *list_game_directory(const char *guest,const char *path) {
++    Listing *l=list_directory(path);
++    char other[1024];
++    if (!l || !game_path(guest) || !other_root(path,other,sizeof(other))) return l;
++    Listing *extra=list_directory(other);
++    if (!extra) return l;
++    size_t bytes=l->count ? l->offsets[l->count-1]+strlen(l->names+l->offsets[l->count-1])+1 : 0;
++    for (size_t i=0;i<extra->count;++i) {
++        const char *name=extra->names+extra->offsets[i];
++        int seen=0;
++        for (size_t j=0;j<l->count && !seen;++j) seen=!strcmp(l->names+l->offsets[j],name);
++        if (seen) continue;
++        size_t n=strlen(name)+1;
++        l->offsets=realloc(l->offsets,(l->count+1)*sizeof(size_t));
++        l->types=realloc(l->types,l->count+1);
++        l->names=realloc(l->names,bytes+n);
++        if (!l->offsets || !l->types || !l->names) { fputs("Out of memory listing directory\n",stderr); exit(1); }
++        memcpy(l->names+bytes,name,n);
++        l->offsets[l->count]=bytes; l->types[l->count]=extra->types[i];
++        ++l->count; bytes+=n;
++    }
++    free_listing(extra);
++    return l;
++}
 +/* BB_FILE_TRACE=1: every open of a missing file. DriveClub probes thousands of loose overrides
 +   that never exist, so by default only the total is reported at exit. */
 +static int file_trace(void) { static int v=-1; if (v<0) { const char *e=getenv("BB_FILE_TRACE"); v=e && e[0]=='1'; } return v; }
@@ -19632,8 +19741,12 @@ index c64c0f9..4bff266 100644
  /* BB_SAVE_TRACE=1: every operation on save files (/savedataN). */
  static int save_trace(void) { static int v=-1; if (v<0) { const char *e=getenv("BB_SAVE_TRACE"); v=e && e[0]=='1'; } return v; }
  /* Saves (/savedataN): see File. The copy starts as the old file unless the open truncates. */
-@@ -383,7 +393,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
-         if (!(dir=list_directory(path))) return -EACCES;
+@@ -380,10 +436,10 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+     int host=-1;
+     if (!host_stat(path,&s) && S_ISDIR(s.st_mode)) {
+         if (flags&3) return -EISDIR;
+-        if (!(dir=list_directory(path))) return -EACCES;
++        if (!(dir=list_game_directory(guest,path))) return -EACCES;
      } else if (flags&0x20000) {
          e=errno==ENOENT ? ENOENT : ENOTDIR;
 -        if (e==ENOENT) { ++missing; printf("Runtime: open(%s) -> not found\n",guest); }
@@ -19641,7 +19754,7 @@ index c64c0f9..4bff266 100644
          return -e;
      } else {
          if (save_path(guest) && (flags&3)) {
-@@ -400,7 +410,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -400,7 +456,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
              printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
          if (host<0) {
              e=errno;
@@ -19650,7 +19763,7 @@ index c64c0f9..4bff266 100644
              return -e;
          }
          if (host_fstat(host,&s)) memset(&s,0,sizeof(s));
-@@ -421,7 +431,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -421,12 +477,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
          printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
      if (host<0) {
          e=errno;
@@ -19659,6 +19772,12 @@ index c64c0f9..4bff266 100644
          return -e;
      }
      struct stat s;
+     Listing *dir=NULL;
+-    if (!fstat(host,&s) && S_ISDIR(s.st_mode)) dir=list_directory(path);
++    if (!fstat(host,&s) && S_ISDIR(s.st_mode)) dir=list_game_directory(guest,path);
+ #endif
+     pthread_mutex_lock(&lock);
+     int fd=-1;
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
 index 0000000..12c6ca0

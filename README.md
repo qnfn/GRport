@@ -30,6 +30,9 @@ folder (the one with `eboot.bin`) and press **PLAY**. The first PLAY prepares th
 GRport (about a minute). Later versions install from the launcher: it checks GitHub when it
 starts and the PLAY page offers a new version; your saves and settings stay.
 
+A game update can be copied over the game, or kept in its own folder next to it (for example
+`CUSA03694-UPDATE` or `CUSA03694-patch`, as shadPS4 uses): GRport adds it either way.
+
 ### Linux and Steam Deck (experimental)
 
 - `GRport-x86_64.AppImage`: the launcher, the runtime and Mesa's Vulkan drivers in one file
