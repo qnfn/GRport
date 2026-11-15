@@ -87,7 +87,7 @@ index 529ef05..28f94d3 100644
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
 diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
-index 02b422e..90e2f54 100644
+index 02b422e..b17b6c8 100644
 --- a/gpu/bbgpu.h
 +++ b/gpu/bbgpu.h
 @@ -2,6 +2,7 @@
@@ -131,8 +131,14 @@ index 02b422e..90e2f54 100644
  /* Button prompts (gpu/shim/bbport_prompts.cpp): what each of the game's key-guide icons shows
   * on keyboard and mouse, one string per icon in bbport_prompt_icons.h's order ("e",
   * "lshift+leftbutton", "w a s d", "mouse", "" for nothing). Draws them; safe from any thread. */
-@@ -76,6 +98,9 @@ int bbgpu_input_reload_requested(void);
+@@ -74,8 +96,15 @@ int bbgpu_input_reload_requested(void);
+  * Safe from any thread; applied on the window thread's next
+  * PollEvents. */
  void bbgpu_mouse_camera_configure(int direct, float sensitivity, float scale_x, float scale_y, int sync);
++/* GRport: a game's direct mouse camera is installed (Gravity Rush 2): the menu shows its speed
++ * slider. The slider's multiplier (1.0 default), read on every pad sample: changes apply at once. */
++void bbgpu_mouse_camera_available(void);
++float bbgpu_mouse_camera_speed(void);
  /* Number of symbols registered by the vendored libraries (diagnostics). */
  unsigned bbgpu_symbol_count(void);
 +/* GRport: controller symbols drawn into the games' monochrome glyph caches. */
@@ -12230,7 +12236,7 @@ index 8d41b8c..d34abcf 100644
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
-index 3a73ecf..315b936 100644
+index 3a73ecf..40b3caa 100644
 --- a/gpu/shim/bbgpu.cpp
 +++ b/gpu/shim/bbgpu.cpp
 @@ -45,6 +45,7 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
@@ -12300,8 +12306,18 @@ index 3a73ecf..315b936 100644
  extern "C" int bbgpu_text_input_begin(const char* initial, const char* prompt) {
      if (!g_window) return 0;
      g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
+@@ -394,3 +429,9 @@ extern "C" int bbgpu_input_reload_requested(void) {
+ extern "C" void bbgpu_mouse_camera_configure(int direct, float sensitivity, float scale_x, float scale_y, int sync) {
+     Core::BloodborneCam::Instance().Configure(direct != 0, sensitivity, scale_x, scale_y, sync != 0);
+ }
++extern "C" void bbgpu_mouse_camera_available(void) {
++    BbSettings::Get().mouse_camera_available = true;
++}
++extern "C" float bbgpu_mouse_camera_speed(void) {
++    return BbSettings::Get().mouse_camera_speed;
++}
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 651b74e..6edca2c 100644
+index 651b74e..63a29d8 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
 @@ -9,11 +9,19 @@
@@ -12353,7 +12369,7 @@ index 651b74e..6edca2c 100644
  // Present rate for the FPS counter.
  std::chrono::steady_clock::time_point last_present{};
  float frame_ms_avg = 0.0f, last_present_ms = 0.0f;
-@@ -187,279 +217,83 @@ void Menu() {
+@@ -187,279 +217,88 @@ void Menu() {
          ImVec2(0.0f, 0.0f),
          ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
      bool keep_open = true;
@@ -12649,7 +12665,8 @@ index 651b74e..6edca2c 100644
 -    }
 -    Hint("Effects are applied through game patches at startup (patches/Bloodborne.xml). Motion blur and dynamic shadows can increase GPU load.");
 -    Hint("Free camera: hold Cross and press L3 (keyboard: Space + Z). Debug menu: left touchpad / Tab. Requires DbgFont14h.ccm and DbgFont14h.tpf in dvdroot_ps4/font from the debug-font mod. Right touchpad: Backspace.");
--
++    Hint("FSR 1 scales the game's 1920x1080 picture to the window or screen with sharp edges. On a 1080p screen it does nothing more than the sharpening above. Applies at once.");
+ 
 -    bool restart = s.object_motion != s.startup_object_motion ||
 -                   s.model_lod != s.startup_model_lod || s.fov != s.startup_fov ||
 -                   s.live_resolution != s.startup_live_resolution ||
@@ -12664,9 +12681,12 @@ index 651b74e..6edca2c 100644
 -            BbSettings::Save();
 -            runtime_restart();
 -        }
--    }
-+    Hint("FSR 1 scales the game's 1920x1080 picture to the window or screen with sharp edges. On a 1080p screen it does nothing more than the sharpening above. Applies at once.");
- 
++    if (s.mouse_camera_available) {
++        ImGui::SeparatorText("Mouse");
++        Slider("Mouse camera speed", s.mouse_camera_speed, 0.1f, 5.0f);
++        Hint("How far the camera turns for a mouse movement. 1 is the default; applies at once. Ctrl+click to type a value.");
+     }
+-
      ImGui::SeparatorText("Other");
      Checkbox("Show FPS counter", s.show_fps);
      Checkbox("Mute when the game is in the background", s.mute_unfocused);
@@ -12690,7 +12710,7 @@ index 651b74e..6edca2c 100644
      if (ImGui::Button("Close")) {
          keep_open = false;
      }
-@@ -481,8 +315,9 @@ void Menu() {
+@@ -481,8 +320,9 @@ void Menu() {
      if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
          quit_armed = false;
      }
@@ -12701,7 +12721,7 @@ index 651b74e..6edca2c 100644
      ImGui::End();
      if (!keep_open) {
          SetOpen(false);
-@@ -513,6 +348,351 @@ void TextEntryBox() {
+@@ -513,6 +353,351 @@ void TextEntryBox() {
      ImGui::End();
  }
  
@@ -13053,7 +13073,7 @@ index 651b74e..6edca2c 100644
  void FpsCounter() {
      const ImGuiViewport* viewport = ImGui::GetMainViewport();
      const float pad = 12.0f * base_scale;
-@@ -524,14 +704,20 @@ void FpsCounter() {
+@@ -524,14 +709,20 @@ void FpsCounter() {
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                       ImGuiWindowFlags_NoFocusOnAppearing);
@@ -13082,7 +13102,7 @@ index 651b74e..6edca2c 100644
      ImGui::End();
  }
  
-@@ -548,14 +734,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
+@@ -548,14 +739,54 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count)
      io.IniFilename = nullptr; // window positions are not kept
      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -13139,7 +13159,7 @@ index 651b74e..6edca2c 100644
  
      ImFontConfig font_config;
      font_config.FontDataOwnedByAtlas = false;
-@@ -703,11 +929,201 @@ bool HandleEvent(const SDL_Event& event) {
+@@ -703,11 +934,201 @@ bool HandleEvent(const SDL_Event& event) {
  }
  
  bool Visible() {
@@ -13343,7 +13363,7 @@ index 651b74e..6edca2c 100644
  }
  
  void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
-@@ -776,6 +1192,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+@@ -776,6 +1197,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
      if (text_entry_active) {
          TextEntryBox();
      }
@@ -14474,10 +14494,10 @@ index 84dac01..62e643f 100644
  void OnInput(Device device);
  /// Window thread: a controller of that kind is connected. Before any input, the prompts are
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
-index 5b985a4..81538f9 100644
+index 5b985a4..eb23039 100644
 --- a/gpu/shim/bbport_settings.cpp
 +++ b/gpu/shim/bbport_settings.cpp
-@@ -1,270 +1,324 @@
+@@ -1,270 +1,327 @@
 -// SPDX-License-Identifier: GPL-2.0-or-later
 -#include "bbport_settings.h"
 -
@@ -14825,6 +14845,8 @@ index 5b985a4..81538f9 100644
 +        v.motion_blur = Clamp(f, 0.0f, 2.0f); // older files: 1 (on) or 0 (off)
 +    } else if (key == "mute_unfocused") {
 +        v.mute_unfocused = i != 0;
++    } else if (key == "mouse_camera_speed") {
++        v.mouse_camera_speed = Clamp(f, 0.1f, 5.0f);
 +    } else if (key == "button_prompts") {
 +        v.button_prompts = value == "playstation" ? PromptsPlayStation
 +                         : value == "keyboard"    ? PromptsKeyboard
@@ -14981,7 +15003,7 @@ index 5b985a4..81538f9 100644
 +        "upscaler", "preset", "sharpen", "sharpness", "jitter", "reactive", "object_motion",
 +        "reactive_scale", "reactive_threshold", "reactive_max", "debug_view", "show_fps", "fsr1",
 +        "frame_gen", "frame_gen_image_only", "frame_gen_multiplier", "frame_gen_fit_display",
-+        "mute_unfocused", "button_prompts", "xbox_buttons", "playstation_buttons", "motion_blur",
++        "mute_unfocused", "mouse_camera_speed", "button_prompts", "xbox_buttons", "playstation_buttons", "motion_blur",
 +        "fsr4_auto_exposure", "fsr4_invert_jitter", "model_lod",
 +        "output_res", "hud_position", "live_resolution"};
 +    std::string kept;
@@ -15035,6 +15057,7 @@ index 5b985a4..81538f9 100644
 +                 OutputWidths[v.output_res], OutputHeights[v.output_res]);
 +    std::fprintf(file, "fsr1=%d\n", int(v.fsr1.load()));
 +    std::fprintf(file, "mute_unfocused=%d\n", int(v.mute_unfocused.load()));
++    std::fprintf(file, "mouse_camera_speed=%.2f\n", double(v.mouse_camera_speed.load()));
 +    static constexpr const char* prompts[PromptsCount] = {"auto", "playstation", "keyboard", "xbox", "switch"};
 +    std::fprintf(file, "button_prompts=%s\n", prompts[std::clamp(v.button_prompts.load(), 0, PromptsCount - 1)]);
 +    std::fprintf(file, "xbox_buttons=%s\nplaystation_buttons=%s\n", v.xbox_buttons ? "one" : "360",
@@ -15073,10 +15096,10 @@ index 5b985a4..81538f9 100644
 +
 +} // namespace BbSettings
 diff --git a/gpu/shim/bbport_settings.h b/gpu/shim/bbport_settings.h
-index c0e7334..8a41730 100644
+index c0e7334..59a6a6f 100644
 --- a/gpu/shim/bbport_settings.h
 +++ b/gpu/shim/bbport_settings.h
-@@ -76,18 +76,30 @@ struct Values {
+@@ -76,18 +76,34 @@ struct Values {
      std::atomic<int> preset{NativeAA};
      std::atomic<bool> sharpen{true};
      std::atomic<float> sharpness{0.3f};
@@ -15099,6 +15122,10 @@ index c0e7334..8a41730 100644
 +    std::atomic<float> motion_blur{1.0f};
      /// Silence the game while its window does not have focus (bbgpu_audio_muted).
      std::atomic<bool> mute_unfocused{false};
++    /// GRport: the direct mouse camera's speed (multiplies mouse_camera_sensitivity), read on
++    /// every pad sample; its menu slider shows once a game's direct camera is installed.
++    std::atomic<float> mouse_camera_speed{1.0f};
++    std::atomic<bool> mouse_camera_available{false};
      /// Keyboard and mouse button prompts: with the device in use (auto), or always one kind.
      std::atomic<int> button_prompts{PromptsAuto};
 +    /// DCport: the look of Driveclub's controller prompts: Xbox 360 (0) or Xbox One (1) buttons
@@ -15109,7 +15136,7 @@ index c0e7334..8a41730 100644
      // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
      std::atomic<bool> fsr4_auto_exposure{true};
      std::atomic<bool> fsr4_invert_jitter{false};
-@@ -106,6 +118,8 @@ struct Values {
+@@ -106,6 +122,8 @@ struct Values {
      std::atomic<int> live_resolution{0};
      /// Why FSR 4 cannot run (assets, device features), or null. Set by the renderer.
      std::atomic<const char*> fsr4_problem{nullptr};
@@ -15118,7 +15145,7 @@ index c0e7334..8a41730 100644
      std::atomic<bool> fsr4_supported{false}, fsr411_supported{false};
      /// DLSS (bbport_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
      std::atomic<bool> dlss_supported{false};
-@@ -126,6 +140,9 @@ struct Values {
+@@ -126,6 +144,9 @@ struct Values {
      /// The game's own frame rate (presenter, game frames only), shown beside the total when
      /// frame generation adds frames.
      std::atomic<float> game_fps{0.0f};
@@ -17644,7 +17671,7 @@ index 0000000..30235fc
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
-index 988d694..09de83e 100644
+index 988d694..0b1384e 100644
 --- a/src/probe.c
 +++ b/src/probe.c
 @@ -5,6 +5,7 @@
@@ -18148,7 +18175,16 @@ index 988d694..09de83e 100644
          gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
          if (bbgpu_init(&gpu)) fail("GPU initialization failed");
          printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
-@@ -684,13 +983,14 @@ int main(int argc, char **argv) {
+@@ -679,18 +978,22 @@ int main(int argc, char **argv) {
+     }
+     /* The Hunter's Dream backend reads the game's code before the patches change it. */
+     bbnet_set_image(image, size);
+-    if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
++    if (patch_file) {
++        apply_patches(patch_file, segments, ns, relocs, nr);
++        runtime_gr_camera_install(image, patch_span);
++    }
+ #ifdef _WIN32
      printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
  #endif
      protect(traps, round_page((import_count + 1) * 32), 5);
@@ -18164,7 +18200,7 @@ index 988d694..09de83e 100644
      if (!executable_entry) fail("entry is not executable");
      printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
      if (native_libc) {
-@@ -717,7 +1017,20 @@ int main(int argc, char **argv) {
+@@ -717,7 +1020,20 @@ int main(int argc, char **argv) {
      bbnet_initialize(); /* the online session starts with the game */
      printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
      entered_game=1;
@@ -18267,10 +18303,21 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..de11ed5 100644
+index 773ee79..61caef7 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
-@@ -45,6 +45,10 @@ void runtime_thread_attach_main(void);
+@@ -15,6 +15,10 @@ typedef bb_jmp_buf sigjmp_buf;
+ extern __thread sigjmp_buf *runtime_fault_recover;
+ /* Restarts the game (in-game settings menu, render resolution change). */
+ void runtime_restart(void);
++/* runtime_gr_camera.c: Gravity Rush 2 direct mouse camera (#38). */
++int runtime_gr_camera_install(unsigned char *image, uint64_t span);
++int runtime_gr_camera_active(void);
++void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity);
+ /* Quit to Desktop (runtime_services.c, scripts/quit_menu.py): a file the game opens, and the end
+  * of a save. */
+ void runtime_quit_on_open(const char *guest);
+@@ -45,6 +49,10 @@ void runtime_thread_attach_main(void);
  int32_t *runtime_errno(void);
  uintptr_t runtime_sema_resolve(const char *name);
  void runtime_sema_report(void);
@@ -18281,7 +18328,7 @@ index 773ee79..de11ed5 100644
  unsigned runtime_sema_waiters(uint32_t id);
  uintptr_t runtime_time_resolve(const char *name);
  void runtime_content_configure(const uint32_t values[5]);
-@@ -55,10 +59,11 @@ typedef struct { const char *name; void *function; } RuntimeExport;
+@@ -55,10 +63,11 @@ typedef struct { const char *name; void *function; } RuntimeExport;
  const char *runtime_symbol(const char *nid);
  uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
  uintptr_t runtime_kernel_resolve(const char *name);
@@ -18294,7 +18341,7 @@ index 773ee79..de11ed5 100644
  int runtime_file_mount(const char *guest, const char *host);
  void runtime_file_unmount(const char *guest);
  int runtime_file_translate(const char *guest, char *out, size_t size);
-@@ -80,13 +85,36 @@ void runtime_memory_reserve(void);
+@@ -80,13 +89,36 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -20151,6 +20198,113 @@ index 0000000..12c6ca0
 +};
 +
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
+diff --git a/src/runtime_gr_camera.c b/src/runtime_gr_camera.c
+new file mode 100644
+index 0000000..88a17c7
+--- /dev/null
++++ b/src/runtime_gr_camera.c
+@@ -0,0 +1,101 @@
++/*
++ * GRport: direct mouse camera for Gravity Rush 2 (v01.11, #38).
++ *
++ * The game turns its camera from the right stick: one function (its object in r13) loads the
++ * stick vector (camera object + 0x500: x, 0, y, 0) with a single vmovapd and turns it into yaw
++ * and pitch speeds. Mouse look emulated through the stick topped out at full deflection, so it
++ * turned no faster than the stick (#38: "the mouse still feels like a thumbstick").
++ *
++ * Here that load calls a few bytes of code instead, which add a second vector to it: the
++ * mouse motion since the previous pad read, in stick units for this frame. Past the load the
++ * game uses the values unclamped: yaw turns 2.494 rad/s per unit; pitch has a 0.1 dead zone,
++ * then (|y| - 0.1) * 1.111 * 1.92 rad/s. Both speeds also ramp up over 0.35 s of holding the
++ * stick (hold timers at r13 + 0x150 for yaw, r13 + 0x118 against the length at + 0x11c for
++ * pitch): while the mouse moves, the code sets both timers to the end of the ramp, so a flick
++ * turns as far as a slow move. Measured in the game; the conversion below inverts it, so the
++ * camera turns by the mouse's distance (mouse_camera_sensitivity 1.0 = 900 counts per radian,
++ * times the menu's speed slider). The registers the code uses (xmm3, xmm4, flags) are dead at
++ * the load: the function writes them before reading them.
++ *
++ * The hook is installed only when the bytes at the load are the expected ones (another build
++ * or game keeps the stick emulation), into the read/write/execute cave the runtime maps after
++ * the image when it applies a patch file (Gravity Rush 2 always runs with one).
++ */
++#include "runtime.h"
++#include "gpu/bbgpu.h"
++
++#include <stdatomic.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#define LOAD_OFFSET UINT64_C(0x1167e5e)  /* vmovapd xmm2, [rip+0x9c769a] (stick vector) */
++#define STICK_OFFSET UINT64_C(0x1b2f500) /* the camera object's stick vector */
++#define CAVE_SIZE 128                    /* code at 0, mouse vector at 96, constant at 112 */
++#define YAW_RATE 2.494                   /* rad/s per stick unit */
++#define PITCH_RATE (1.111 * 1.92)        /* rad/s per stick unit past the dead zone */
++#define PITCH_DEAD_ZONE 0.1
++
++static const unsigned char load_bytes[8] = {0xc5, 0xf9, 0x28, 0x15, 0x9a, 0x76, 0x9c, 0x00};
++
++/* The cave's code; the stick's displacement (bytes 4..7) is filled in at install. */
++static const unsigned char cave_code[] = {
++    0xc5, 0xf9, 0x28, 0x15, 0x00, 0x00, 0x00, 0x00, /* vmovapd xmm2, [rip+stick]            */
++    0xc5, 0xf8, 0x28, 0x1d, 0x50, 0x00, 0x00, 0x00, /* vmovaps xmm3, [rip+vector]           */
++    0xc5, 0xe8, 0x58, 0xd3,                         /* vaddps xmm2, xmm2, xmm3              */
++    0xc4, 0xe2, 0x79, 0x17, 0xdb,                   /* vptest xmm3, xmm3                    */
++    0x74, 0x35,                                     /* jz ret: the mouse is still           */
++    0xc4, 0xc1, 0x7a, 0x10, 0xa5, 0x50, 0x01, 0x00, 0x00, /* vmovss xmm4, [r13+0x150]       */
++    0xc5, 0xda, 0x5f, 0x25, 0x44, 0x00, 0x00, 0x00,       /* vmaxss xmm4, xmm4, [rip+0.35]  */
++    0xc4, 0xc1, 0x7a, 0x11, 0xa5, 0x50, 0x01, 0x00, 0x00, /* vmovss [r13+0x150], xmm4       */
++    0xc4, 0xc1, 0x7a, 0x10, 0xa5, 0x18, 0x01, 0x00, 0x00, /* vmovss xmm4, [r13+0x118]       */
++    0xc4, 0xc1, 0x5a, 0x5f, 0xa5, 0x1c, 0x01, 0x00, 0x00, /* vmaxss xmm4, xmm4, [r13+0x11c] */
++    0xc4, 0xc1, 0x7a, 0x11, 0xa5, 0x18, 0x01, 0x00, 0x00, /* vmovss [r13+0x118], xmm4       */
++    0xc3,                                                 /* ret                            */
++};
++_Static_assert(sizeof(cave_code) <= 96, "the cave's code overlaps its data");
++
++/* The 16-byte vector the hook adds to the stick: x, 0, y, 0 (written whole by the pad thread,
++ * read whole by the camera; a torn read would only mix two frames' motion). */
++static float *mouse_vector;
++static _Atomic int installed;
++
++static void put32(unsigned char *at, int32_t v) { memcpy(at, &v, 4); }
++
++int runtime_gr_camera_install(unsigned char *image, uint64_t span) {
++    if (!image || span < LOAD_OFFSET + 8 + CAVE_SIZE || memcmp(image + LOAD_OFFSET, load_bytes, 8))
++        return 0;
++    /* The last CAVE_SIZE bytes of the cave (16-byte aligned: span is page aligned), past
++     * anything the game's patches write. */
++    unsigned char *cave = image + span - CAVE_SIZE;
++    for (int i = 0; i < CAVE_SIZE; ++i)
++        if (cave[i]) return 0; /* in use */
++    memcpy(cave, cave_code, sizeof(cave_code));
++    put32(cave + 4, (int32_t)((image + STICK_OFFSET) - (cave + 8)));
++    const float ramp_end = 0.35f; /* the yaw ramp's length (the game's constant at 0x14c6064) */
++    memcpy(cave + 112, &ramp_end, 4);
++    mouse_vector = (float *)(cave + 96);
++    /* call cave; three nops: the 8 bytes of the load. The function calls others, so nothing of
++     * its own lies below rsp. */
++    unsigned char hook[8] = {0xe8, 0, 0, 0, 0, 0x90, 0x90, 0x90};
++    put32(hook + 1, (int32_t)(cave - (image + LOAD_OFFSET + 5)));
++    memcpy(image + LOAD_OFFSET, hook, 8);
++    atomic_store(&installed, 1);
++    bbgpu_mouse_camera_available();
++    puts("Mouse camera: direct (Gravity Rush 2)");
++    return 1;
++}
++
++int runtime_gr_camera_active(void) { return atomic_load(&installed); }
++
++void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity) {
++    if (!atomic_load(&installed)) return;
++    float v[4] = {0, 0, 0, 0};
++    if (dt_ms > 0 && (dx != 0 || dy != 0)) {
++        const double radians_per_count = sensitivity / 900.0, seconds = dt_ms / 1000.0;
++        v[0] = (float)(dx * radians_per_count / seconds / YAW_RATE);
++        const double pitch = dy * radians_per_count / seconds / PITCH_RATE;
++        if (pitch != 0) v[2] = (float)(pitch > 0 ? PITCH_DEAD_ZONE + pitch : pitch - PITCH_DEAD_ZONE);
++    }
++    memcpy(mouse_vector, v, sizeof(v));
++}
 diff --git a/src/runtime_image.c b/src/runtime_image.c
 new file mode 100644
 index 0000000..7eb96c6
@@ -20658,7 +20812,7 @@ index 0000000..7eb96c6
 +};
 +uintptr_t runtime_image_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_input_config.c b/src/runtime_input_config.c
-index 0ccd2ce..f7e0657 100644
+index 0ccd2ce..e88ebdf 100644
 --- a/src/runtime_input_config.c
 +++ b/src/runtime_input_config.c
 @@ -532,15 +532,30 @@ static void ParseLine(ParseState *state, char *line) {
@@ -20692,6 +20846,15 @@ index 0ccd2ce..f7e0657 100644
  
          /* CFG-003: strip all whitespace, then truncate at '#'. */
          char line[LINE_MAX + 2];
+@@ -561,7 +576,7 @@ void input_config_parse(InputConfig *out, const char *text) {
+     out->mouse.speed = 1.0f;
+     out->mouse.speed_offset = 0.125f;
+     out->mouse.stick = 0;
+-    out->mouse.camera_direct = 0;
++    out->mouse.camera_direct = -1; /* unset: a game's direct camera where there is one (Gravity Rush 2) */
+     out->mouse.camera_sensitivity = 1.0f;
+     out->mouse.sensitivity_y = 1.0f;
+     out->mouse.camera_sync = 1;
 @@ -590,7 +605,7 @@ void input_config_defaults(InputConfig *out) {
   * single binding of that kind. launcher/bbport_input_config.py has a copy of the whole text
   * (tests/test_input_defaults.py checks that they match). */
@@ -20713,6 +20876,19 @@ index 0ccd2ce..f7e0657 100644
  "mouse_movement_params = 0.5, 1, 0.125\n"
  
  #define DEFAULT_MOUSE_BUTTONS \
+diff --git a/src/runtime_input_config.h b/src/runtime_input_config.h
+index c07a0d3..ed24c2f 100644
+--- a/src/runtime_input_config.h
++++ b/src/runtime_input_config.h
+@@ -71,7 +71,7 @@ typedef struct {
+ typedef struct {
+     float deadzone_offset, speed, speed_offset; /* mouse_movement_params; shadPS4 defaults 0.5,1,0.125 */
+     int stick; /* 0=none, 1=left, 2=right; mouse_to_joystick */
+-    int camera_direct;        /* mouse_camera = direct (1) | stick (0, default) */
++    int camera_direct;        /* mouse_camera = direct (1) | stick (0) | unset (-1, default) */
+     float camera_sensitivity; /* mouse_camera_sensitivity; 1.0 default */
+     /* Both camera modes, applied to the mouse motion itself: */
+     int invert_x, invert_y;   /* mouse_invert_x / mouse_invert_y = on | off (default) */
 diff --git a/src/runtime_kernel.c b/src/runtime_kernel.c
 index 273a8f8..d84842f 100644
 --- a/src/runtime_kernel.c
@@ -21662,7 +21838,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..53675d9 100644
+index 687bfb5..edf4105 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -21882,17 +22058,35 @@ index 687bfb5..53675d9 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
+@@ -511,7 +667,7 @@ static void ensure_config_loaded(void) {
+                           loaded_config ? loaded_config->reload_scancode : default_config.reload_scancode);
+     const MouseParams *mouse=loaded_config ? &loaded_config->mouse : &default_config.mouse;
+     configure_prompts(loaded_config ? loaded_config : &default_config);
+-    bbgpu_mouse_camera_configure(loaded_config ? mouse->camera_direct : 0,mouse->camera_sensitivity,
++    bbgpu_mouse_camera_configure(loaded_config ? mouse->camera_direct>0 : 0,mouse->camera_sensitivity,
+                                  input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
+ }
+ /* CFG-008: called once per sample() (under `lock`), reloads if the window thread set the F8
+@@ -533,7 +689,7 @@ static void reload_config_if_requested(void) {
+         bbgpu_input_configure(loaded_config->mouse.stick!=0,loaded_config->toggle_scancode,loaded_config->reload_scancode);
+         const MouseParams *mouse=&loaded_config->mouse;
+         configure_prompts(loaded_config);
+-        bbgpu_mouse_camera_configure(mouse->camera_direct,mouse->camera_sensitivity,
++        bbgpu_mouse_camera_configure(mouse->camera_direct>0,mouse->camera_sensitivity,
+                                      input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
+     } else {
+         free(fresh);
 @@ -554,7 +710,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
 -    if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
-+    if (bbgpu_overlay_captures_input()) { motion_sample_us=0; return; } /* settings menu open: neutral input */
++    if (bbgpu_overlay_captures_input()) { motion_sample_us=0; runtime_gr_camera_feed(0,0,0,0); return; } /* settings menu open: neutral input */
 +    sample_motion(motion_enabled ? current_motion_gamepad(g) : NULL,d);
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,6 +774,8 @@ static void sample_host(PadData *d) {
+@@ -617,12 +774,27 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -21901,7 +22095,35 @@ index 687bfb5..53675d9 100644
  
      /* CNV-001/MOU-009: the mouse contribution is added after the stick's own deadzone, not
       * before it -- mouse_to_axis's own output-value lerp already keeps small/slow motion from
-@@ -838,7 +997,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+      * producing a jumpy or oversized contribution (see its doc comment), so running the result
+      * through apply_deadzone too would just chop off the small end of an already-smooth curve. */
+-    if (mouse.captured && cfg->mouse.stick) {
++    /* Gravity Rush 2 (#38): the mouse turns the camera itself (runtime_gr_camera.c) unless
++     * input.ini says mouse_camera = stick; the pad's stick stays the controller's own. */
++    const int direct_camera=mouse.captured && cfg->mouse.stick && cfg->mouse.camera_direct!=0 &&
++                            runtime_gr_camera_active();
++    if (direct_camera) {
++        uint64_t now=now_us();
++        double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
++        if (dt_ms<1.0) dt_ms=1.0;
++        if (dt_ms>100.0) dt_ms=100.0;
++        last_mouse_sample_us=now;
++        runtime_gr_camera_feed(mouse.dx*input_mouse_scale_x(&cfg->mouse),mouse.dy*input_mouse_scale_y(&cfg->mouse),
++                               dt_ms,cfg->mouse.camera_sensitivity*bbgpu_mouse_camera_speed());
++    } else if (mouse.captured && cfg->mouse.stick) {
++        runtime_gr_camera_feed(0,0,0,0);
+         uint64_t now=now_us();
+         double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
+         if (dt_ms<1.0) dt_ms=1.0;
+@@ -639,6 +811,7 @@ static void sample_host(PadData *d) {
+          * next capture must start the EMA fresh, not carry over speed from before the gap. */
+         last_mouse_sample_us=0;
+         smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
++        runtime_gr_camera_feed(0,0,0,0);
+     }
+ 
+     if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
+@@ -838,7 +1011,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -21918,7 +22140,7 @@ index 687bfb5..53675d9 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1013,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1027,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -21935,7 +22157,7 @@ index 687bfb5..53675d9 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1060,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1074,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -21965,7 +22187,7 @@ index 687bfb5..53675d9 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1090,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1104,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -23368,9 +23590,32 @@ index 0000000..1706607
 +    return 0;
 +}
 diff --git a/tests/test_input_config.c b/tests/test_input_config.c
-index 3b8c8d2..12bf19e 100644
+index 3b8c8d2..08b6a78 100644
 --- a/tests/test_input_config.c
 +++ b/tests/test_input_config.c
+@@ -203,11 +203,11 @@ static void TestMouseMovementParams(void) {
+     assert(incomplete.mouse.speed > 0.99f && incomplete.mouse.speed < 1.01f); /* default kept */
+ }
+ 
+-/* mouse_camera / mouse_camera_sensitivity: direct camera opt-in, stick is the default. */
++/* mouse_camera / mouse_camera_sensitivity: unset by default (a game's direct camera where it has one). */
+ static void TestMouseCamera(void) {
+     InputConfig def;
+     input_config_parse(&def, "mouse_to_joystick = right\n");
+-    assert(def.mouse.camera_direct == 0);
++    assert(def.mouse.camera_direct == -1);
+     assert(def.mouse.camera_sensitivity > 0.99f && def.mouse.camera_sensitivity < 1.01f);
+ 
+     InputConfig cfg;
+@@ -224,7 +224,7 @@ static void TestMouseCamera(void) {
+     InputConfig bad;
+     input_config_parse(&bad, "mouse_camera = gyro\nmouse_camera_sensitivity = 0\nmouse_camera_sensitivity = fast\n");
+     assert(bad.warnings == 3);
+-    assert(bad.mouse.camera_direct == 0);
++    assert(bad.mouse.camera_direct == -1);
+     assert(bad.mouse.camera_sensitivity > 0.99f && bad.mouse.camera_sensitivity < 1.01f); /* default kept */
+ }
+ 
 @@ -329,13 +329,26 @@ static void TestHalfAxisNames(void) {
  /* The compiled-in default file must itself parse with only the one documented warning
   * (override_controller_color is not emitted by our own default, so the true baseline is 0;
@@ -23408,7 +23653,7 @@ index 3b8c8d2..12bf19e 100644
      TestShadps4DefaultFileImports();
      TestLoadCreatesMissingFile();
 diff --git a/tests/test_pad.c b/tests/test_pad.c
-index a477ea9..48af3d6 100644
+index a477ea9..771428e 100644
 --- a/tests/test_pad.c
 +++ b/tests/test_pad.c
 @@ -3,6 +3,13 @@
@@ -23425,7 +23670,24 @@ index a477ea9..48af3d6 100644
  static int capture;
  int bbgpu_overlay_captures_input(void) { return capture; }
  uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
-@@ -285,11 +292,28 @@ static void test_mouse_to_axis(void) {
+@@ -30,6 +37,16 @@ void bbgpu_prompts_configure(const char *const *inputs, int count) {
+ void bbgpu_mouse_camera_configure(int direct, float sensitivity, float scale_x, float scale_y, int sync) {
+     (void)direct; (void)sensitivity; (void)scale_x; (void)scale_y; (void)sync;
+ }
++/* #38: runtime_gr_camera.c and the menu's speed slider; stub_camera_active stands for a game
++ * whose direct camera is installed, stub_camera_dx/dy/sensitivity record the last feed. */
++static int stub_camera_active;
++static double stub_camera_dx, stub_camera_dy, stub_camera_sensitivity;
++int runtime_gr_camera_active(void) { return stub_camera_active; }
++void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity) {
++    (void)dt_ms;
++    stub_camera_dx=dx; stub_camera_dy=dy; stub_camera_sensitivity=sensitivity;
++}
++float bbgpu_mouse_camera_speed(void) { return 2.0f; }
+ /* T6: controlled by the tests via stub_reload_requested, draining to 0 on read like the real
+  * one (bbgpu_input_reload_requested's own doc comment: "1 once ... then clears back to 0"). */
+ static int stub_reload_requested;
+@@ -285,11 +302,28 @@ static void test_mouse_to_axis(void) {
  
      /* Steady state: a constant dx=10 at dt=6.67ms (150 FPS), held long enough for the lerp to
       * settle, must converge to the un-filtered linear response for that velocity: magnitude =
@@ -23457,7 +23719,7 @@ index a477ea9..48af3d6 100644
  
      /* Responsive from a standstill: unlike both earlier designs (hard floor, magnitude ramp),
       * the target here is the plain unfiltered formula, so a single large flick must already
-@@ -388,7 +412,7 @@ static void test_mouse_buttons_and_wheel(void) {
+@@ -388,7 +422,7 @@ static void test_mouse_buttons_and_wheel(void) {
  /* T5 end to end: a captured mouse moving the right stick through sample_host/pad_read_state,
   * and MOU-006 (mouse bindings are inert while bbgpu_mouse_take reports captured=0). */
  static void test_mouse_end_to_end(void) {
@@ -23466,7 +23728,55 @@ index a477ea9..48af3d6 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -425,7 +449,7 @@ static void test_mouse_end_to_end(void) {
+@@ -418,6 +452,47 @@ static void test_mouse_end_to_end(void) {
+     puts("PASS: mouse end to end through pad_read_state (captured gate, right-stick deflection)");
+ }
+ 
++/* #38: with a game's direct camera installed the mouse turns the camera itself (not the
++ * stick), at mouse_camera_sensitivity times the menu's speed; mouse_camera = stick keeps the
++ * stick emulation; an idle or released mouse feeds no motion. */
++static void test_mouse_direct_camera(void) {
++    static const char *const files[]={
++        "mouse_to_joystick = right\nmouse_camera_sensitivity = 1.5\n",
++        "mouse_to_joystick = right\nmouse_camera = stick\n"};
++    for (int stick_mode=0;stick_mode<2;++stick_mode) {
++        char config_path[]="bbport-pad-test-camera-XXXXXX";
++        int fd=mkstemp(config_path);
++        assert(fd>=0);
++        FILE *f=fdopen(fd,"w");
++        assert(f);
++        fputs(files[stick_mode],f);
++        fclose(f);
++        setenv("BB_INPUT_CONFIG",config_path,1);
++        free(loaded_config); config_initialized=0; loaded_config=NULL;
++        stub_camera_active=1;
++        PadData data;
++        stub_mouse=(BbMouseInput){.dx=40.0f,.dy=-10.0f,.captured=1};
++        assert(pad_read_state(1,&data)==0);
++        if (!stick_mode) {
++            assert(data.right_x==128 && data.right_y==128); /* the stick is the controller's own */
++            assert(stub_camera_dx==40.0 && stub_camera_dy==-10.0);
++            assert(stub_camera_sensitivity>2.99 && stub_camera_sensitivity<3.01); /* 1.5 x speed 2 */
++        } else {
++            assert(data.right_x>128); /* stick emulation */
++            assert(stub_camera_dx==0.0 && stub_camera_dy==0.0);
++        }
++        stub_mouse=(BbMouseInput){.captured=0};
++        assert(pad_read_state(1,&data)==0);
++        assert(stub_camera_dx==0.0 && stub_camera_dy==0.0); /* released: nothing keeps turning */
++        stub_camera_active=0;
++        stub_mouse=(BbMouseInput){0};
++        unsetenv("BB_INPUT_CONFIG");
++        unlink(config_path);
++        free(loaded_config); config_initialized=0; loaded_config=NULL;
++    }
++    puts("PASS: direct mouse camera (camera fed instead of the stick; mouse_camera = stick; release)");
++}
++
+ /* T2: a custom input.ini end to end through pad_read_state -- proves the file is actually
+  * found, parsed and wired into sample_host via BB_INPUT_CONFIG, not just that
+  * test_binding_evaluation's lower-level calls work in isolation. Keys cannot be held under the
+@@ -425,7 +500,7 @@ static void test_mouse_end_to_end(void) {
   * still a real regression guard: a bug in ensure_config_loaded/active_config that crashed, hung,
   * or left stale bindings from the earlier test would show up here. */
  static void test_custom_binding_config(void) {
@@ -23475,7 +23785,7 @@ index a477ea9..48af3d6 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -454,7 +478,7 @@ static void test_custom_binding_config(void) {
+@@ -454,7 +529,7 @@ static void test_custom_binding_config(void) {
   * live binding without restarting the process -- the actual behavior "F8 reloads", not just
   * that the two pieces (input_config_load, reload_config_if_requested) exist in isolation. */
  static void test_reload_on_f8(void) {
@@ -23484,7 +23794,7 @@ index a477ea9..48af3d6 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -493,7 +517,80 @@ static void test_reload_on_f8(void) {
+@@ -493,7 +568,80 @@ static void test_reload_on_f8(void) {
      puts("PASS: F8 reloads input.ini live (AC-018)");
  }
  
@@ -23565,7 +23875,7 @@ index a477ea9..48af3d6 100644
      test_binding_evaluation();
      test_combos();
      test_prompt_texts();
-@@ -502,7 +599,7 @@ int main(void) {
+@@ -502,7 +650,7 @@ int main(void) {
      test_mouse_to_axis();
      test_mouse_buttons_and_wheel();
  
@@ -23574,7 +23884,15 @@ index a477ea9..48af3d6 100644
      int fd=mkstemp(path);
      assert(fd>=0);
      close(fd);
-@@ -534,18 +631,43 @@ int main(void) {
+@@ -515,6 +663,7 @@ int main(void) {
+     test_custom_binding_config();
+     test_reload_on_f8();
+     test_mouse_end_to_end();
++    test_mouse_direct_camera();
+     PadData data;
+     inject(path,"cross l3 touchpad_left");
+     assert(pad_read_state(1,&data)==0);
+@@ -534,18 +683,43 @@ int main(void) {
      desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
      desc.button_mask=(1u<<SDL_GAMEPAD_BUTTON_COUNT)-1;
      desc.axis_mask=(1u<<SDL_GAMEPAD_AXIS_COUNT)-1;
@@ -23623,7 +23941,7 @@ index a477ea9..48af3d6 100644
      SDL_UpdateJoysticks();
      SDL_UpdateGamepads();
      assert(pad_read_state(1,&data)==0);
-@@ -555,14 +677,20 @@ int main(void) {
+@@ -555,14 +729,20 @@ int main(void) {
      capture=1;
      assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
      capture=0;
