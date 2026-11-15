@@ -31,10 +31,13 @@ GR1_KICK_FIX = "Gravity kick camera leveling"
 DLC_UNLOCK = "Unlock All DLC"  # Gravity Rush 2: always on
 GOLDHEN_BASE = 0x400000
 
-# GR1 CUSA01113 1.00: addresses are offsets into the executable image. The
-# gravity and gem patches are adapted from Talixme's GoldHEN definitions;
-# the health write follows Skal's definition. The special timer patch stops
-# its decrement after it has been charged. Prepare validates original bytes.
+# GR1 1.00: addresses are offsets into the executable image. The gravity and
+# gem patches are adapted from Talixme's GoldHEN definitions for the European
+# CUSA01113; the health write follows Skal's definition for the US CUSA01130,
+# whose gravity code sits at the same offset with the same bytes. The special
+# timer patch stops its decrement after it has been charged. Any region may
+# try them: prepare checks each target instruction and, when one differs, the
+# game plays unpatched (#42).
 GR1_CHEATS = {
     "GR1 health": (0x2D2F44, bytes.fromhex("894f20")),
     "GR1 gravity": (0x08169A, bytes.fromhex("9090909090909090")),
@@ -46,10 +49,10 @@ GR1_CHEATS = {
 OPTIONAL = {
     "gr1": (
         ("Skip intro", "Skip intro", False, "Skips the logos and the intro movie at boot."),
-        ("GR1 health", "Cheat: health stays full", False, "Experimental; European v1.00 only."),
-        ("GR1 gravity", "Cheat: infinite gravity", False, "Experimental; European v1.00 only."),
-        ("GR1 special", "Cheat: infinite special", False, "Keeps the special timer once charged; European v1.00 only."),
-        ("GR1 gems", "Cheat: gems increase when spent", False, "Experimental; European v1.00 only. May affect saved gems."),
+        ("GR1 health", "Cheat: health stays full", False, "Experimental; v1.00."),
+        ("GR1 gravity", "Cheat: infinite gravity", False, "Experimental; v1.00."),
+        ("GR1 special", "Cheat: infinite special", False, "Keeps the special timer once charged; v1.00."),
+        ("GR1 gems", "Cheat: gems increase when spent", False, "Experimental; v1.00. May affect saved gems."),
     ),
     "gr2": (
         ("Disable motion blur", "Motion blur off", True, "Removes the camera motion blur."),
@@ -245,8 +248,6 @@ def write(paths: AppPaths, s: LauncherSettings, info: GameFolder) -> "Path | Non
         except OSError:
             path.unlink(missing_ok=True)
             return None
-    if key == "gr1" and any(n in GR1_CHEATS for n in names) and info.serial != "CUSA01113":
-        raise ValueError("GR1 cheats currently support only the European CUSA01113 v1.00 game")
     external_names = [n for n in names if n not in GR1_CHEATS]
     blob = compile_patches(download(paths, key) if external_names else None, names, APP_VERSIONS[key])
     if mismatched(paths, info, blob):

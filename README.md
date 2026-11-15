@@ -66,9 +66,10 @@ are for version 1.11; if they don't fit a copy, it plays at 30 FPS.
   which the launcher downloads from his repository at the first PLAY.
 - **Patches** (launcher SETUP), also by Junmin Lee: Gravity Rush 2 motion blur off, ambient
   occlusion trail fix, auto-exposure fix, skip intro, Cross confirms, cheats and unlocks;
-  Gravity Rush Remastered skip intro. Experimental Gravity Rush Remastered cheats for European
-  CUSA01113 v1.00 include health, gravity, a charged special timer, and gems that increase when
-  spent. Their target instructions are checked before use. Gameplay verification is pending.
+  Gravity Rush Remastered skip intro. Experimental Gravity Rush Remastered v1.00 cheats include health,
+  gravity, a charged special timer, and gems that increase when spent. They were made on the
+  European CUSA01113; other regions get them when their game code matches (checked before
+  use, otherwise the game plays unpatched). Gameplay verification is pending.
 - **Render and Aspect ratio** (launcher SETUP > Display, per game): the size the game draws at,
   no upscaling. Aspect ratio 4:3, 16:10, 16:9, 21:9 (2.39:1) or 32:9; Render picks a size of
   that shape, small to 4K (16:9: 1280x720, 1920x1080, 2560x1440, 3840x2160; 16:10: 1280x800 to
