@@ -19679,7 +19679,7 @@ index 0000000..a85e4bf
 +    pthread_mutex_unlock(&lock);
 +}
 diff --git a/src/runtime_file.c b/src/runtime_file.c
-index c64c0f9..265dd51 100644
+index c64c0f9..b8d22f8 100644
 --- a/src/runtime_file.c
 +++ b/src/runtime_file.c
 @@ -1,5 +1,6 @@
@@ -19727,7 +19727,18 @@ index c64c0f9..265dd51 100644
  /* Resolve a guest path to a host path; returns 0 or a host errno. */
  static int translate(const char *guest,char *out,size_t size) {
      if (!guest || !*guest) return ENOENT;
-@@ -135,12 +152,19 @@ static int translate(const char *guest,char *out,size_t size) {
+@@ -129,18 +146,30 @@ static int translate(const char *guest,char *out,size_t size) {
+     else snprintf(buffer,sizeof(buffer),"%s",guest);
+     for (const char *p=buffer;(p=strstr(p,".."));p+=2)
+         if ((p==buffer || p[-1]=='/') && (p[2]==0 || p[2]=='/')) return EACCES;
++    /* BB_ARGS_FILE: the launcher's copy of the game's args.txt (Gravity Rush Remastered reads its
++     * region there, and the region decides which languages it offers). */
++    const char *args=getenv("BB_ARGS_FILE");
++    if (args && *args && !strcmp(buffer,"/app0/args.txt"))
++        return (size_t)snprintf(out,size,"%s",args)<size ? 0 : ENAMETOOLONG;
+     pthread_mutex_lock(&lock);
+     size_t best=0; const Mount *m=NULL;
+     for (size_t i=0;i<mount_count;++i) {
          size_t n=strlen(mounts[i].guest);
          if (!strncmp(buffer,mounts[i].guest,n) && (buffer[n]=='/' || !buffer[n]) && n>best) { best=n; m=&mounts[i]; }
      }
@@ -19749,7 +19760,7 @@ index c64c0f9..265dd51 100644
          if (language && !strcmp(language,"17")) {
              /* Some game paths use the Portuguese or English fallback directory. */
              const char *folders[]={"/msg/porpt/","/menu/porpt/","/msg/engus/","/menu/engus/"};
-@@ -267,6 +291,38 @@ static int game_path(const char *p) {
+@@ -267,6 +296,38 @@ static int game_path(const char *p) {
      return (!strncmp(p,"/app0",5) && (!p[5] || p[5]=='/')) ||
             (!strncmp(p,"/hostapp",8) && (!p[8] || p[8]=='/'));
  }
@@ -19788,7 +19799,7 @@ index c64c0f9..265dd51 100644
  /* BB_SAVE_TRACE=1: every operation on save files (/savedataN). */
  static int save_trace(void) { static int v=-1; if (v<0) { const char *e=getenv("BB_SAVE_TRACE"); v=e && e[0]=='1'; } return v; }
  /* Saves (/savedataN): see File. The copy starts as the old file unless the open truncates. */
-@@ -380,10 +436,10 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -380,10 +441,10 @@ static int64_t do_open(const char *guest,int flags,int mode) {
      int host=-1;
      if (!host_stat(path,&s) && S_ISDIR(s.st_mode)) {
          if (flags&3) return -EISDIR;
@@ -19801,7 +19812,7 @@ index c64c0f9..265dd51 100644
          return -e;
      } else {
          if (save_path(guest) && (flags&3)) {
-@@ -400,7 +456,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -400,7 +461,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
              printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
          if (host<0) {
              e=errno;
@@ -19810,7 +19821,7 @@ index c64c0f9..265dd51 100644
              return -e;
          }
          if (host_fstat(host,&s)) memset(&s,0,sizeof(s));
-@@ -421,12 +477,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -421,12 +482,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
          printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
      if (host<0) {
          e=errno;
@@ -23652,6 +23663,34 @@ index 3b8c8d2..08b6a78 100644
      TestDefaultTextParsesCleanly();
      TestShadps4DefaultFileImports();
      TestLoadCreatesMissingFile();
+diff --git a/tests/test_language_files.c b/tests/test_language_files.c
+index 20308ee..f858bcb 100644
+--- a/tests/test_language_files.c
++++ b/tests/test_language_files.c
+@@ -4,6 +4,7 @@
+ static int32_t guest_errno;
+ int32_t *runtime_errno(void) { return &guest_errno; }
+ int32_t runtime_guest_errno(int e) { return e; }
++void runtime_quit_on_open(const char *guest) { (void)guest; }
+ uintptr_t runtime_lookup(const RuntimeExport *table,size_t n,const char *name) {
+     for (size_t i=0;i<n;++i) if (!strcmp(table[i].name,name)) return (uintptr_t)table[i].function;
+     return 0;
+@@ -64,6 +65,15 @@ int main(void) {
+     assert(!translate("/app0/dvdroot_ps4/sound/sprj_c1020_eng.fsb",resolved,sizeof(resolved)));
+     path(expected,sizeof(expected),root,"dvdroot_ps4/sound/sprj_c1020_ptb.fsb");
+     assert(!strcmp(resolved,expected));
++    variable("BB_ARGS_FILE","C:/elsewhere/args.txt");
++    assert(!translate("/app0/args.txt",resolved,sizeof(resolved)));
++    assert(!strcmp(resolved,"C:/elsewhere/args.txt"));
++    assert(!translate("args.txt",resolved,sizeof(resolved)));
++    assert(!strcmp(resolved,"C:/elsewhere/args.txt"));
++    variable("BB_ARGS_FILE","");
++    assert(!translate("/app0/args.txt",resolved,sizeof(resolved)));
++    path(expected,sizeof(expected),root,"args.txt");
++    assert(!strcmp(resolved,expected));
+     variable("BB_LANGUAGE","17");
+     variable("BB_VOICE_LANGUAGE","eng");
+     assert(!translate("/app0/dvdroot_ps4/sound/sprj_c1020_ptb.fsb",resolved,sizeof(resolved)));
 diff --git a/tests/test_pad.c b/tests/test_pad.c
 index a477ea9..771428e 100644
 --- a/tests/test_pad.c
