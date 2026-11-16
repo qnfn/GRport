@@ -87,7 +87,7 @@ index 529ef05..28f94d3 100644
      # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
      target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
 diff --git a/gpu/bbgpu.h b/gpu/bbgpu.h
-index 02b422e..b17b6c8 100644
+index 02b422e..108c052 100644
 --- a/gpu/bbgpu.h
 +++ b/gpu/bbgpu.h
 @@ -2,6 +2,7 @@
@@ -131,7 +131,7 @@ index 02b422e..b17b6c8 100644
  /* Button prompts (gpu/shim/bbport_prompts.cpp): what each of the game's key-guide icons shows
   * on keyboard and mouse, one string per icon in bbport_prompt_icons.h's order ("e",
   * "lshift+leftbutton", "w a s d", "mouse", "" for nothing). Draws them; safe from any thread. */
-@@ -74,8 +96,15 @@ int bbgpu_input_reload_requested(void);
+@@ -74,8 +96,22 @@ int bbgpu_input_reload_requested(void);
   * Safe from any thread; applied on the window thread's next
   * PollEvents. */
  void bbgpu_mouse_camera_configure(int direct, float sensitivity, float scale_x, float scale_y, int sync);
@@ -144,6 +144,13 @@ index 02b422e..b17b6c8 100644
 +/* GRport: controller symbols drawn into the games' monochrome glyph caches. */
 +int bbgpu_gr_prompt_glyph(int second_game, uint32_t code, uint8_t* coverage,
 +                         int width, int height, int pitch);
++/* GRport: a symbol-font glyph now in the game's text surface. The game keeps the text it drew
++ * (menus, dialogue), so when the device in use changes the runtime redraws these in place.
++ * original: the font's own coverage (width x height, packed); dest: the surface pixel of glyph
++ * pixel (src_x, src_y); w x h: the part that was drawn (clipped). */
++void bbgpu_gr_prompt_glyph_placed(int second_game, uint32_t code, const uint8_t* original,
++                                  int width, int height, uint8_t* dest, int dest_pitch, int bpp,
++                                  int src_x, int src_y, int w, int h);
  #ifdef __cplusplus
  }
  #endif
@@ -14033,7 +14040,7 @@ index 85b7b33..cdd7d12 100644
 +
  } // namespace BbPromptIcons
 diff --git a/gpu/shim/bbport_prompts.cpp b/gpu/shim/bbport_prompts.cpp
-index 3d44504..b833100 100644
+index 3d44504..1ffc696 100644
 --- a/gpu/shim/bbport_prompts.cpp
 +++ b/gpu/shim/bbport_prompts.cpp
 @@ -9,7 +9,9 @@
@@ -14330,7 +14337,7 @@ index 3d44504..b833100 100644
          }
          for (int s = 0; s < HudCount; ++s) {
              Bytes bytes = Gather(address, s);
-@@ -215,19 +370,36 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
+@@ -215,19 +370,39 @@ void OnUpload(uintptr_t address, size_t size, uint32_t width, uint32_t height, u
      }
  }
  
@@ -14345,6 +14352,8 @@ index 3d44504..b833100 100644
 +         : want == Switch ? BbPromptIcons::DcStyleCount : -1;
 +}
 +
++void RedrawGlyphs(); // below: the symbol-font prompts already in the games' text
++
  void Apply() {
      const Device want = Want();
 -    if (!dirty.exchange(false) && want == shown) return;
@@ -14352,6 +14361,7 @@ index 3d44504..b833100 100644
 +    // xbox_buttons, playstation_buttons); the game's own for a PS4 look or the keyboard.
 +    const int style = StyleFor(want);
 +    if (!dirty.exchange(false) && want == shown && style == shown_style) return;
++    RedrawGlyphs(); // writes only the glyphs whose picture changes (a device or binding change)
      shown = want;
 +    shown_style = style;
  
@@ -14370,7 +14380,7 @@ index 3d44504..b833100 100644
              icons = keyboard_icons;
              sprites = keyboard_sprites;
          } else if (want != PlayStation) {
-@@ -238,28 +410,48 @@ void Apply() {
+@@ -238,28 +413,48 @@ void Apply() {
      }
      // Written without any lock: a write to a page the texture cache protects faults into it.
      auto* memory = Core::Memory::Instance();
@@ -14431,7 +14441,7 @@ index 3d44504..b833100 100644
              if (hash) entries[i].written = hash;
              else entries.erase(entries.begin() + i);
              break;
-@@ -272,3 +464,40 @@ void Apply() {
+@@ -272,3 +467,132 @@ void Apply() {
  extern "C" void bbgpu_prompts_configure(const char* const* inputs, int count) {
      BbPrompts::Configure(inputs, count);
  }
@@ -14471,6 +14481,98 @@ index 3d44504..b833100 100644
 +        std::fprintf(stderr, "Glyph prompt: want %d style %d code %u (%dx%d) drawn %d\n",
 +                     static_cast<int>(want), style, code, width, height, drawn ? 1 : 0);
 +    return drawn;
++}
++
++namespace BbPrompts {
++namespace {
++
++/// A symbol-font glyph in a game's text surface (bbgpu_gr_prompt_glyph_placed). The games draw
++/// a menu's or a dialogue's text once and keep it, so a device change redraws these in place.
++struct Glyph {
++    bool second_game;
++    uint32_t code;
++    int width, height;     // the font's picture
++    Bytes original;        // the font's own coverage, packed
++    uint8_t* dest;         // surface pixel of picture pixel (src_x, src_y)
++    int dest_pitch, bpp, src_x, src_y, w, h;
++    uint64_t written;      // what is there now; anything else: the game reused the surface
++};
++constexpr size_t kMaxGlyphs = 512;
++std::mutex glyph_mutex; // never held while guest memory is written
++std::vector<Glyph> glyphs;
++
++/// The w x h coverage the surface shows for this glyph, one byte per pixel (all bpp bytes equal).
++Bytes ReadGlyph(const Glyph& g) {
++    Bytes out(size_t(g.w) * g.h);
++    for (int y = 0; y < g.h; ++y)
++        for (int x = 0; x < g.w; ++x) out[size_t(y) * g.w + x] = g.dest[size_t(y) * g.dest_pitch + size_t(x) * g.bpp];
++    return out;
++}
++uint64_t SurfaceHash(const Glyph& g) {
++    const size_t row = size_t(g.w) * g.bpp;
++    uint64_t hash = 0;
++    for (int y = 0; y < g.h; ++y) hash = XXH3_64bits_withSeed(g.dest + size_t(y) * g.dest_pitch, row, hash);
++    return hash;
++}
++
++} // namespace
++
++void RedrawGlyphs() {
++    std::vector<Glyph> snapshot;
++    {
++        std::scoped_lock lock{glyph_mutex};
++        snapshot = glyphs;
++    }
++    if (snapshot.empty()) return;
++    auto* memory = Core::Memory::Instance();
++    std::vector<std::pair<uint8_t*, uint64_t>> result; // hash 0: the glyph is gone
++    for (const Glyph& g : snapshot) {
++        const uintptr_t start = reinterpret_cast<uintptr_t>(g.dest);
++        const size_t length = size_t(g.h - 1) * g.dest_pitch + size_t(g.w) * g.bpp;
++        if (!memory->IsValidMapping(start, length) || SurfaceHash(g) != g.written) {
++            result.emplace_back(g.dest, 0);
++            continue;
++        }
++        Bytes picture = g.original; // the font's own, unless the layout in use draws over it
++        bbgpu_gr_prompt_glyph(g.second_game, g.code, picture.data(), g.width, g.height, g.width);
++        Bytes target(size_t(g.w) * g.h);
++        for (int y = 0; y < g.h; ++y)
++            std::memcpy(&target[size_t(y) * g.w], &picture[size_t(y + g.src_y) * g.width + g.src_x], g.w);
++        if (target == ReadGlyph(g)) continue;
++        for (int y = 0; y < g.h; ++y)
++            for (int x = 0; x < g.w; ++x)
++                std::memset(g.dest + size_t(y) * g.dest_pitch + size_t(x) * g.bpp, target[size_t(y) * g.w + x], g.bpp);
++        memory->InvalidateMemory(start, length);
++        result.emplace_back(g.dest, SurfaceHash(g));
++    }
++    std::scoped_lock lock{glyph_mutex};
++    for (const auto& [dest, hash] : result) {
++        for (size_t i = 0; i < glyphs.size(); ++i) {
++            if (glyphs[i].dest != dest) continue;
++            if (hash) glyphs[i].written = hash;
++            else glyphs.erase(glyphs.begin() + i);
++            break;
++        }
++    }
++}
++
++} // namespace BbPrompts
++
++extern "C" void bbgpu_gr_prompt_glyph_placed(int second_game, uint32_t code, const uint8_t* original,
++                                             int width, int height, uint8_t* dest, int dest_pitch,
++                                             int bpp, int src_x, int src_y, int w, int h) {
++    using namespace BbPrompts;
++    if (!original || !dest || width <= 0 || height <= 0 || w <= 0 || h <= 0 || bpp <= 0 ||
++        dest_pitch < w * bpp || src_x < 0 || src_y < 0 || src_x + w > width || src_y + h > height)
++        return;
++    Glyph g{second_game != 0, code, width, height, Bytes(original, original + size_t(width) * height),
++            dest, dest_pitch, bpp, src_x, src_y, w, h, 0};
++    g.written = SurfaceHash(g);
++    std::scoped_lock lock{glyph_mutex};
++    // A glyph drawn over another's place replaces it; the oldest go first past the cap.
++    std::erase_if(glyphs, [&](const Glyph& old) { return old.dest == dest; });
++    if (glyphs.size() >= kMaxGlyphs) glyphs.erase(glyphs.begin());
++    glyphs.push_back(std::move(g));
 +}
 diff --git a/gpu/shim/bbport_prompts.h b/gpu/shim/bbport_prompts.h
 index 84dac01..62e643f 100644
@@ -18304,7 +18406,7 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..d9c2e5b 100644
+index 773ee79..630ce84 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -15,6 +15,10 @@ typedef bb_jmp_buf sigjmp_buf;
@@ -18350,7 +18452,7 @@ index 773ee79..d9c2e5b 100644
  void runtime_audio_report(void);
  uintptr_t runtime_pad_resolve(const char *name);
  void runtime_pad_report(void);
-+void runtime_pad_route_speaker(int dualsense);
++void runtime_pad_route_speaker(void); /* a USB DualSense's endpoint plays the pad-speaker port */
  uintptr_t runtime_rtc_resolve(const char *name);
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec (runtime_image.c). */
 +uintptr_t runtime_image_resolve(const char *name);
@@ -18381,7 +18483,7 @@ index 773ee79..d9c2e5b 100644
 +uintptr_t runtime_font_resolve(const char *name);
  #endif
 diff --git a/src/runtime_audio.c b/src/runtime_audio.c
-index e9ffa16..f865136 100644
+index e9ffa16..0a9eb17 100644
 --- a/src/runtime_audio.c
 +++ b/src/runtime_audio.c
 @@ -3,12 +3,17 @@
@@ -18420,7 +18522,7 @@ index e9ffa16..f865136 100644
  
  /* SDL's 7.1->stereo matrix multiplies the front pair by ~0.21 so a full 8ch
   * sum stays at 1. The game's mix lives in the fronts, so a stereo PC sounds
-@@ -113,6 +120,36 @@ static int sdl_audio(void) {
+@@ -113,6 +120,35 @@ static int sdl_audio(void) {
      }
      return sdl_ready;
  }
@@ -18434,30 +18536,29 @@ index e9ffa16..f865136 100644
 +    return 0;
 +}
 +/* SDL exposes controller audio as a separate playback device on USB connections, but SDL 3.4
-+ * cannot link that endpoint to the opened gamepad. Match the OS-provided name. A DualSense is
-+ * preferred (its speaker can be switched on); a DualShock 4 is plain "Wireless Controller".
-+ * *found = 0 none, 1 DualSense, 2 DualShock 4. */
++ * cannot link that endpoint to the opened gamepad. Match the OS-provided name. Only a DualSense
++ * is used: its speaker can be switched on. A DualShock 4's endpoint ("Wireless Controller")
++ * plays on its headphone jack and its speaker could not be switched on (#45), so its sounds
++ * play on the PC's default output instead of being lost. *found = 1 when a DualSense is used. */
 +static SDL_AudioDeviceID pad_speaker_device(int *found) {
 +    int count=0;
 +    SDL_AudioDeviceID *devices=SDL_GetAudioPlaybackDevices(&count);
 +    SDL_AudioDeviceID result=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
-+    const char *chosen=NULL;
 +    *found=0;
-+    for (int i=0;devices && i<count && *found!=1;++i) {
++    for (int i=0;devices && i<count && !*found;++i) {
 +        const char *name=SDL_GetAudioDeviceName(devices[i]);
-+        int kind=name_contains_case(name,"dualsense") ? 1 :
-+                 name_contains_case(name,"dualshock") || name_contains_case(name,"wireless controller") ? 2 : 0;
-+        if (kind && (!*found || kind<*found)) { result=devices[i]; *found=kind; chosen=name; }
++        if (name_contains_case(name,"dualsense")) {
++            result=devices[i]; *found=1;
++            printf("Runtime: controller speaker playback endpoint: %s\n",name);
++        }
 +    }
-+    if (*found) printf("Runtime: controller speaker playback endpoint: %s\n",chosen);
-+    else printf("Runtime: no DualSense/DualShock playback endpoint found among %d SDL audio devices\n",count);
 +    SDL_free(devices);
 +    return result;
 +}
  static int port_range(int type, int *first, int *last) {
      switch (type) {
      case 0: *first=0; *last=7; return 1;      /* main */
-@@ -136,6 +173,8 @@ static ABI int32_t audio_init(void) {
+@@ -136,6 +172,8 @@ static ABI int32_t audio_init(void) {
      pthread_mutex_lock(&table_lock);
      int32_t r=initialized ? ERR_ALREADY_INIT : 0;
      initialized=1;
@@ -18466,7 +18567,7 @@ index e9ffa16..f865136 100644
      pthread_mutex_unlock(&table_lock);
      return r;
  }
-@@ -160,13 +199,31 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -160,13 +198,31 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      p->is_float=format>=3 && format!=6;
      p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
      for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
@@ -18487,7 +18588,7 @@ index e9ffa16..f865136 100644
 +        int pad_endpoint=0;
 +        if (type==4) {
 +            playback=pad_speaker_device(&pad_endpoint);
-+            if (!pad_endpoint) puts("Runtime: controller speaker port will use the system default playback device");
++            if (!pad_endpoint) puts("Runtime: no USB DualSense audio; controller speaker sounds play on the system default device");
 +        }
 +        p->stream=SDL_OpenAudioDeviceStream(playback,&spec,NULL,NULL);
 +        if (!p->stream && type==4 && pad_endpoint) {
@@ -18495,11 +18596,11 @@ index e9ffa16..f865136 100644
 +            p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
 +        }
          if (p->stream) { p->out_channels=out; SDL_ResumeAudioStreamDevice(p->stream); }
-+        if (p->stream && type==4 && pad_endpoint && pad_speaker_enabled) runtime_pad_route_speaker(pad_endpoint==1);
++        if (p->stream && type==4 && pad_endpoint && pad_speaker_enabled) runtime_pad_route_speaker();
          else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
      }
      p->stats=getenv("BB_AUDIO_STATS")!=NULL;
-@@ -178,7 +235,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -178,7 +234,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      }
      ++ports_opened;
      pthread_mutex_unlock(&table_lock);
@@ -18509,7 +18610,7 @@ index e9ffa16..f865136 100644
      return (type<<16) | id | 0x20000000;
  }
  static ABI int32_t audio_close(int32_t handle) {
-@@ -213,7 +271,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -213,7 +270,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          unsigned char converted[2048*8*4];
          /* mute_unfocused: silence while the window is in the background; the port keeps its
           * pace, so the game's audio threads run on as before. */
@@ -18520,7 +18621,7 @@ index e9ffa16..f865136 100644
          if (p->out_channels!=p->channels) {
              static const int from_std[8]={0,1,2,3,6,7,4,5}; /* SDL order -> PS4 L R C LFE SL SR BL BR */
              for (size_t f=0;f<(size_t)p->frames;++f) {
-@@ -263,7 +323,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -263,7 +322,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          if (p->stream) {
              /* The device drains the queue in quanta (21 ms on PipeWire), so the level
                 is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
@@ -19841,10 +19942,10 @@ index c64c0f9..b8d22f8 100644
      int fd=-1;
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
-index 0000000..12c6ca0
+index 0000000..377e88b
 --- /dev/null
 +++ b/src/runtime_font.c
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,381 @@
 +/* libSceFont on FreeType (Driveclub).
 + *
 + * The game opens its own TrueType/OpenType fonts from memory, sets a pixel scale and
@@ -20139,9 +20240,18 @@ index 0000000..12c6ca0
 +    // Restrict substitutions to each game's exact symbol font. Ordinary text uses some
 +    // of the same ASCII codes and must never be changed. Keep original metrics/bearings.
 +    const char *family = f->face->family_name;
-+    if (family && (!strcmp(family,"Gravity_Gaiji") || !strcmp(family,"Gravity2_Gaiji")))
-+        bbgpu_gr_prompt_glyph(!strcmp(family,"Gravity2_Gaiji"),code,bitmap->buffer,
++    const int gaiji = family && (!strcmp(family,"Gravity_Gaiji") || !strcmp(family,"Gravity2_Gaiji"));
++    const int second_game = gaiji && !strcmp(family,"Gravity2_Gaiji");
++    uint8_t *gaiji_original = NULL; /* the font's own picture, packed, for redraws on a device change */
++    if (gaiji) {
++        if (bitmap->buffer && bitmap->pitch > 0 && bitmap->width && bitmap->rows &&
++            (gaiji_original = malloc((size_t)bitmap->width * bitmap->rows)))
++            for (unsigned row = 0; row < bitmap->rows; ++row)
++                memcpy(gaiji_original + (size_t)row * bitmap->width,
++                       bitmap->buffer + (size_t)row * (size_t)bitmap->pitch, bitmap->width);
++        bbgpu_gr_prompt_glyph(second_game,code,bitmap->buffer,
 +                             (int)bitmap->width,(int)bitmap->rows,bitmap->pitch);
++    }
 +    const int32_t left = slot->bitmap_left, top = slot->bitmap_top;
 +    const int32_t gw = (int32_t)bitmap->width, gh = (int32_t)bitmap->rows;
 +    const int32_t dest_x = (int32_t)floorf(x) + left, dest_y = (int32_t)floorf(y) - top;
@@ -20158,8 +20268,13 @@ index 0000000..12c6ca0
 +                    memset(dst + (size_t)col * (size_t)bpp, src[col - dest_x], (size_t)bpp);
 +            }
 +            ux0 = x0, uy0 = y0, uw = x1 - x0, uh = y1 - y0;
++            if (gaiji_original)
++                bbgpu_gr_prompt_glyph_placed(second_game,code,gaiji_original,gw,gh,
++                    s->buffer + (size_t)y0 * (size_t)s->width_byte + (size_t)x0 * (size_t)bpp,
++                    s->width_byte,bpp,x0 - dest_x,y0 - dest_y,uw,uh);
 +        }
 +    }
++    free(gaiji_original);
 +    ++glyphs_rendered;
 +    memset(out, 0, sizeof(*out));
 +    out->update_rect.x = (uint32_t)max_i(ux0, 0);
@@ -21939,7 +22054,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..6173667 100644
+index 687bfb5..d408ad0 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,132 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -21950,7 +22065,7 @@ index 687bfb5..6173667 100644
 +static SDL_Gamepad *gamepad, *motion_gamepad;
 +static uint64_t next_motion_scan_ms;
 +static int speaker_wanted;
-+static void apply_speaker_route(void);
++static void enable_dualsense_speakers(void);
 +static int motion_enabled;
 +static float motion_orientation[4]={0,0,0,1};
 +static uint64_t motion_sample_us;
@@ -22076,7 +22191,7 @@ index 687bfb5..6173667 100644
  static size_t reads;
  static uint8_t connected_count;
  static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
-@@ -85,18 +210,87 @@ static void touch_click(PadData *d, int right) {
+@@ -85,18 +210,52 @@ static void touch_click(PadData *d, int right) {
  static SDL_Gamepad *current_gamepad(void) {
      if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
      if (sdl_ready<0) return NULL;
@@ -22088,7 +22203,7 @@ index 687bfb5..6173667 100644
          if (ids && count>0) {
              gamepad=SDL_OpenGamepad(ids[0]);
 -            if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
-+            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); if (speaker_wanted) apply_speaker_route(); }
++            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); if (speaker_wanted) enable_dualsense_speakers(); }
          }
          SDL_free(ids);
      }
@@ -22099,11 +22214,8 @@ index 687bfb5..6173667 100644
 + * through: [0] valid flags 0 (0x20 speaker volume, 0x80 audio control), [1] valid flags 1 (0x80
 + * audio control 2), [5] speaker volume (console range 0x3d-0x64), [7] audio control (bits 4-5
 + * output path, 3 = speaker plays the right channel, headset silent), [37] speaker preamp gain (bits 0-2).
-+ * DualShock 4 (USB report 0x05): flags [1] (0x01 rumble, 0x80 speaker volume), [4] weak and
-+ * [5] strong motor, [22] speaker volume. Its speaker plays the USB audio (other PC games do it,
-+ * #45), but every output report without the volume silences it again, SDL's rumble reports
-+ * included; so while the speaker is wanted the runtime sends the DualShock 4's rumble itself,
-+ * each report with the volume. Called under lock. */
++ * A DualShock 4's speaker could not be switched on this way (#45); its sounds play on the PC
++ * (runtime_audio.c). Called under lock. */
 +static void enable_dualsense_speakers(void) {
 +    int count=0, sent=0;
 +    SDL_JoystickID *ids=SDL_GetGamepads(&count);
@@ -22124,49 +22236,17 @@ index 687bfb5..6173667 100644
 +    SDL_free(ids);
 +    if (!sent) puts("Runtime: no USB DualSense found to switch its speaker on");
 +}
-+#define DS4_SPEAKER_VOLUME 0x4f
-+static SDL_hid_device *ds4_speaker[4];
-+static int ds4_speaker_count;
-+static int ds4_send(uint8_t weak, uint8_t strong) {
-+    int sent=0;
-+    for (int i=0;i<ds4_speaker_count;++i) {
-+        uint8_t report[32]={0x05,0x01|0x80};
-+        report[4]=weak; report[5]=strong; report[22]=DS4_SPEAKER_VOLUME;
-+        if (SDL_hid_write(ds4_speaker[i],report,sizeof(report))==(int)sizeof(report)) ++sent;
-+    }
-+    return sent;
-+}
-+static void enable_dualshock4_speakers(void) {
-+    static const unsigned short pids[]={0x05c4,0x09cc}; /* DualShock 4 v1, v2 */
-+    for (int i=0;i<ds4_speaker_count;++i) SDL_hid_close(ds4_speaker[i]);
-+    ds4_speaker_count=0;
-+    for (size_t k=0;k<sizeof(pids)/sizeof(pids[0]);++k) {
-+        SDL_hid_device_info *list=SDL_hid_enumerate(0x054c,pids[k]);
-+        for (SDL_hid_device_info *d=list;d && ds4_speaker_count<4;d=d->next) {
-+            if (d->bus_type!=SDL_HID_API_BUS_USB) continue;
-+            SDL_hid_device *dev=SDL_hid_open_path(d->path);
-+            if (dev) ds4_speaker[ds4_speaker_count++]=dev;
-+        }
-+        SDL_hid_free_enumeration(list);
-+    }
-+    if (ds4_send(0,0)) printf("Runtime: DualShock 4 speaker on (%d pad%s; the runtime sends its rumble)\n",ds4_speaker_count,ds4_speaker_count==1 ? "" : "s");
-+    else puts("Runtime: no USB DualShock 4 took the speaker report");
-+}
-+static void apply_speaker_route(void) {
-+    if (speaker_wanted==1) enable_dualsense_speakers();
-+    else if (speaker_wanted==2) enable_dualshock4_speakers();
-+}
-+void runtime_pad_route_speaker(int dualsense) {
++void runtime_pad_route_speaker(void) {
 +    pthread_mutex_lock(&lock);
 +    if (!sdl_ready) current_gamepad(); /* initializes SDL's gamepad subsystem */
-+    speaker_wanted=dualsense ? 1 : 2;
-+    apply_speaker_route();
++    speaker_wanted=1;
++    enable_dualsense_speakers();
 +    pthread_mutex_unlock(&lock);
 +}
  /* Button-like outputs (not the stick/axis ones): the bit each sets in d->buttons, or 0 for
   * l2/r2 (handled separately, since they also carry an analog value) and for outputs that are
   * not plain buttons (touchpad sides, half-axes, halfmode, hotkeys). */
-@@ -369,6 +563,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -369,6 +528,33 @@ static int apply_deadzone(int value, int inner, int outer) {
      return value<0 ? -(int)scaled : (int)scaled;
  }
  
@@ -22200,7 +22280,7 @@ index 687bfb5..6173667 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -407,10 +628,7 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -407,10 +593,7 @@ static int apply_deadzone(int value, int inner, int outer) {
   * under 100 ms (imperceptible as lag) while still visibly damping single-pixel-level jitter at
   * high poll rates (tried 15 ms first; 25 ms cut the residual jitter spread by about a fifth for
   * under 35 ms of extra settle time, found by sweeping the constant and comparing both).
@@ -22212,7 +22292,7 @@ index 687bfb5..6173667 100644
  static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *mouse, int *out_x, int *out_y) {
      const double tau_ms=25.0;
      double alpha=1.0-exp(-dt_ms/tau_ms);
-@@ -436,6 +654,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
+@@ -436,6 +619,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
          double offset_fade=magnitude<ramp_mag ? magnitude/ramp_mag : 1.0;
          double speed=magnitude*mouse->speed+mouse->speed_offset*128.0*offset_fade;
          if (speed>128.0) speed=128.0;
@@ -22227,7 +22307,7 @@ index 687bfb5..6173667 100644
          double angle=atan2(sdy,sdx);
          target_x=cos(angle)*speed;
          target_y=sin(angle)*speed;
-@@ -502,6 +728,7 @@ static void ensure_config_loaded(void) {
+@@ -502,6 +693,7 @@ static void ensure_config_loaded(void) {
          loaded_config=fresh;
          if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
          else printf("Input config: %s loaded\n",path);
@@ -22235,7 +22315,7 @@ index 687bfb5..6173667 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
-@@ -511,7 +738,7 @@ static void ensure_config_loaded(void) {
+@@ -511,7 +703,7 @@ static void ensure_config_loaded(void) {
                            loaded_config ? loaded_config->reload_scancode : default_config.reload_scancode);
      const MouseParams *mouse=loaded_config ? &loaded_config->mouse : &default_config.mouse;
      configure_prompts(loaded_config ? loaded_config : &default_config);
@@ -22244,7 +22324,7 @@ index 687bfb5..6173667 100644
                                   input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
  }
  /* CFG-008: called once per sample() (under `lock`), reloads if the window thread set the F8
-@@ -533,7 +760,7 @@ static void reload_config_if_requested(void) {
+@@ -533,7 +725,7 @@ static void reload_config_if_requested(void) {
          bbgpu_input_configure(loaded_config->mouse.stick!=0,loaded_config->toggle_scancode,loaded_config->reload_scancode);
          const MouseParams *mouse=&loaded_config->mouse;
          configure_prompts(loaded_config);
@@ -22253,7 +22333,7 @@ index 687bfb5..6173667 100644
                                       input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
      } else {
          free(fresh);
-@@ -554,7 +781,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +746,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -22263,7 +22343,7 @@ index 687bfb5..6173667 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,12 +845,27 @@ static void sample_host(PadData *d) {
+@@ -617,12 +810,27 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -22292,7 +22372,7 @@ index 687bfb5..6173667 100644
          uint64_t now=now_us();
          double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
          if (dt_ms<1.0) dt_ms=1.0;
-@@ -639,6 +882,7 @@ static void sample_host(PadData *d) {
+@@ -639,6 +847,7 @@ static void sample_host(PadData *d) {
           * next capture must start the EMA fresh, not carry over speed from before the gap. */
          last_mouse_sample_us=0;
          smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
@@ -22300,7 +22380,7 @@ index 687bfb5..6173667 100644
      }
  
      if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
-@@ -838,7 +1082,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +1047,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -22317,7 +22397,7 @@ index 687bfb5..6173667 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1098,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1063,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -22334,17 +22414,10 @@ index 687bfb5..6173667 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -881,7 +1141,32 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
-     if (!param) return ERR_INVALID_ARG;
-     pthread_mutex_lock(&lock);
-     SDL_Gamepad *g=current_gamepad();
--    if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257),(uint16_t)(param[1]*257),1000);
-+    /* A DualShock 4 playing the speaker gets its rumble with the speaker volume (see above). */
-+    if (g && ds4_speaker_count && SDL_GetGamepadType(g)==SDL_GAMEPAD_TYPE_PS4 && ds4_send(param[1],param[0])) {}
-+    else if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257),(uint16_t)(param[1]*257),1000);
-+    pthread_mutex_unlock(&lock);
-+    return 0;
-+}
+@@ -885,6 +1110,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+     pthread_mutex_unlock(&lock);
+     return 0;
+ }
 +static ABI int32_t pad_reset_orientation(int32_t handle) {
 +    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
 +    pthread_mutex_lock(&lock);
@@ -22365,10 +22438,13 @@ index 687bfb5..6173667 100644
 +        configure_motion(gamepad); configure_motion(motion_gamepad);
 +        report_motion_capabilities(gamepad,"disabled by game");
 +    }
-     pthread_mutex_unlock(&lock);
-     return 0;
- }
-@@ -892,9 +1177,9 @@ static const RuntimeExport exports[]={
++    pthread_mutex_unlock(&lock);
++    return 0;
++}
+ static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
+ static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
+ 
+@@ -892,9 +1140,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -23724,10 +23800,10 @@ index 0000000..6d4d62c
 +}
 diff --git a/tests/test_font_metrics.c b/tests/test_font_metrics.c
 new file mode 100644
-index 0000000..1706607
+index 0000000..bfda209
 --- /dev/null
 +++ b/tests/test_font_metrics.c
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,47 @@
 +/* Compare the SceFont outline bounds against real fractional-position glyphs. */
 +#include <assert.h>
 +#include <math.h>
@@ -23740,6 +23816,11 @@ index 0000000..1706607
 +}
 +int bbgpu_gr_prompt_glyph(int game, uint32_t code, uint8_t *data, int w, int h, int pitch) {
 +    (void)game; (void)code; (void)data; (void)w; (void)h; (void)pitch; return 0;
++}
++void bbgpu_gr_prompt_glyph_placed(int game, uint32_t code, const uint8_t *original, int width, int height,
++                                  uint8_t *dest, int dest_pitch, int bpp, int sx, int sy, int w, int h) {
++    (void)game; (void)code; (void)original; (void)width; (void)height; (void)dest; (void)dest_pitch;
++    (void)bpp; (void)sx; (void)sy; (void)w; (void)h;
 +}
 +int main(int argc, char **argv) {
 +    assert(argc==2);
