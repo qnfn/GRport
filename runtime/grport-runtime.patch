@@ -18303,7 +18303,7 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..61caef7 100644
+index 773ee79..d9c2e5b 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -15,6 +15,10 @@ typedef bb_jmp_buf sigjmp_buf;
@@ -18341,7 +18341,7 @@ index 773ee79..61caef7 100644
  int runtime_file_mount(const char *guest, const char *host);
  void runtime_file_unmount(const char *guest);
  int runtime_file_translate(const char *guest, char *out, size_t size);
-@@ -80,13 +89,36 @@ void runtime_memory_reserve(void);
+@@ -80,13 +89,37 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -18349,6 +18349,7 @@ index 773ee79..61caef7 100644
  void runtime_audio_report(void);
  uintptr_t runtime_pad_resolve(const char *name);
  void runtime_pad_report(void);
++void runtime_pad_route_speaker(int dualsense);
  uintptr_t runtime_rtc_resolve(const char *name);
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec (runtime_image.c). */
 +uintptr_t runtime_image_resolve(const char *name);
@@ -18379,7 +18380,7 @@ index 773ee79..61caef7 100644
 +uintptr_t runtime_font_resolve(const char *name);
  #endif
 diff --git a/src/runtime_audio.c b/src/runtime_audio.c
-index e9ffa16..260daa0 100644
+index e9ffa16..f865136 100644
 --- a/src/runtime_audio.c
 +++ b/src/runtime_audio.c
 @@ -3,12 +3,17 @@
@@ -18418,7 +18419,7 @@ index e9ffa16..260daa0 100644
  
  /* SDL's 7.1->stereo matrix multiplies the front pair by ~0.21 so a full 8ch
   * sum stays at 1. The game's mix lives in the fronts, so a stereo PC sounds
-@@ -113,6 +120,37 @@ static int sdl_audio(void) {
+@@ -113,6 +120,36 @@ static int sdl_audio(void) {
      }
      return sdl_ready;
  }
@@ -18431,32 +18432,31 @@ index e9ffa16..260daa0 100644
 +    }
 +    return 0;
 +}
-+/* SDL exposes controller audio as a separate playback device on some USB connections, but
-+ * SDL 3.4 cannot link that endpoint to the opened gamepad. Match the OS-provided name. */
++/* SDL exposes controller audio as a separate playback device on USB connections, but SDL 3.4
++ * cannot link that endpoint to the opened gamepad. Match the OS-provided name. A DualSense is
++ * preferred (its speaker can be switched on); a DualShock 4 is plain "Wireless Controller".
++ * *found = 0 none, 1 DualSense, 2 DualShock 4. */
 +static SDL_AudioDeviceID pad_speaker_device(int *found) {
 +    int count=0;
 +    SDL_AudioDeviceID *devices=SDL_GetAudioPlaybackDevices(&count);
 +    SDL_AudioDeviceID result=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
++    const char *chosen=NULL;
 +    *found=0;
-+    for (int i=0;devices && i<count;++i) {
++    for (int i=0;devices && i<count && *found!=1;++i) {
 +        const char *name=SDL_GetAudioDeviceName(devices[i]);
-+        if (name_contains_case(name,"dualsense") || name_contains_case(name,"dualshock") ||
-+            name_contains_case(name,"wireless controller")) {
-+            result=devices[i];
-+            *found=1;
-+            printf("Runtime: controller speaker playback endpoint: %s\n",name);
-+            break;
-+        }
++        int kind=name_contains_case(name,"dualsense") ? 1 :
++                 name_contains_case(name,"dualshock") || name_contains_case(name,"wireless controller") ? 2 : 0;
++        if (kind && (!*found || kind<*found)) { result=devices[i]; *found=kind; chosen=name; }
 +    }
++    if (*found) printf("Runtime: controller speaker playback endpoint: %s\n",chosen);
++    else printf("Runtime: no DualSense/DualShock playback endpoint found among %d SDL audio devices\n",count);
 +    SDL_free(devices);
-+    if (!*found)
-+        printf("Runtime: no DualSense/DualShock playback endpoint found among %d SDL audio devices\n",count);
 +    return result;
 +}
  static int port_range(int type, int *first, int *last) {
      switch (type) {
      case 0: *first=0; *last=7; return 1;      /* main */
-@@ -136,6 +174,8 @@ static ABI int32_t audio_init(void) {
+@@ -136,6 +173,8 @@ static ABI int32_t audio_init(void) {
      pthread_mutex_lock(&table_lock);
      int32_t r=initialized ? ERR_ALREADY_INIT : 0;
      initialized=1;
@@ -18465,7 +18465,7 @@ index e9ffa16..260daa0 100644
      pthread_mutex_unlock(&table_lock);
      return r;
  }
-@@ -160,12 +200,29 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -160,13 +199,31 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      p->is_float=format>=3 && format!=6;
      p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
      for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
@@ -18494,8 +18494,10 @@ index e9ffa16..260daa0 100644
 +            p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
 +        }
          if (p->stream) { p->out_channels=out; SDL_ResumeAudioStreamDevice(p->stream); }
++        if (p->stream && type==4 && pad_endpoint && pad_speaker_enabled) runtime_pad_route_speaker(pad_endpoint==1);
          else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
      }
+     p->stats=getenv("BB_AUDIO_STATS")!=NULL;
 @@ -178,7 +235,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      }
      ++ports_opened;
@@ -21849,16 +21851,18 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..edf4105 100644
+index 687bfb5..f2566ce 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
-@@ -64,7 +64,130 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
+@@ -64,7 +64,132 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
  
  static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
  static int initialized, opened, sdl_ready;
 -static SDL_Gamepad *gamepad;
 +static SDL_Gamepad *gamepad, *motion_gamepad;
 +static uint64_t next_motion_scan_ms;
++static int speaker_wanted;
++static void apply_speaker_route(void);
 +static int motion_enabled;
 +static float motion_orientation[4]={0,0,0,1};
 +static uint64_t motion_sample_us;
@@ -21984,7 +21988,7 @@ index 687bfb5..edf4105 100644
  static size_t reads;
  static uint8_t connected_count;
  static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
-@@ -85,13 +208,13 @@ static void touch_click(PadData *d, int right) {
+@@ -85,18 +210,75 @@ static void touch_click(PadData *d, int right) {
  static SDL_Gamepad *current_gamepad(void) {
      if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
      if (sdl_ready<0) return NULL;
@@ -21996,11 +22000,73 @@ index 687bfb5..edf4105 100644
          if (ids && count>0) {
              gamepad=SDL_OpenGamepad(ids[0]);
 -            if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
-+            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); }
++            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); if (speaker_wanted) apply_speaker_route(); }
          }
          SDL_free(ids);
      }
-@@ -369,6 +492,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+     return gamepad;
+ }
++/* Controller speakers over USB (#45). The audio endpoint plays on the headphone jack until the
++ * controller is told otherwise. DualSense: SDL_SendGamepadEffect passes DS5EffectsState_t bytes
++ * through: [0] valid flags 0 (0x20 speaker volume, 0x80 audio control), [1] valid flags 1 (0x80
++ * audio control 2), [5] speaker volume (console range 0x3d-0x64), [7] audio control (bits 4-5
++ * output path, 3 = speaker plays the right channel, headset silent), [37] speaker preamp gain.
++ * DualShock 4: SDL's effect reports never set the volume flags, so a raw USB report 0x05 with only
++ * flag 0x80 sets [22] speaker volume without touching rumble/lights. Called under lock. */
++static void enable_dualsense_speakers(void) {
++    int count=0, sent=0;
++    SDL_JoystickID *ids=SDL_GetGamepads(&count);
++    for (int i=0;ids && i<count;++i) {
++        if (SDL_GetGamepadTypeForID(ids[i])!=SDL_GAMEPAD_TYPE_PS5) continue;
++        SDL_Gamepad *g=SDL_OpenGamepad(ids[i]); /* ref-counted: the game's own pad stays open */
++        if (!g) continue;
++        if (SDL_GetGamepadConnectionState(g)!=SDL_JOYSTICK_CONNECTION_WIRED)
++            puts("Runtime: DualSense on Bluetooth has no speaker endpoint; use a USB cable");
++        else {
++            uint8_t effect[47]={0};
++            effect[0]=0x20|0x80; effect[1]=0x80; effect[5]=0x64; effect[7]=3<<4; effect[37]=0x02;
++            if (SDL_SendGamepadEffect(g,effect,sizeof(effect))) { puts("Runtime: DualSense speaker output enabled"); ++sent; }
++            else printf("Runtime: DualSense speaker output report failed: %s\n",SDL_GetError());
++        }
++        SDL_CloseGamepad(g);
++    }
++    SDL_free(ids);
++    if (!sent) puts("Runtime: no USB DualSense found to switch its speaker on");
++}
++static void enable_dualshock4_speakers(void) {
++    static const unsigned short pids[]={0x05c4,0x09cc}; /* DualShock 4 v1, v2 */
++    int sent=0;
++    for (size_t k=0;k<sizeof(pids)/sizeof(pids[0]);++k) {
++        SDL_hid_device_info *list=SDL_hid_enumerate(0x054c,pids[k]);
++        for (SDL_hid_device_info *d=list;d;d=d->next) {
++            if (d->bus_type!=SDL_HID_API_BUS_USB) continue;
++            SDL_hid_device *dev=SDL_hid_open_path(d->path);
++            if (!dev) continue;
++            uint8_t report[32]={0x05,0x80};
++            report[22]=0x4f;
++            if (SDL_hid_write(dev,report,sizeof(report))==(int)sizeof(report)) { puts("Runtime: DualShock 4 speaker volume set"); ++sent; }
++            else printf("Runtime: DualShock 4 speaker report failed: %s\n",SDL_GetError());
++            SDL_hid_close(dev);
++        }
++        SDL_hid_free_enumeration(list);
++    }
++    if (!sent) puts("Runtime: no USB DualShock 4 found to set its speaker volume");
++}
++static void apply_speaker_route(void) {
++    if (speaker_wanted==1) enable_dualsense_speakers();
++    else if (speaker_wanted==2) enable_dualshock4_speakers();
++}
++void runtime_pad_route_speaker(int dualsense) {
++    pthread_mutex_lock(&lock);
++    if (!sdl_ready) current_gamepad(); /* initializes SDL's gamepad subsystem */
++    speaker_wanted=dualsense ? 1 : 2;
++    apply_speaker_route();
++    pthread_mutex_unlock(&lock);
++}
+ /* Button-like outputs (not the stick/axis ones): the bit each sets in d->buttons, or 0 for
+  * l2/r2 (handled separately, since they also carry an analog value) and for outputs that are
+  * not plain buttons (touchpad sides, half-axes, halfmode, hotkeys). */
+@@ -369,6 +551,33 @@ static int apply_deadzone(int value, int inner, int outer) {
      return value<0 ? -(int)scaled : (int)scaled;
  }
  
@@ -22034,7 +22100,7 @@ index 687bfb5..edf4105 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -407,10 +557,7 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -407,10 +616,7 @@ static int apply_deadzone(int value, int inner, int outer) {
   * under 100 ms (imperceptible as lag) while still visibly damping single-pixel-level jitter at
   * high poll rates (tried 15 ms first; 25 ms cut the residual jitter spread by about a fifth for
   * under 35 ms of extra settle time, found by sweeping the constant and comparing both).
@@ -22046,7 +22112,7 @@ index 687bfb5..edf4105 100644
  static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *mouse, int *out_x, int *out_y) {
      const double tau_ms=25.0;
      double alpha=1.0-exp(-dt_ms/tau_ms);
-@@ -436,6 +583,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
+@@ -436,6 +642,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
          double offset_fade=magnitude<ramp_mag ? magnitude/ramp_mag : 1.0;
          double speed=magnitude*mouse->speed+mouse->speed_offset*128.0*offset_fade;
          if (speed>128.0) speed=128.0;
@@ -22061,7 +22127,7 @@ index 687bfb5..edf4105 100644
          double angle=atan2(sdy,sdx);
          target_x=cos(angle)*speed;
          target_y=sin(angle)*speed;
-@@ -502,6 +657,7 @@ static void ensure_config_loaded(void) {
+@@ -502,6 +716,7 @@ static void ensure_config_loaded(void) {
          loaded_config=fresh;
          if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
          else printf("Input config: %s loaded\n",path);
@@ -22069,7 +22135,7 @@ index 687bfb5..edf4105 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
-@@ -511,7 +667,7 @@ static void ensure_config_loaded(void) {
+@@ -511,7 +726,7 @@ static void ensure_config_loaded(void) {
                            loaded_config ? loaded_config->reload_scancode : default_config.reload_scancode);
      const MouseParams *mouse=loaded_config ? &loaded_config->mouse : &default_config.mouse;
      configure_prompts(loaded_config ? loaded_config : &default_config);
@@ -22078,7 +22144,7 @@ index 687bfb5..edf4105 100644
                                   input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
  }
  /* CFG-008: called once per sample() (under `lock`), reloads if the window thread set the F8
-@@ -533,7 +689,7 @@ static void reload_config_if_requested(void) {
+@@ -533,7 +748,7 @@ static void reload_config_if_requested(void) {
          bbgpu_input_configure(loaded_config->mouse.stick!=0,loaded_config->toggle_scancode,loaded_config->reload_scancode);
          const MouseParams *mouse=&loaded_config->mouse;
          configure_prompts(loaded_config);
@@ -22087,7 +22153,7 @@ index 687bfb5..edf4105 100644
                                       input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
      } else {
          free(fresh);
-@@ -554,7 +710,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +769,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -22097,7 +22163,7 @@ index 687bfb5..edf4105 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,12 +774,27 @@ static void sample_host(PadData *d) {
+@@ -617,12 +833,27 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -22126,7 +22192,7 @@ index 687bfb5..edf4105 100644
          uint64_t now=now_us();
          double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
          if (dt_ms<1.0) dt_ms=1.0;
-@@ -639,6 +811,7 @@ static void sample_host(PadData *d) {
+@@ -639,6 +870,7 @@ static void sample_host(PadData *d) {
           * next capture must start the EMA fresh, not carry over speed from before the gap. */
          last_mouse_sample_us=0;
          smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
@@ -22134,7 +22200,7 @@ index 687bfb5..edf4105 100644
      }
  
      if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
-@@ -838,7 +1011,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +1070,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -22151,7 +22217,7 @@ index 687bfb5..edf4105 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1027,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1086,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -22168,7 +22234,7 @@ index 687bfb5..edf4105 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1074,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+@@ -885,6 +1133,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -22198,7 +22264,7 @@ index 687bfb5..edf4105 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1104,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1163,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
