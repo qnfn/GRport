@@ -85,6 +85,33 @@ def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None) -> l
         ["--patches", str(patch)] if patch else [])
 
 
+# Gravity Rush Remastered picks its text language from the console language AND the region in
+# its args.txt ("-region E"), and each region knows only its own release's languages; anything
+# else shows English. Region -> the PS4 language codes it shows (read from the game's code).
+GR1_REGION_LANGUAGES = {
+    "J": {0}, "A": {1, 2, 3, 17, 20}, "E": {1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 18},
+    "Asia": {1, 9, 10}, "UK": {1, 18}, "China": {11}}
+# The region to switch to when the game's own one lacks the language.
+GR1_LANGUAGE_REGION = {0: "J", 1: "A", 9: "Asia", 10: "Asia", 11: "China", 17: "A", 20: "A"}
+
+
+def gr1_args(paths: AppPaths, info: GameFolder, language: int) -> "Path | None":
+    """The game's args.txt with a region that has `language` (user/gr1/args.txt), or None when
+    the game's own region already has it or there is no region to change."""
+    try:
+        words = info.file("args.txt").read_text(encoding="utf-8").split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    at = words.index("-region") + 1 if "-region" in words else len(words)
+    if at >= len(words) or language in GR1_REGION_LANGUAGES.get(words[at], set()):
+        return None
+    words[at] = GR1_LANGUAGE_REGION.get(language, "E")
+    path = user_dir(paths, info.game.key) / "args.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((" ".join(words) + "\r\n").encode())
+    return path
+
+
 def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> dict:
     g = s.games[info.game.key]
     user = user_dir(paths, info.game.key)
@@ -104,6 +131,10 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         "BB_FPS_LOG": "1",
         "BB_LANGUAGE": str(next(code for key, _, code in LANGUAGES if key == s.language)),
     })
+    out.pop("BB_ARGS_FILE", None)
+    args = gr1_args(paths, info, int(out["BB_LANGUAGE"])) if info.game.key == "gr1" else None
+    if args:
+        out["BB_ARGS_FILE"] = str(args)
     # Older CPUs: gr-prepare keeps legacy-cpu-plan.json in the data folder only when it translated
     # the game's BMI1/LZCNT/MOVBE instructions; the runtime then starts on such a CPU.
     out.pop("BB_CPU_COMPAT", None)

@@ -166,6 +166,25 @@ def test_runtime_command_and_env(paths, tmp_path):
     assert not runtime.is_prepared(paths, info)
 
 
+def test_gr1_region_follows_the_language(paths, tmp_path):
+    """Gravity Rush Remastered shows only its region's languages (#44): the runtime gets an
+    args.txt with a region that has the chosen one, and none when the game's own region has it."""
+    folder = make_game(tmp_path / "CUSA01113", "CUSA01113", "01.00")
+    (folder / "args.txt").write_bytes(b"-region E\r\n")
+    info = games.inspect(folder)
+    s = LauncherSettings()
+    for language, region in (("pt-br", "A"), ("ja", "J"), ("ko", "Asia"), ("zh-hant", "Asia")):
+        s.language = language
+        env = runtime.env(paths, s, info, base={"BB_ARGS_FILE": "old"})
+        assert Path(env["BB_ARGS_FILE"]).read_bytes() == f"-region {region}\r\n".encode()
+    for language in ("en", "es", "de", "en-gb"):
+        s.language = language
+        assert "BB_ARGS_FILE" not in runtime.env(paths, s, info, base={"BB_ARGS_FILE": "old"})
+    gr2 = games.inspect(make_game(tmp_path / "CUSA03694", "CUSA03694", "01.11"))
+    s.language = "pt-br"
+    assert "BB_ARGS_FILE" not in runtime.env(paths, s, gr2, base={})
+
+
 def test_env_cpu_compat_follows_the_prepared_plan(paths, tmp_path):
     """Older CPUs: the runtime starts without BMI1/LZCNT/MOVBE only when gr-prepare translated the
     game (it keeps legacy-cpu-plan.json in the data folder exactly then)."""
