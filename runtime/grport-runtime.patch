@@ -13415,10 +13415,10 @@ index 86ef250..a114c5c 100644
 +
  } // namespace BbOverlay
 diff --git a/gpu/shim/bbport_prompt_icons.cpp b/gpu/shim/bbport_prompt_icons.cpp
-index c729033..53740e1 100644
+index c729033..2615fdf 100644
 --- a/gpu/shim/bbport_prompt_icons.cpp
 +++ b/gpu/shim/bbport_prompt_icons.cpp
-@@ -588,4 +588,554 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
+@@ -588,4 +588,555 @@ std::vector<uint8_t> RenderIconArea(const Pixels& icon, const Area& area) {
      return blocks;
  }
  
@@ -13922,7 +13922,8 @@ index c729033..53740e1 100644
 +        case 'i': icon = L1; break; case 'j': icon = R1; break;
 +        case 'A': icon = L2; break; case 'B': icon = R2; break;
 +        case 'C': icon = L3; break; case 'D': icon = R3; break;
-+        case 'n': icon = TP_L; break; case 'o': icon = Start; break;
++        // 'n' is the OPTIONS glyph ("View Map"), 'o' the touchpad's (#45).
++        case 'n': icon = Start; break; case 'o': icon = TP_L; break;
 +        default: return Count;
 +        }
 +    }
@@ -17671,7 +17672,7 @@ index 0000000..30235fc
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
-index 988d694..0b1384e 100644
+index 988d694..b8b4908 100644
 --- a/src/probe.c
 +++ b/src/probe.c
 @@ -5,6 +5,7 @@
@@ -18040,7 +18041,7 @@ index 988d694..0b1384e 100644
  /* Guest code reads its TCB with `mov rax, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
   * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
  uint32_t runtime_thread_tcb_offset(void);
-@@ -386,6 +657,12 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t
+@@ -386,6 +657,13 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t
  /* BBPATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
   * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
   * function pointers): the patch holds the address at the patches' base, rebased here. */
@@ -18049,11 +18050,12 @@ index 988d694..0b1384e 100644
 + * for loaders that map the whole eboot and spare memory behind it read/write/execute). With a
 + * patch file the image and the cave are mapped that way too. */
 +#define PATCH_CAVE UINT64_C(0x800000) /* 8 MiB after the 16 KiB-aligned image end, as those loaders map */
++#define CAMERA_CAVE UINT64_C(0x4000) /* the mouse camera's cave when there is no patch file */
 +static uint64_t patch_span; /* image size + cave: the writable range of patches */
  static void apply_patches(const char *path, Segment *segments, uint64_t ns, const Reloc *relocs, uint64_t nr) {
      FILE *f=fopen(path,"rb");
      char magic[8];
-@@ -394,15 +671,22 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
+@@ -394,15 +672,22 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
      unsigned char data[4096];
      for (uint64_t i=0;i<count;++i) {
          uint64_t offset=read64(f), length=read64(f);
@@ -18079,7 +18081,7 @@ index 988d694..0b1384e 100644
              slots[nslots++]=target;
          }
          memcpy(image+offset,data,length);
-@@ -468,19 +752,20 @@ int main(int argc, char **argv) {
+@@ -468,19 +753,20 @@ int main(int argc, char **argv) {
  #endif
      int cpu_only = 0, strict_imports = 0;
      unsigned timeout_seconds = 10;
@@ -18102,7 +18104,7 @@ index 988d694..0b1384e 100644
          return 1;
      }
      if (content_profile) {
-@@ -497,9 +782,9 @@ int main(int argc, char **argv) {
+@@ -497,9 +783,9 @@ int main(int argc, char **argv) {
          runtime_content_configure(values);
      }
      if (app0) {
@@ -18114,7 +18116,7 @@ index 988d694..0b1384e 100644
          if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
              runtime_savedata_configure(id);
          char serial[16]="", title[128]="", version[16]="";
-@@ -513,6 +798,11 @@ int main(int argc, char **argv) {
+@@ -513,6 +799,11 @@ int main(int argc, char **argv) {
      SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
      AddVectoredExceptionHandler(1, vectored_fault);
      SetUnhandledExceptionFilter(unhandled_fault);
@@ -18126,7 +18128,7 @@ index 988d694..0b1384e 100644
      if (getenv("BB_STRICT_HANDLES")) {
          PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
          strict.RaiseExceptionOnInvalidHandleReference=1;
-@@ -521,6 +811,7 @@ int main(int argc, char **argv) {
+@@ -521,6 +812,7 @@ int main(int argc, char **argv) {
              fprintf(stderr,"BB_STRICT_HANDLES: policy not set (%lu)\n",GetLastError());
      }
      (void)timeout_seconds; /* no watchdog on Windows */
@@ -18134,7 +18136,7 @@ index 988d694..0b1384e 100644
  #else
      page_size = (size_t)sysconf(_SC_PAGESIZE);
      struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
-@@ -581,7 +872,7 @@ int main(int argc, char **argv) {
+@@ -581,7 +873,7 @@ int main(int argc, char **argv) {
              LinkedModule *x=&modules[m];
              if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                  (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
@@ -18143,12 +18145,14 @@ index 988d694..0b1384e 100644
                  fail("invalid linked module metadata");
          }
          if (nb>import_count) fail("invalid binding count");
-@@ -632,19 +923,27 @@ int main(int argc, char **argv) {
+@@ -632,19 +924,29 @@ int main(int argc, char **argv) {
              if (!executable) fail("native function is not executable");
          }
      }
 -    image = allocate(round_page(size));
-+    patch_span = patch_file ? ((size + 0x3fff) & ~(uint64_t)0x3fff) + PATCH_CAVE : round_page(size);
++    /* Without a patch file one page after the image holds the direct mouse camera's cave
++     * (runtime_gr_camera.c); it stays inaccessible unless the camera installs. */
++    patch_span = ((size + 0x3fff) & ~(uint64_t)0x3fff) + (patch_file ? PATCH_CAVE : CAMERA_CAVE);
 +    image = allocate(patch_span);
      if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
      fclose(f);
@@ -18175,15 +18179,11 @@ index 988d694..0b1384e 100644
          gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
          if (bbgpu_init(&gpu)) fail("GPU initialization failed");
          printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
-@@ -679,18 +978,22 @@ int main(int argc, char **argv) {
-     }
+@@ -680,17 +982,20 @@ int main(int argc, char **argv) {
      /* The Hunter's Dream backend reads the game's code before the patches change it. */
      bbnet_set_image(image, size);
--    if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
-+    if (patch_file) {
-+        apply_patches(patch_file, segments, ns, relocs, nr);
-+        runtime_gr_camera_install(image, patch_span);
-+    }
+     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
++    const int camera = runtime_gr_camera_install(image, patch_span);
  #ifdef _WIN32
      printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
  #endif
@@ -18197,10 +18197,11 @@ index 988d694..0b1384e 100644
              executable_entry = 1;
      }
 +    if (patch_file) protect(image, patch_span, 7);
++    else if (camera) protect(image + patch_span - CAMERA_CAVE, CAMERA_CAVE, 7);
      if (!executable_entry) fail("entry is not executable");
      printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
      if (native_libc) {
-@@ -717,7 +1020,20 @@ int main(int argc, char **argv) {
+@@ -717,7 +1022,20 @@ int main(int argc, char **argv) {
      bbnet_initialize(); /* the online session starts with the game */
      printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
      entered_game=1;
@@ -20213,12 +20214,13 @@ index 0000000..12c6ca0
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_gr_camera.c b/src/runtime_gr_camera.c
 new file mode 100644
-index 0000000..88a17c7
+index 0000000..9ba2d0e
 --- /dev/null
 +++ b/src/runtime_gr_camera.c
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,188 @@
 +/*
-+ * GRport: direct mouse camera for Gravity Rush 2 (v01.11, #38).
++ * GRport: direct mouse camera for Gravity Rush 2 (v01.11, #38) and Gravity Rush Remastered
++ * (01.00; see the second half of this comment).
 + *
 + * The game turns its camera from the right stick: one function (its object in r13) loads the
 + * stick vector (camera object + 0x500: x, 0, y, 0) with a single vmovapd and turns it into yaw
@@ -20239,6 +20241,16 @@ index 0000000..88a17c7
 + * The hook is installed only when the bytes at the load are the expected ones (another build
 + * or game keeps the stick emulation), into the read/write/execute cave the runtime maps after
 + * the image when it applies a patch file (Gravity Rush 2 always runs with one).
++ *
++ * Gravity Rush Remastered keeps a yaw and a pitch speed in its camera controller: each frame
++ * the last speed decays, the stick (past a 0.3 pitch dead zone) adds to it at a rate that ramps
++ * up over the hold, and the sum is clamped to a top speed, so the mouse turned with inertia,
++ * a cap and a ramp. Past the clamp the function keeps this frame's speeds in two locals
++ * (pitch [rbp-0x40] from xmm5, yaw [rbp-0x64] from xmm3) and turns the camera by them; the
++ * stored speeds stay the game's. The two stores call the cave, which adds the mouse's speeds
++ * for this frame first: the mouse turns the camera by its distance, the stick as before.
++ * xmm3/xmm5 are rewritten right after. Without a patch file the runtime maps one page after
++ * the image for this cave (camera_cave_span).
 + */
 +#include "runtime.h"
 +#include "gpu/bbgpu.h"
@@ -20248,6 +20260,7 @@ index 0000000..88a17c7
 +#include <stdio.h>
 +#include <string.h>
 +
++/* Gravity Rush 2 */
 +#define LOAD_OFFSET UINT64_C(0x1167e5e)  /* vmovapd xmm2, [rip+0x9c769a] (stick vector) */
 +#define STICK_OFFSET UINT64_C(0x1b2f500) /* the camera object's stick vector */
 +#define CAVE_SIZE 128                    /* code at 0, mouse vector at 96, constant at 112 */
@@ -20256,6 +20269,35 @@ index 0000000..88a17c7
 +#define PITCH_DEAD_ZONE 0.1
 +
 +static const unsigned char load_bytes[8] = {0xc5, 0xf9, 0x28, 0x15, 0x9a, 0x76, 0x9c, 0x00};
++
++/* Gravity Rush Remastered: vmovss [rbp-0x40], xmm5; vmovss [rbp-0x64], xmm3 (the speeds). */
++#define GR1_STORE_OFFSET UINT64_C(0x98fef)
++#define GR1_FRAME_TIME UINT64_C(0x15e8434) /* the game's frame time in seconds */
++#define GR1_YAW_RATE 2.6179939 /* radians per unit of yaw speed and second: 150 degrees (measured: 300 counts turned 50.00 degrees at any mouse speed) */
++#define GR1_PITCH_RATE 2.6179939 /* the same for pitch (measured 0.99-1.0 of it) */
++static const unsigned char gr1_store_bytes[10] = {0xc5, 0xfa, 0x11, 0x6d, 0xc0, 0xc5, 0xfa, 0x11, 0x5d, 0x9c};
++/* The pad thread adds the mouse's turn into two floats (yaw at 96, pitch at 100); each camera
++ * update takes them whole (xchg) and adds turn / frame time to this frame's speeds, so every
++ * count turns the camera once whichever pad read it came in and at any frame rate. rax, xmm0
++ * and xmm4 are written before they are read past the hook. */
++static const unsigned char gr1_cave_code[] = {
++    0x31, 0xc0,                                     /*  0 xor eax, eax                    */
++    0x87, 0x05, 0x00, 0x00, 0x00, 0x00,             /*  2 xchg [rip+yaw], eax             */
++    0xc5, 0xf9, 0x6e, 0xc0,                         /*  8 vmovd xmm0, eax                 */
++    0xc5, 0xfa, 0x10, 0x25, 0x00, 0x00, 0x00, 0x00, /* 12 vmovss xmm4, [rip+frame time]   */
++    0xc5, 0xda, 0x5f, 0x25, 0x00, 0x00, 0x00, 0x00, /* 20 vmaxss xmm4, xmm4, [rip+1/1000] */
++    0xc5, 0xfa, 0x5e, 0xc4,                         /* 28 vdivss xmm0, xmm0, xmm4         */
++    0xc5, 0xe2, 0x58, 0xd8,                         /* 32 vaddss xmm3, xmm3, xmm0         */
++    0x31, 0xc0,                                     /* 36 xor eax, eax                    */
++    0x87, 0x05, 0x00, 0x00, 0x00, 0x00,             /* 38 xchg [rip+pitch], eax           */
++    0xc5, 0xf9, 0x6e, 0xc0,                         /* 44 vmovd xmm0, eax                 */
++    0xc5, 0xfa, 0x5e, 0xc4,                         /* 48 vdivss xmm0, xmm0, xmm4         */
++    0xc5, 0xd2, 0x58, 0xe8,                         /* 52 vaddss xmm5, xmm5, xmm0         */
++    0xc5, 0xfa, 0x11, 0x6d, 0xc0,                   /* 56 vmovss [rbp-0x40], xmm5         */
++    0xc5, 0xfa, 0x11, 0x5d, 0x9c,                   /* 61 vmovss [rbp-0x64], xmm3         */
++    0xc3,                                           /* 66 ret                             */
++};
++_Static_assert(sizeof(gr1_cave_code) <= 96, "the cave's code overlaps its data");
 +
 +/* The cave's code; the stick's displacement (bytes 4..7) is filled in at install. */
 +static const unsigned char cave_code[] = {
@@ -20277,12 +20319,48 @@ index 0000000..88a17c7
 +/* The 16-byte vector the hook adds to the stick: x, 0, y, 0 (written whole by the pad thread,
 + * read whole by the camera; a torn read would only mix two frames' motion). */
 +static float *mouse_vector;
-+static _Atomic int installed;
++static _Atomic int installed; /* 0 none, 1 Gravity Rush 2, 2 Gravity Rush Remastered */
 +
 +static void put32(unsigned char *at, int32_t v) { memcpy(at, &v, 4); }
 +
++/* Adds to a float the game's code takes with xchg. */
++static void add_float(_Atomic uint32_t *at, double add) {
++    uint32_t old = atomic_load(at), next;
++    do {
++        float f;
++        memcpy(&f, &old, 4);
++        f = (float)(f + add);
++        memcpy(&next, &f, 4);
++    } while (!atomic_compare_exchange_weak(at, &old, next));
++}
++
++static int install_gr1(unsigned char *image, uint64_t span) {
++    if (span < GR1_STORE_OFFSET + 10 + CAVE_SIZE || memcmp(image + GR1_STORE_OFFSET, gr1_store_bytes, 10))
++        return 0;
++    unsigned char *cave = image + span - CAVE_SIZE;
++    for (int i = 0; i < CAVE_SIZE; ++i)
++        if (cave[i]) return 0;
++    memcpy(cave, gr1_cave_code, sizeof(gr1_cave_code));
++    put32(cave + 4, (int32_t)((cave + 96) - (cave + 8)));
++    put32(cave + 16, (int32_t)((image + GR1_FRAME_TIME) - (cave + 20)));
++    put32(cave + 24, (int32_t)((cave + 104) - (cave + 28)));
++    put32(cave + 40, (int32_t)((cave + 100) - (cave + 44)));
++    const float min_frame_time = 0.001f;
++    memcpy(cave + 104, &min_frame_time, 4);
++    mouse_vector = (float *)(cave + 96);
++    unsigned char hook[10] = {0xe8, 0, 0, 0, 0, 0x0f, 0x1f, 0x44, 0x00, 0x00}; /* call; 5-byte nop */
++    put32(hook + 1, (int32_t)(cave - (image + GR1_STORE_OFFSET + 5)));
++    memcpy(image + GR1_STORE_OFFSET, hook, 10);
++    atomic_store(&installed, 2);
++    bbgpu_mouse_camera_available();
++    puts("Mouse camera: direct (Gravity Rush Remastered)");
++    return 1;
++}
++
 +int runtime_gr_camera_install(unsigned char *image, uint64_t span) {
-+    if (!image || span < LOAD_OFFSET + 8 + CAVE_SIZE || memcmp(image + LOAD_OFFSET, load_bytes, 8))
++    if (!image) return 0;
++    if (install_gr1(image, span)) return 1;
++    if (span < LOAD_OFFSET + 8 + CAVE_SIZE || memcmp(image + LOAD_OFFSET, load_bytes, 8))
 +        return 0;
 +    /* The last CAVE_SIZE bytes of the cave (16-byte aligned: span is page aligned), past
 +     * anything the game's patches write. */
@@ -20305,11 +20383,21 @@ index 0000000..88a17c7
 +    return 1;
 +}
 +
-+int runtime_gr_camera_active(void) { return atomic_load(&installed); }
++int runtime_gr_camera_active(void) { return atomic_load(&installed) != 0; }
 +
 +void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity) {
-+    if (!atomic_load(&installed)) return;
++    const int game = atomic_load(&installed);
++    if (!game) return;
 +    float v[4] = {0, 0, 0, 0};
++    if (game == 2) {
++        /* Gravity Rush Remastered: add this sample's turn to what the camera has not taken yet. */
++        if (dx != 0 || dy != 0) {
++            const double radians_per_count = sensitivity / 900.0;
++            add_float((_Atomic uint32_t *)&mouse_vector[0], dx * radians_per_count / GR1_YAW_RATE);
++            add_float((_Atomic uint32_t *)&mouse_vector[1], dy * radians_per_count / GR1_PITCH_RATE);
++        }
++        return;
++    }
 +    if (dt_ms > 0 && (dx != 0 || dy != 0)) {
 +        const double radians_per_count = sensitivity / 900.0, seconds = dt_ms / 1000.0;
 +        v[0] = (float)(dx * radians_per_count / seconds / YAW_RATE);
@@ -21851,7 +21939,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..f2566ce 100644
+index 687bfb5..6173667 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,132 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -21988,7 +22076,7 @@ index 687bfb5..f2566ce 100644
  static size_t reads;
  static uint8_t connected_count;
  static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
-@@ -85,18 +210,75 @@ static void touch_click(PadData *d, int right) {
+@@ -85,18 +210,87 @@ static void touch_click(PadData *d, int right) {
  static SDL_Gamepad *current_gamepad(void) {
      if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
      if (sdl_ready<0) return NULL;
@@ -22010,9 +22098,12 @@ index 687bfb5..f2566ce 100644
 + * controller is told otherwise. DualSense: SDL_SendGamepadEffect passes DS5EffectsState_t bytes
 + * through: [0] valid flags 0 (0x20 speaker volume, 0x80 audio control), [1] valid flags 1 (0x80
 + * audio control 2), [5] speaker volume (console range 0x3d-0x64), [7] audio control (bits 4-5
-+ * output path, 3 = speaker plays the right channel, headset silent), [37] speaker preamp gain.
-+ * DualShock 4: SDL's effect reports never set the volume flags, so a raw USB report 0x05 with only
-+ * flag 0x80 sets [22] speaker volume without touching rumble/lights. Called under lock. */
++ * output path, 3 = speaker plays the right channel, headset silent), [37] speaker preamp gain (bits 0-2).
++ * DualShock 4 (USB report 0x05): flags [1] (0x01 rumble, 0x80 speaker volume), [4] weak and
++ * [5] strong motor, [22] speaker volume. Its speaker plays the USB audio (other PC games do it,
++ * #45), but every output report without the volume silences it again, SDL's rumble reports
++ * included; so while the speaker is wanted the runtime sends the DualShock 4's rumble itself,
++ * each report with the volume. Called under lock. */
 +static void enable_dualsense_speakers(void) {
 +    int count=0, sent=0;
 +    SDL_JoystickID *ids=SDL_GetGamepads(&count);
@@ -22024,7 +22115,7 @@ index 687bfb5..f2566ce 100644
 +            puts("Runtime: DualSense on Bluetooth has no speaker endpoint; use a USB cable");
 +        else {
 +            uint8_t effect[47]={0};
-+            effect[0]=0x20|0x80; effect[1]=0x80; effect[5]=0x64; effect[7]=3<<4; effect[37]=0x02;
++            effect[0]=0x20|0x80; effect[1]=0x80; effect[5]=0x64; effect[7]=3<<4; effect[37]=0x04; /* gain 2 was quiet (#45) */
 +            if (SDL_SendGamepadEffect(g,effect,sizeof(effect))) { puts("Runtime: DualSense speaker output enabled"); ++sent; }
 +            else printf("Runtime: DualSense speaker output report failed: %s\n",SDL_GetError());
 +        }
@@ -22033,24 +22124,33 @@ index 687bfb5..f2566ce 100644
 +    SDL_free(ids);
 +    if (!sent) puts("Runtime: no USB DualSense found to switch its speaker on");
 +}
++#define DS4_SPEAKER_VOLUME 0x4f
++static SDL_hid_device *ds4_speaker[4];
++static int ds4_speaker_count;
++static int ds4_send(uint8_t weak, uint8_t strong) {
++    int sent=0;
++    for (int i=0;i<ds4_speaker_count;++i) {
++        uint8_t report[32]={0x05,0x01|0x80};
++        report[4]=weak; report[5]=strong; report[22]=DS4_SPEAKER_VOLUME;
++        if (SDL_hid_write(ds4_speaker[i],report,sizeof(report))==(int)sizeof(report)) ++sent;
++    }
++    return sent;
++}
 +static void enable_dualshock4_speakers(void) {
 +    static const unsigned short pids[]={0x05c4,0x09cc}; /* DualShock 4 v1, v2 */
-+    int sent=0;
++    for (int i=0;i<ds4_speaker_count;++i) SDL_hid_close(ds4_speaker[i]);
++    ds4_speaker_count=0;
 +    for (size_t k=0;k<sizeof(pids)/sizeof(pids[0]);++k) {
 +        SDL_hid_device_info *list=SDL_hid_enumerate(0x054c,pids[k]);
-+        for (SDL_hid_device_info *d=list;d;d=d->next) {
++        for (SDL_hid_device_info *d=list;d && ds4_speaker_count<4;d=d->next) {
 +            if (d->bus_type!=SDL_HID_API_BUS_USB) continue;
 +            SDL_hid_device *dev=SDL_hid_open_path(d->path);
-+            if (!dev) continue;
-+            uint8_t report[32]={0x05,0x80};
-+            report[22]=0x4f;
-+            if (SDL_hid_write(dev,report,sizeof(report))==(int)sizeof(report)) { puts("Runtime: DualShock 4 speaker volume set"); ++sent; }
-+            else printf("Runtime: DualShock 4 speaker report failed: %s\n",SDL_GetError());
-+            SDL_hid_close(dev);
++            if (dev) ds4_speaker[ds4_speaker_count++]=dev;
 +        }
 +        SDL_hid_free_enumeration(list);
 +    }
-+    if (!sent) puts("Runtime: no USB DualShock 4 found to set its speaker volume");
++    if (ds4_send(0,0)) printf("Runtime: DualShock 4 speaker on (%d pad%s; the runtime sends its rumble)\n",ds4_speaker_count,ds4_speaker_count==1 ? "" : "s");
++    else puts("Runtime: no USB DualShock 4 took the speaker report");
 +}
 +static void apply_speaker_route(void) {
 +    if (speaker_wanted==1) enable_dualsense_speakers();
@@ -22066,7 +22166,7 @@ index 687bfb5..f2566ce 100644
  /* Button-like outputs (not the stick/axis ones): the bit each sets in d->buttons, or 0 for
   * l2/r2 (handled separately, since they also carry an analog value) and for outputs that are
   * not plain buttons (touchpad sides, half-axes, halfmode, hotkeys). */
-@@ -369,6 +551,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -369,6 +563,33 @@ static int apply_deadzone(int value, int inner, int outer) {
      return value<0 ? -(int)scaled : (int)scaled;
  }
  
@@ -22100,7 +22200,7 @@ index 687bfb5..f2566ce 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -407,10 +616,7 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -407,10 +628,7 @@ static int apply_deadzone(int value, int inner, int outer) {
   * under 100 ms (imperceptible as lag) while still visibly damping single-pixel-level jitter at
   * high poll rates (tried 15 ms first; 25 ms cut the residual jitter spread by about a fifth for
   * under 35 ms of extra settle time, found by sweeping the constant and comparing both).
@@ -22112,7 +22212,7 @@ index 687bfb5..f2566ce 100644
  static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *mouse, int *out_x, int *out_y) {
      const double tau_ms=25.0;
      double alpha=1.0-exp(-dt_ms/tau_ms);
-@@ -436,6 +642,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
+@@ -436,6 +654,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
          double offset_fade=magnitude<ramp_mag ? magnitude/ramp_mag : 1.0;
          double speed=magnitude*mouse->speed+mouse->speed_offset*128.0*offset_fade;
          if (speed>128.0) speed=128.0;
@@ -22127,7 +22227,7 @@ index 687bfb5..f2566ce 100644
          double angle=atan2(sdy,sdx);
          target_x=cos(angle)*speed;
          target_y=sin(angle)*speed;
-@@ -502,6 +716,7 @@ static void ensure_config_loaded(void) {
+@@ -502,6 +728,7 @@ static void ensure_config_loaded(void) {
          loaded_config=fresh;
          if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
          else printf("Input config: %s loaded\n",path);
@@ -22135,7 +22235,7 @@ index 687bfb5..f2566ce 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
-@@ -511,7 +726,7 @@ static void ensure_config_loaded(void) {
+@@ -511,7 +738,7 @@ static void ensure_config_loaded(void) {
                            loaded_config ? loaded_config->reload_scancode : default_config.reload_scancode);
      const MouseParams *mouse=loaded_config ? &loaded_config->mouse : &default_config.mouse;
      configure_prompts(loaded_config ? loaded_config : &default_config);
@@ -22144,7 +22244,7 @@ index 687bfb5..f2566ce 100644
                                   input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
  }
  /* CFG-008: called once per sample() (under `lock`), reloads if the window thread set the F8
-@@ -533,7 +748,7 @@ static void reload_config_if_requested(void) {
+@@ -533,7 +760,7 @@ static void reload_config_if_requested(void) {
          bbgpu_input_configure(loaded_config->mouse.stick!=0,loaded_config->toggle_scancode,loaded_config->reload_scancode);
          const MouseParams *mouse=&loaded_config->mouse;
          configure_prompts(loaded_config);
@@ -22153,7 +22253,7 @@ index 687bfb5..f2566ce 100644
                                       input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
      } else {
          free(fresh);
-@@ -554,7 +769,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +781,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -22163,7 +22263,7 @@ index 687bfb5..f2566ce 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,12 +833,27 @@ static void sample_host(PadData *d) {
+@@ -617,12 +845,27 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -22192,7 +22292,7 @@ index 687bfb5..f2566ce 100644
          uint64_t now=now_us();
          double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
          if (dt_ms<1.0) dt_ms=1.0;
-@@ -639,6 +870,7 @@ static void sample_host(PadData *d) {
+@@ -639,6 +882,7 @@ static void sample_host(PadData *d) {
           * next capture must start the EMA fresh, not carry over speed from before the gap. */
          last_mouse_sample_us=0;
          smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
@@ -22200,7 +22300,7 @@ index 687bfb5..f2566ce 100644
      }
  
      if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
-@@ -838,7 +1070,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +1082,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -22217,7 +22317,7 @@ index 687bfb5..f2566ce 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1086,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,7 +1098,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -22234,10 +22334,17 @@ index 687bfb5..f2566ce 100644
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1133,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
-     pthread_mutex_unlock(&lock);
-     return 0;
- }
+@@ -881,7 +1141,32 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+     if (!param) return ERR_INVALID_ARG;
+     pthread_mutex_lock(&lock);
+     SDL_Gamepad *g=current_gamepad();
+-    if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257),(uint16_t)(param[1]*257),1000);
++    /* A DualShock 4 playing the speaker gets its rumble with the speaker volume (see above). */
++    if (g && ds4_speaker_count && SDL_GetGamepadType(g)==SDL_GAMEPAD_TYPE_PS4 && ds4_send(param[1],param[0])) {}
++    else if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257),(uint16_t)(param[1]*257),1000);
++    pthread_mutex_unlock(&lock);
++    return 0;
++}
 +static ABI int32_t pad_reset_orientation(int32_t handle) {
 +    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
 +    pthread_mutex_lock(&lock);
@@ -22258,13 +22365,10 @@ index 687bfb5..f2566ce 100644
 +        configure_motion(gamepad); configure_motion(motion_gamepad);
 +        report_motion_capabilities(gamepad,"disabled by game");
 +    }
-+    pthread_mutex_unlock(&lock);
-+    return 0;
-+}
- static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
- static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
- 
-@@ -892,9 +1163,9 @@ static const RuntimeExport exports[]={
+     pthread_mutex_unlock(&lock);
+     return 0;
+ }
+@@ -892,9 +1177,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
