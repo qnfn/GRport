@@ -24654,7 +24654,7 @@ index a477ea9..5eec006 100644
      SDL_Quit();
      unlink(path);
 diff --git a/tests/test_prompt_icons.cpp b/tests/test_prompt_icons.cpp
-index a5edf37..5458968 100644
+index a5edf37..4ede6eb 100644
 --- a/tests/test_prompt_icons.cpp
 +++ b/tests/test_prompt_icons.cpp
 @@ -4,6 +4,7 @@
@@ -24674,7 +24674,7 @@ index a5edf37..5458968 100644
 +    const GlyphCase glyphs[] = {
 +        {false, 'e', OK}, {false, 'h', Cancel}, {false, 'g', R_L}, {false, 'f', R_U},
 +        {false, 'i', L1}, {false, 'j', R1}, {false, 'A', L2}, {false, 'B', R2},
-+        {false, 'C', L3}, {false, 'D', R3}, {false, 'n', TP_L}, {false, 'o', Start},
++        {false, 'C', L3}, {false, 'D', R3}, {false, 'n', Start}, {false, 'o', TP_L}, // n = OPTIONS, o = touchpad (#45)
 +        {true, 'a', OK}, {true, 'p', OK}, {true, 'b', Cancel}, {true, 'q', Cancel},
 +        {true, 'c', R_L}, {true, 'd', R_U}, {true, 'e', L1}, {true, 'f', R1},
 +        {true, 'g', L2}, {true, 'h', R2}, {true, 'k', TP_L}, {true, 'r', Start},
