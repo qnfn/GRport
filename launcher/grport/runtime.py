@@ -193,6 +193,9 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
         out["BB_READBACK_LINEAR"] = "1"
     else:
         out.pop("BB_READBACK_LINEAR", None)
+    # Exit to Desktop: Gravity Rush Remastered has it in its own menus (gr1_menu); Gravity
+    # Rush 2's menus have no room for it, so holding R3 asks with GRport's list there.
+    out["BB_EXIT_DESKTOP_HOLD"] = "1" if info.game.key == "gr2" else "0"
     # SETUP > Camera Roll (Gravity Rush 2): how many of the newest photos the game is shown.
     if info.game.key == "gr2":
         out["BB_PHOTO_ROLL"] = str(PHOTO_ROLLS[g.photo_roll])
