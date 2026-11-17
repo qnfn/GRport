@@ -171,6 +171,12 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     # SETUP > Skybox seam fix: seamless cube sampling (skies, reflections) costs bigger shaders;
     # Off for older GPUs. Switching it rebuilds the shader cache once.
     out["BB_CUBE_SEAMLESS"] = "1" if g.skybox_fix else "0"
+    # Gravity Rush Remastered: GPU-written linear images are read back into guest memory (as
+    # GR2fork does for this game), so images the game reads with the CPU stay current.
+    if info.game.key == "gr1":
+        out["BB_READBACK_LINEAR"] = "1"
+    else:
+        out.pop("BB_READBACK_LINEAR", None)
     # SETUP > Camera Roll (Gravity Rush 2): how many of the newest photos the game is shown.
     if info.game.key == "gr2":
         out["BB_PHOTO_ROLL"] = str(PHOTO_ROLLS[g.photo_roll])

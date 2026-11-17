@@ -46,6 +46,7 @@ ON_OFF = (("1", "On"), ("0", "Off"))
 PICTURE = (
     ("upscaler", "Anti-aliasing", (("off", "Off"), ("fsr3", "FSR 3.1"), ("fsr4", "FSR 4"),
                                    ("taa", "TAA"), ("dlss", "DLSS")), "fsr3"),
+    ("frame_gen", "Frame generation", (("off", "Off"), ("fsr3", "FSR 3.1 (experimental)")), "off"),
     ("sharpen", "Sharpening", ON_OFF, "1"),
     ("fsr1", "FSR 1 to the screen", ON_OFF, "1"),
     ("show_fps", "FPS counter", ON_OFF, "1"),
@@ -61,7 +62,10 @@ PICTURE_NOTE = ("The same settings as GRport's in-game menu (Insert / L3+R3), pe
                 "Anti-aliasing: FSR and DLSS smooth edges using earlier frames (FSR 4 needs a GPU "
                 "with fast INT8 math, DLSS an NVIDIA RTX card; without one the game falls back "
                 "to FSR 3.1). Off keeps the game's own picture: with a 4K render resolution that "
-                "is native 4K without any anti-aliasing. Button prompt changes need a game restart. "
+                "is native 4K without any anti-aliasing. Frame generation (experimental) adds a "
+                "generated frame between the game's frames (AMD FSR 3.1, any GPU); it needs "
+                "Anti-aliasing FSR 3.1, FSR 4 or DLSS and works best at 60 FPS and up; restart the "
+                "game after changing it. Button prompt changes need a game restart. "
                 "FSR 1 scales the picture to the window "
                 "with sharp edges.")
 WINDOW_CHOICES = (("fullscreen", "Fullscreen"), ("borderless", "Borderless"), ("window", "Window"))
