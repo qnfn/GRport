@@ -528,7 +528,8 @@ class App(tk.Tk):
                                "preparing", runtime.prepare_log(self.paths, key))
         trophies.write_names(theme.assets_dir(), key, runtime.user_dir(self.paths, key))
         mods = runtime.mod_folders(self.paths, key) if self.settings.games[key].mods else []
-        return self._start(key, runtime.command(self.paths, info, patch, mods),
+        return self._start(key, runtime.command(self.paths, info, patch, mods,
+                                                runtime.game_patch(self.paths, info)),
                            runtime.env(self.paths, self.settings, info),
                            self.paths.console_log, runtime.exe(self.paths).parent, "running",
                            self.paths.console_log)

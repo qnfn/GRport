@@ -7,9 +7,11 @@ settings in user/<game>/. Fonts, audio and the system libraries are the runtime'
 """
 import hashlib
 import os
+import struct
+import zlib
 from pathlib import Path
 
-from . import patches
+from . import gr1_menu, patches
 from .games import GameFolder
 from .paths import AppPaths
 from .settings import LANGUAGES, PHOTO_ROLLS, LauncherSettings, window
@@ -90,12 +92,26 @@ def prepare_command(paths: AppPaths, info: GameFolder, patch: "Path | None" = No
         ["--update", str(info.update)] if info.update else [])
 
 
-def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None, mods=()) -> list:
+def game_patch(paths: AppPaths, info: GameFolder) -> "Path | None":
+    """The runtime's --app0-patch folder: Gravity Rush Remastered's menus with Exit to Desktop
+    (gr1_menu), made from this copy of the game; None for Gravity Rush 2 or a copy it does not
+    fit (the game then plays with its own menus)."""
+    if info.game.key != "gr1":
+        return None
+    try:
+        return gr1_menu.ensure(info.file(gr1_menu.ARCHIVE), data_dir(paths, "gr1") / "patch")
+    except (OSError, ValueError, KeyError, IndexError, struct.error, zlib.error):
+        return None
+
+
+def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None, mods=(),
+            game_patch_dir: "Path | None" = None) -> list:
     data = data_dir(paths, info.game.key)
     return [str(exe(paths)), str(data / "boot-linked.bin"), "--content-profile",
             str(data / "content.bin"), "--app0", str(info.folder)] + [
         arg for mod in mods for arg in ("--app0-mod", str(mod))] + (
-        ["--app0-update", str(info.update)] if info.update else []) + [
+        ["--app0-update", str(info.update)] if info.update else []) + (
+        ["--app0-patch", str(game_patch_dir)] if game_patch_dir else []) + [
             "--user", str(user_dir(paths, info.game.key)), "--timeout", "0"] + (
         ["--patches", str(patch)] if patch else [])
 
