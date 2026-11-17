@@ -135,6 +135,24 @@ def test_prepare_and_runtime_get_the_update_folder(paths, tmp_path):
     assert "--update" not in runtime.prepare_command(paths, alone)
 
 
+def test_runtime_gets_the_mod_folders_before_the_update(paths, tmp_path):
+    base = make_game(tmp_path / "CUSA04943", "CUSA04943", "01.00")
+    update = make_update(tmp_path / "CUSA04943-patch", "CUSA04943", "01.11")
+    info = games.inspect(base)
+    mods = runtime.mods_dir(paths, "gr2")
+    for name in ("b-skin", "A-music", "_off", ".hidden"):
+        (mods / name).mkdir(parents=True)
+    (mods / "file.txt").write_text("not a mod")
+    found = runtime.mod_folders(paths, "gr2")
+    assert [p.name for p in found] == ["A-music", "b-skin"]
+    cmd = runtime.command(paths, info, None, found)
+    at = [i for i, a in enumerate(cmd) if a == "--app0-mod"]
+    assert [cmd[i + 1] for i in at] == [str(p) for p in found]
+    assert at[-1] < cmd.index("--app0-update") and cmd[cmd.index("--app0-update") + 1] == str(update)
+    assert runtime.mod_folders(paths, "gr1") == []
+    assert "--app0-mod" not in runtime.command(paths, info)
+
+
 def test_find_games_finds_one_folder_per_game(tmp_path):
     make_game(tmp_path / "GR1" / "CUSA01113", "CUSA01113", "01.00")
     make_game(tmp_path / "GR2" / "CUSA04934", "CUSA04934", "01.11")

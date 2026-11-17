@@ -41,6 +41,20 @@ def user_dir(paths: AppPaths, key: str) -> Path:
     return paths.root / "user" / key
 
 
+def mods_dir(paths: AppPaths, key: str) -> Path:
+    return paths.root / "mods" / key
+
+
+def mod_folders(paths: AppPaths, key: str) -> list:
+    """The mods in mods/<game>/, each a folder laid out like the game's, by name; a name starting
+    with "_" or "." is switched off. The runtime reads a file from the first mod that has it."""
+    try:
+        found = [p for p in mods_dir(paths, key).iterdir() if p.is_dir()]
+    except OSError:
+        return []
+    return sorted((p for p in found if not p.name.startswith(("_", "."))), key=lambda p: p.name.lower())
+
+
 def prepare_log(paths: AppPaths, key: str) -> Path:
     return data_dir(paths, key) / "prepare.log"
 
@@ -76,10 +90,11 @@ def prepare_command(paths: AppPaths, info: GameFolder, patch: "Path | None" = No
         ["--update", str(info.update)] if info.update else [])
 
 
-def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None) -> list:
+def command(paths: AppPaths, info: GameFolder, patch: "Path | None" = None, mods=()) -> list:
     data = data_dir(paths, info.game.key)
     return [str(exe(paths)), str(data / "boot-linked.bin"), "--content-profile",
-            str(data / "content.bin"), "--app0", str(info.folder)] + (
+            str(data / "content.bin"), "--app0", str(info.folder)] + [
+        arg for mod in mods for arg in ("--app0-mod", str(mod))] + (
         ["--app0-update", str(info.update)] if info.update else []) + [
             "--user", str(user_dir(paths, info.game.key)), "--timeout", "0"] + (
         ["--patches", str(patch)] if patch else [])

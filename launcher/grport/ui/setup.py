@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """SETUP page: each game's window and GPU readbacks for GRport's runtime."""
 import os
+import subprocess
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -71,6 +72,11 @@ WINDOW_SIZE_NOTE = ("Window size: only the window, in Window mode ({size}, the s
 PATCHES_NOTE = ("Game patches by Junmin Lee are downloaded when needed. GR1 cheats are "
                 "adapted from GoldHEN codes by Talixme and Skal where noted. Patches target GR1 "
                 "1.00 and GR2 1.11. Changes prepare the game again at the next PLAY.")
+MODS_NOTE = ("Experimental. Put each mod in its own folder in mods/{key}, laid out like the game "
+             "folder: its files replace the game's files of the same name and path (for example a "
+             "replaced .psarc archive). When two mods have the same file, the folder whose name comes "
+             "first wins. Start a folder name with _ to switch that mod off. Mods change game data "
+             "only, not the game's code. Turn mods off if the game misbehaves. Restart the game to apply.")
 SAVES_NOTE = ("Bring your progress from another emulator or launcher (shadPS4, GR2fork, an older "
               "GRport folder) or from a PS4: choose the folder that holds the saves (for example "
               "the other program's user folder). PS4 saves must be decrypted first, for example "
@@ -362,6 +368,15 @@ class SetupPage(tk.Frame):
                          padx=app.px(18), bg_role="panel").pack(anchor="w")
         self._note(save_card, SAVES_NOTE)
 
+        mod_card = self.board.add(8, 0, span=2, title="Mods (experimental)")
+        row = self._row(mod_card, "Mods", first=True)
+        self.mods_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")), self.set_mods)
+        self.mods_choice.pack(side="left")
+        theme.PillButton(row, app, "Open mods folder", self.open_mods,
+                         kind="secondary", font=app.fonts["button"], height=app.px(36),
+                         padx=app.px(18), bg_role="panel").pack(side="left", padx=(app.px(16), 0))
+        self.mods_note = self._note(mod_card, "")
+
         self.patch_choices = {}
         extra = self.board.add(4, 0, span=2, title="Patches")
         for i, (prefix, label, _, note) in enumerate(patches.OPTIONAL.get(self.key, ())):
@@ -447,6 +462,10 @@ class SetupPage(tk.Frame):
         self.beep_choice.set(g.low_gravity_beep)
         self.output_box.set(g.temporal_output or "Render size (AA)")
         self.profile_choice.set(g.performance_log)
+        self.mods_choice.set(g.mods)
+        found = runtime.mod_folders(self.app.paths, self.key)
+        self.mods_note.configure(text=MODS_NOTE.format(key=self.key) + (
+            " Found: " + ", ".join(p.name for p in found) + "." if found else " No mods found yet."))
         self.hdr_choice.set(g.hdr_output)
         self.hdr_white_box.set(str(g.hdr_paper_white))
         if self.roll_choice is not None:
@@ -627,6 +646,22 @@ class SetupPage(tk.Frame):
     def set_ps4_pro(self, on: bool) -> None:
         self.g.ps4_pro = bool(on)
         self._saved()
+
+    def set_mods(self, on: bool) -> None:
+        self.g.mods = bool(on)
+        self._saved()
+
+    def open_mods(self) -> None:
+        folder = runtime.mods_dir(self.app.paths, self.key)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(folder))  # returns at once; Explorer opens on its own
+            else:
+                subprocess.Popen(["xdg-open", str(folder)], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.flash(f"Could not open the mods folder: {e.strerror or e}", "bad")
 
     def set_hdr_output(self, on: bool) -> None:
         self.g.hdr_output = bool(on)

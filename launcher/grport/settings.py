@@ -143,6 +143,7 @@ class GameSettings:
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)
     resolution: str = ""        # RESOLUTIONS: a resolution patch prefix; "" the game's 1080p
     extras: "list | None" = None  # optional patches chosen (name prefixes); None: the defaults
+    mods: bool = False          # experimental: mods/<game>/<mod> folders lie over the game's files
 
 
 @dataclass
