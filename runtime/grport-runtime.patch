@@ -11950,7 +11950,7 @@ index 0000000..0e945b5
 +
 +} // namespace VideoCore
 diff --git a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
-index 6c56743..e580a7d 100644
+index 6c56743..b2c92ac 100644
 --- a/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 +++ b/gpu/shadps4/video_core/texture_cache/texture_cache.cpp
 @@ -24,6 +24,7 @@
@@ -11977,6 +11977,15 @@ index 6c56743..e580a7d 100644
  TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                             Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                             BufferCache& buffer_cache_, PageManager& page_manager_)
+@@ -271,7 +281,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
+     const bool bpp_match = requested_info.num_bits == cache_image.info.num_bits;
+ 
+     // If an image in the cache has less slices we need to expand it
+-    bool recreate = cache_image.info.resources < requested_info.resources;
++    bool recreate = !cache_image.info.resources.Contains(requested_info.resources);
+ 
+     switch (binding) {
+     case BindingType::Texture:
 @@ -317,6 +327,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
          // Inherit image usage
          auto& new_image = slot_images[new_image_id];
@@ -12021,7 +12030,7 @@ index 6c56743..e580a7d 100644
 +        // Expand cached image when its resources or extent grow.
          if (image_info.type == cache_image.info.type &&
 -            image_info.resources > cache_image.info.resources) {
-+            (image_info.resources > cache_image.info.resources || extends_extent)) {
++            (!cache_image.info.resources.Contains(image_info.resources) || extends_extent)) {
              return {ExpandImage(image_info, cache_image_id), -1, -1};
          }
  
@@ -12081,6 +12090,15 @@ index 6c56743..e580a7d 100644
      FreeImage(image_id);
  
      return new_image_id;
+@@ -687,7 +733,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
+         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
+             // Cannot reuse this image as we need the exact requested format.
+             image_id = {};
+-        } else if (image_resolved.info.resources < info.resources) {
++        } else if (!image_resolved.info.resources.Contains(info.resources)) {
+             // The image was clearly picked up wrong.
+             FreeImage(image_id);
+             image_id = {};
 @@ -774,6 +820,9 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
      if (refresh) {
          UpdateImage(image_id);
@@ -12242,6 +12260,24 @@ index 8d41b8c..d34abcf 100644
      runtime.AccessBuffer(staging.buffer, staging.offset, info.guest_size,
                           vk::PipelineStageFlagBits2::eComputeShader,
                           vk::AccessFlagBits2::eShaderRead);
+diff --git a/gpu/shadps4/video_core/texture_cache/types.h b/gpu/shadps4/video_core/texture_cache/types.h
+index 67e6070..b39505f 100644
+--- a/gpu/shadps4/video_core/texture_cache/types.h
++++ b/gpu/shadps4/video_core/texture_cache/types.h
+@@ -65,6 +65,13 @@ struct SubresourceExtent {
+     u16 layers = 1;
+ 
+     auto operator<=>(const SubresourceExtent&) const = default;
++
++    // True if an image with this extent can serve every subresource of `other`. The defaulted
++    // operators compare levels first and layers only on a tie, which cannot answer this
++    // (shadPS4 #5524).
++    bool Contains(const SubresourceExtent& other) const noexcept {
++        return levels >= other.levels && layers >= other.layers;
++    }
+ };
+ 
+ struct SubresourceRange {
 diff --git a/gpu/shim/bbgpu.cpp b/gpu/shim/bbgpu.cpp
 index 3a73ecf..40b3caa 100644
 --- a/gpu/shim/bbgpu.cpp
@@ -17774,7 +17810,7 @@ index 0000000..30235fc
 +{"zr094EQ39Ww","__cxa_pure_virtual"},
 +{"zwY0YV91TTI","sceGnmSubmitCommandBuffers"},
 diff --git a/src/probe.c b/src/probe.c
-index 988d694..b8b4908 100644
+index 988d694..b5d60e2 100644
 --- a/src/probe.c
 +++ b/src/probe.c
 @@ -5,6 +5,7 @@
@@ -18183,7 +18219,7 @@ index 988d694..b8b4908 100644
              slots[nslots++]=target;
          }
          memcpy(image+offset,data,length);
-@@ -468,19 +753,20 @@ int main(int argc, char **argv) {
+@@ -468,19 +753,22 @@ int main(int argc, char **argv) {
  #endif
      int cpu_only = 0, strict_imports = 0;
      unsigned timeout_seconds = 10;
@@ -18195,6 +18231,8 @@ index 988d694..b8b4908 100644
          else if (!strcmp(argv[i], "--content-profile") && i+1<argc) content_profile=argv[++i];
          else if (!strcmp(argv[i], "--app0") && i+1<argc) app0=argv[++i];
 +        else if (!strcmp(argv[i], "--app0-update") && i+1<argc) app0_update=argv[++i];
++        else if (!strcmp(argv[i], "--app0-mod") && i+1<argc) runtime_file_add_mod(argv[++i]);
++        else if (!strcmp(argv[i], "--app0-patch") && i+1<argc) runtime_file_set_patch_dir(argv[++i]);
          else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
          else if (!strcmp(argv[i], "--patches") && i+1<argc) patch_file=argv[++i];
          else if (!strcmp(argv[i], "--timeout") && i+1<argc) timeout_seconds=(unsigned)strtoul(argv[++i],NULL,10);
@@ -18202,11 +18240,11 @@ index 988d694..b8b4908 100644
      }
      if (argc < 2) {
 -        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
-+        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir [--app0-update dir]] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
++        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir [--app0-mod dir]... [--app0-update dir] [--app0-patch dir]] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
          return 1;
      }
      if (content_profile) {
-@@ -497,9 +783,9 @@ int main(int argc, char **argv) {
+@@ -497,9 +785,9 @@ int main(int argc, char **argv) {
          runtime_content_configure(values);
      }
      if (app0) {
@@ -18218,7 +18256,7 @@ index 988d694..b8b4908 100644
          if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
              runtime_savedata_configure(id);
          char serial[16]="", title[128]="", version[16]="";
-@@ -513,6 +799,11 @@ int main(int argc, char **argv) {
+@@ -513,6 +801,11 @@ int main(int argc, char **argv) {
      SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
      AddVectoredExceptionHandler(1, vectored_fault);
      SetUnhandledExceptionFilter(unhandled_fault);
@@ -18230,7 +18268,7 @@ index 988d694..b8b4908 100644
      if (getenv("BB_STRICT_HANDLES")) {
          PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
          strict.RaiseExceptionOnInvalidHandleReference=1;
-@@ -521,6 +812,7 @@ int main(int argc, char **argv) {
+@@ -521,6 +814,7 @@ int main(int argc, char **argv) {
              fprintf(stderr,"BB_STRICT_HANDLES: policy not set (%lu)\n",GetLastError());
      }
      (void)timeout_seconds; /* no watchdog on Windows */
@@ -18238,7 +18276,7 @@ index 988d694..b8b4908 100644
  #else
      page_size = (size_t)sysconf(_SC_PAGESIZE);
      struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
-@@ -581,7 +873,7 @@ int main(int argc, char **argv) {
+@@ -581,7 +875,7 @@ int main(int argc, char **argv) {
              LinkedModule *x=&modules[m];
              if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                  (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
@@ -18247,7 +18285,7 @@ index 988d694..b8b4908 100644
                  fail("invalid linked module metadata");
          }
          if (nb>import_count) fail("invalid binding count");
-@@ -632,19 +924,29 @@ int main(int argc, char **argv) {
+@@ -632,19 +926,29 @@ int main(int argc, char **argv) {
              if (!executable) fail("native function is not executable");
          }
      }
@@ -18281,7 +18319,7 @@ index 988d694..b8b4908 100644
          gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
          if (bbgpu_init(&gpu)) fail("GPU initialization failed");
          printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
-@@ -680,17 +982,20 @@ int main(int argc, char **argv) {
+@@ -680,17 +984,20 @@ int main(int argc, char **argv) {
      /* The Hunter's Dream backend reads the game's code before the patches change it. */
      bbnet_set_image(image, size);
      if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
@@ -18303,7 +18341,7 @@ index 988d694..b8b4908 100644
      if (!executable_entry) fail("entry is not executable");
      printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
      if (native_libc) {
-@@ -717,7 +1022,20 @@ int main(int argc, char **argv) {
+@@ -717,7 +1024,20 @@ int main(int argc, char **argv) {
      bbnet_initialize(); /* the online session starts with the game */
      printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
      entered_game=1;
@@ -18406,10 +18444,10 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..630ce84 100644
+index 773ee79..5a39fed 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
-@@ -15,6 +15,10 @@ typedef bb_jmp_buf sigjmp_buf;
+@@ -15,10 +15,18 @@ typedef bb_jmp_buf sigjmp_buf;
  extern __thread sigjmp_buf *runtime_fault_recover;
  /* Restarts the game (in-game settings menu, render resolution change). */
  void runtime_restart(void);
@@ -18420,7 +18458,15 @@ index 773ee79..630ce84 100644
  /* Quit to Desktop (runtime_services.c, scripts/quit_menu.py): a file the game opens, and the end
   * of a save. */
  void runtime_quit_on_open(const char *guest);
-@@ -45,6 +49,10 @@ void runtime_thread_attach_main(void);
+ void runtime_quit_on_save_done(void);
++/* GRport's menu scripts print GRPORT_QUIT_TO_DESKTOP to quit (after a save being written). */
++void runtime_quit_on_output(const void *text,uint64_t size);
++/* Exit to Desktop now (after a save being written). */
++void runtime_quit_to_desktop(void);
+ int runtime_savedata_mounted(void);
+ #define ABI __attribute__((sysv_abi))
+ typedef void (ABI *GuestCallback)(void);
+@@ -45,6 +53,10 @@ void runtime_thread_attach_main(void);
  int32_t *runtime_errno(void);
  uintptr_t runtime_sema_resolve(const char *name);
  void runtime_sema_report(void);
@@ -18431,7 +18477,7 @@ index 773ee79..630ce84 100644
  unsigned runtime_sema_waiters(uint32_t id);
  uintptr_t runtime_time_resolve(const char *name);
  void runtime_content_configure(const uint32_t values[5]);
-@@ -55,10 +63,11 @@ typedef struct { const char *name; void *function; } RuntimeExport;
+@@ -55,10 +67,15 @@ typedef struct { const char *name; void *function; } RuntimeExport;
  const char *runtime_symbol(const char *nid);
  uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
  uintptr_t runtime_kernel_resolve(const char *name);
@@ -18441,10 +18487,14 @@ index 773ee79..630ce84 100644
  void runtime_file_report(void);
 -void runtime_file_configure(const char *app0, const char *user);
 +void runtime_file_configure(const char *app0, const char *update, const char *user);
++/* --app0-mod: a folder over the game's (call before runtime_file_configure; first wins). */
++void runtime_file_add_mod(const char *dir);
++/* --app0-patch: <dir>/<game path>.grpo patches that game file in place (see runtime_file.c). */
++void runtime_file_set_patch_dir(const char *dir);
  int runtime_file_mount(const char *guest, const char *host);
  void runtime_file_unmount(const char *guest);
  int runtime_file_translate(const char *guest, char *out, size_t size);
-@@ -80,13 +89,37 @@ void runtime_memory_reserve(void);
+@@ -80,13 +97,40 @@ void runtime_memory_reserve(void);
  uintptr_t runtime_ajm_resolve(const char *name);
  void runtime_ajm_report(void);
  uintptr_t runtime_audio_resolve(const char *name);
@@ -18452,7 +18502,10 @@ index 773ee79..630ce84 100644
  void runtime_audio_report(void);
  uintptr_t runtime_pad_resolve(const char *name);
  void runtime_pad_report(void);
-+void runtime_pad_route_speaker(void); /* a USB DualSense's endpoint plays the pad-speaker port */
++/* A USB DualSense's or DualShock 4's endpoint plays the pad-speaker port: switch its speaker on. */
++void runtime_pad_route_speaker(void);
++/* A wired DualShock 4 v2 (the model with USB audio) is connected. */
++int runtime_pad_wired_ds4(void);
  uintptr_t runtime_rtc_resolve(const char *name);
 +/* libSceJpegEnc, libSceJpegDec and libScePngDec (runtime_image.c). */
 +uintptr_t runtime_image_resolve(const char *name);
@@ -18483,7 +18536,7 @@ index 773ee79..630ce84 100644
 +uintptr_t runtime_font_resolve(const char *name);
  #endif
 diff --git a/src/runtime_audio.c b/src/runtime_audio.c
-index e9ffa16..0a9eb17 100644
+index e9ffa16..31cdc3d 100644
 --- a/src/runtime_audio.c
 +++ b/src/runtime_audio.c
 @@ -3,12 +3,17 @@
@@ -18522,7 +18575,7 @@ index e9ffa16..0a9eb17 100644
  
  /* SDL's 7.1->stereo matrix multiplies the front pair by ~0.21 so a full 8ch
   * sum stays at 1. The game's mix lives in the fronts, so a stereo PC sounds
-@@ -113,6 +120,35 @@ static int sdl_audio(void) {
+@@ -113,6 +120,43 @@ static int sdl_audio(void) {
      }
      return sdl_ready;
  }
@@ -18536,21 +18589,29 @@ index e9ffa16..0a9eb17 100644
 +    return 0;
 +}
 +/* SDL exposes controller audio as a separate playback device on USB connections, but SDL 3.4
-+ * cannot link that endpoint to the opened gamepad. Match the OS-provided name. Only a DualSense
-+ * is used: its speaker can be switched on. A DualShock 4's endpoint ("Wireless Controller")
-+ * plays on its headphone jack and its speaker could not be switched on (#45), so its sounds
-+ * play on the PC's default output instead of being lost. *found = 1 when a DualSense is used. */
++ * cannot link that endpoint to the opened gamepad. Match the OS-provided name: a DualSense's
++ * has "DualSense" in it, a DualShock 4's is "... (Wireless Controller)" (the first part is
++ * localized), used only while a wired DualShock 4 v2 is connected. Both speakers are switched
++ * on by runtime_pad_route_speaker (#45). Without either, the sounds play on the PC's default
++ * output instead of being lost. *found = 1 when a controller endpoint is used. */
 +static SDL_AudioDeviceID pad_speaker_device(int *found) {
 +    int count=0;
 +    SDL_AudioDeviceID *devices=SDL_GetAudioPlaybackDevices(&count);
-+    SDL_AudioDeviceID result=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
++    SDL_AudioDeviceID result=SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, ds4=0;
++    const char *ds4_name=NULL;
 +    *found=0;
 +    for (int i=0;devices && i<count && !*found;++i) {
 +        const char *name=SDL_GetAudioDeviceName(devices[i]);
 +        if (name_contains_case(name,"dualsense")) {
 +            result=devices[i]; *found=1;
 +            printf("Runtime: controller speaker playback endpoint: %s\n",name);
++        } else if (!ds4 && name_contains_case(name,"wireless controller") && !name_contains_case(name,"xbox")) {
++            ds4=devices[i]; ds4_name=name;
 +        }
++    }
++    if (!*found && ds4 && runtime_pad_wired_ds4()) {
++        result=ds4; *found=1;
++        printf("Runtime: controller speaker playback endpoint: %s (DualShock 4)\n",ds4_name);
 +    }
 +    SDL_free(devices);
 +    return result;
@@ -18558,7 +18619,7 @@ index e9ffa16..0a9eb17 100644
  static int port_range(int type, int *first, int *last) {
      switch (type) {
      case 0: *first=0; *last=7; return 1;      /* main */
-@@ -136,6 +172,8 @@ static ABI int32_t audio_init(void) {
+@@ -136,6 +180,8 @@ static ABI int32_t audio_init(void) {
      pthread_mutex_lock(&table_lock);
      int32_t r=initialized ? ERR_ALREADY_INIT : 0;
      initialized=1;
@@ -18567,7 +18628,7 @@ index e9ffa16..0a9eb17 100644
      pthread_mutex_unlock(&table_lock);
      return r;
  }
-@@ -160,13 +198,31 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -160,13 +206,31 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      p->is_float=format>=3 && format!=6;
      p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
      for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
@@ -18588,7 +18649,7 @@ index e9ffa16..0a9eb17 100644
 +        int pad_endpoint=0;
 +        if (type==4) {
 +            playback=pad_speaker_device(&pad_endpoint);
-+            if (!pad_endpoint) puts("Runtime: no USB DualSense audio; controller speaker sounds play on the system default device");
++            if (!pad_endpoint) puts("Runtime: no USB DualSense or DualShock 4 audio; controller speaker sounds play on the system default device");
 +        }
 +        p->stream=SDL_OpenAudioDeviceStream(playback,&spec,NULL,NULL);
 +        if (!p->stream && type==4 && pad_endpoint) {
@@ -18600,7 +18661,7 @@ index e9ffa16..0a9eb17 100644
          else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
      }
      p->stats=getenv("BB_AUDIO_STATS")!=NULL;
-@@ -178,7 +234,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
+@@ -178,7 +242,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
      }
      ++ports_opened;
      pthread_mutex_unlock(&table_lock);
@@ -18610,7 +18671,7 @@ index e9ffa16..0a9eb17 100644
      return (type<<16) | id | 0x20000000;
  }
  static ABI int32_t audio_close(int32_t handle) {
-@@ -213,7 +270,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -213,7 +278,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          unsigned char converted[2048*8*4];
          /* mute_unfocused: silence while the window is in the background; the port keeps its
           * pace, so the game's audio threads run on as before. */
@@ -18621,7 +18682,7 @@ index e9ffa16..0a9eb17 100644
          if (p->out_channels!=p->channels) {
              static const int from_std[8]={0,1,2,3,6,7,4,5}; /* SDL order -> PS4 L R C LFE SL SR BL BR */
              for (size_t f=0;f<(size_t)p->frames;++f) {
-@@ -263,7 +322,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
+@@ -263,7 +330,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
          if (p->stream) {
              /* The device drains the queue in quanta (21 ms on PipeWire), so the level
                 is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
@@ -19783,55 +19844,97 @@ index 0000000..a85e4bf
 +    pthread_mutex_unlock(&lock);
 +}
 diff --git a/src/runtime_file.c b/src/runtime_file.c
-index c64c0f9..b8d22f8 100644
+index c64c0f9..fb91666 100644
 --- a/src/runtime_file.c
 +++ b/src/runtime_file.c
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  /* Guest file system: PS4 mount points mapped onto host directories.
 - *   /app0, /hostapp  -> game package root (read-only by convention)
-+ *   /app0, /hostapp  -> game package root (read-only by convention); with an update folder
-+ *                       (--app0-update) its files come first and the game's fill the rest
++ *   /app0, /hostapp  -> game package root (read-only by convention); mod folders (--app0-mod,
++ *                       first wins) and an update folder (--app0-update) lie over it: the first
++ *                       layer that has a file gives it, and directories list every layer
   *   /temp0, /download0, /data, and mounts added by SaveData -> user directory
   * Guest descriptors are small integers in our own table; stdio 0-2 pass through.
   * Paths containing ".." components are rejected rather than normalized. */
-@@ -105,11 +106,15 @@ void runtime_file_unmount(const char *guest) {
+@@ -50,7 +52,18 @@ typedef struct { char *names; size_t count, *offsets; unsigned char *types; } Li
+ /* commit: a save file opened for writing is written to a temporary copy (temp), which replaces
+  * the file (commit) in one rename when closed: a crash or a kill mid-save leaves the old file
+  * (from bbport 0.5, deadinside28#64). */
+-typedef struct { int used, host, dirty; Listing *dir; size_t position; char path[512]; char *commit, *temp; } File;
++/* Archive patches (--app0-patch dir): <dir>/<game path>.grpo changes a game file without a copy
++ * of it: "GRPOVL01", then u64 LE base size, base skip, head size and tail size, the head, the
++ * tail. The file then reads as head + base[skip..] + tail (GRport rewrites a few entries of a
++ * .psarc this way: a new table of contents, the replaced entries appended). A patch is used only
++ * while the game's file has the size it was made for. */
++typedef struct {
++    char path[1024];
++    uint64_t base_size, skip, head_len, tail_len, size;
++    unsigned char *head, *tail;
++} Patch;
++typedef struct { int used, host, dirty; Listing *dir; size_t position; char path[512]; char *commit, *temp;
++                 const Patch *patch; uint64_t patch_position; } File;
+ typedef struct { char guest[64]; char host[512]; } Mount;
+ static File files[MAX_FILES];
+ static Mount mounts[MAX_MOUNTS];
+@@ -105,11 +118,35 @@ void runtime_file_unmount(const char *guest) {
      }
      pthread_mutex_unlock(&lock);
  }
 -static char user_root[512]="user";
-+static char user_root[512]="user", app_root[512]="", update_root[512]="";
++static char user_root[512]="user", app_root[512]="";
++/* Folders over the game's, first wins: mods in the order given, then the update. */
++enum { MAX_LAYERS=33 };
++static char layers[MAX_LAYERS][512];
++static int layer_count, mod_count;
  const char *runtime_file_user_dir(void) { return user_root; }
 -void runtime_file_configure(const char *app0,const char *user) {
 +const char *runtime_file_app_dir(void) { return app_root; }
++static void add_layer(const char *dir) {
++    if (!dir || !*dir) return;
++    if (layer_count==MAX_LAYERS) { printf("Runtime: too many mod folders, %s left out\n",dir); return; }
++    char *layer=layers[layer_count];
++    snprintf(layer,sizeof(layers[0]),"%s",dir);
++    size_t n=strlen(layer);
++    while (n>1 && (layer[n-1]=='/' || layer[n-1]=='\\')) layer[--n]=0;
++    ++layer_count;
++}
++void runtime_file_add_mod(const char *dir) {
++    if (layer_count>mod_count) return; /* mods come before the update */
++    add_layer(dir);
++    if (layer_count>mod_count) { ++mod_count; printf("Mods: %s (its files replace the game's)\n",dir); }
++}
 +void runtime_file_configure(const char *app0,const char *update,const char *user) {
      char path[600];
      snprintf(user_root,sizeof(user_root),"%s",user);
 +    snprintf(app_root,sizeof(app_root),"%s",app0);
-+    snprintf(update_root,sizeof(update_root),"%s",update ? update : "");
-+    if (update_root[0]) printf("Runtime: game update folder %s (its files replace the game's)\n",update_root);
++    if (update && *update) {
++        add_layer(update);
++        printf("Runtime: game update folder %s (its files replace the game's)\n",update);
++    }
      runtime_file_mount("/app0",app0);
      runtime_file_mount("/hostapp",app0);
      const char *writable[]={"temp0","download0","data"};
-@@ -121,6 +126,18 @@ void runtime_file_configure(const char *app0,const char *user) {
+@@ -121,6 +158,19 @@ void runtime_file_configure(const char *app0,const char *user) {
          runtime_file_mount(guest,path);
      }
  }
-+/* The same place in the other game folder (update <-> game); 0 when there is no update folder
-+ * or `path` is in neither. */
-+static int other_root(const char *path,char *out,size_t size) {
-+    if (!update_root[0]) return 0;
-+    const char *roots[2][2]={{update_root,app_root},{app_root,update_root}}; /* update first: it may extend the game's name */
-+    for (int i=0;i<2;++i) {
-+        size_t n=strlen(roots[i][0]);
-+        if (!strncmp(path,roots[i][0],n) && (path[n]=='/' || path[n]=='\\' || !path[n]))
-+            return (size_t)snprintf(out,size,"%s%s",roots[i][1],path+n)<size;
++/* Layer i's folder; layer_count is the game's own. */
++static const char *layer_root(int i) { return i<layer_count ? layers[i] : app_root; }
++/* The part of `path` under the game or a layer folder (longest match: an update folder's name
++ * may extend the game's), or NULL when it is in none. */
++static const char *game_relative(const char *path) {
++    size_t best=0; int found=0;
++    for (int i=0;i<=layer_count;++i) {
++        const char *root=layer_root(i);
++        size_t n=strlen(root);
++        if (n>=best && !strncmp(path,root,n) && (path[n]=='/' || path[n]=='\\' || !path[n])) { best=n; found=1; }
 +    }
-+    return 0;
++    return found ? path+best : NULL;
 +}
  /* Resolve a guest path to a host path; returns 0 or a host errno. */
  static int translate(const char *guest,char *out,size_t size) {
      if (!guest || !*guest) return ENOENT;
-@@ -129,18 +146,30 @@ static int translate(const char *guest,char *out,size_t size) {
+@@ -129,18 +179,41 @@ static int translate(const char *guest,char *out,size_t size) {
      else snprintf(buffer,sizeof(buffer),"%s",guest);
      for (const char *p=buffer;(p=strstr(p,".."));p+=2)
          if ((p==buffer || p[-1]=='/') && (p[2]==0 || p[2]=='/')) return EACCES;
@@ -19847,15 +19950,26 @@ index c64c0f9..b8d22f8 100644
          if (!strncmp(buffer,mounts[i].guest,n) && (buffer[n]=='/' || !buffer[n]) && n>best) { best=n; m=&mounts[i]; }
      }
 -    int result=0;
-+    int result=0, app=m && update_root[0] && (!strcmp(m->guest,"/app0") || !strcmp(m->guest,"/hostapp"));
++    int result=0, app=m && layer_count && (!strcmp(m->guest,"/app0") || !strcmp(m->guest,"/hostapp"));
      if (!m) result=ENOENT;
      else if ((size_t)snprintf(out,size,"%s%s",m->host,buffer+best)>=size) result=ENAMETOOLONG;
      pthread_mutex_unlock(&lock);
 +    if (!result && app) {
-+        /* A file the update has replaces the game's (shadPS4's <game>-UPDATE folder). */
-+        char updated[1024]; HostStat file;
-+        if (other_root(out,updated,sizeof(updated)) && !host_stat(updated,&file) &&
-+            (size_t)snprintf(out,size,"%s",updated)>=size) result=ENAMETOOLONG;
++        /* A file a mod or the update has replaces the game's (shadPS4's <game>-UPDATE folder). */
++        const char *relative=game_relative(out);
++        char layered[1024]; HostStat file;
++        /* A directory the game has stays the game's: its listing merges the layers' anyway. */
++        if (!host_stat(out,&file) && S_ISDIR(file.st_mode)) relative=NULL;
++        for (int i=0;relative && i<layer_count;++i) {
++            if ((size_t)snprintf(layered,sizeof(layered),"%s%s",layers[i],relative)>=sizeof(layered) ||
++                host_stat(layered,&file)) continue;
++            if (i<mod_count) {
++                static int reported;
++                if (__atomic_fetch_add(&reported,1,__ATOMIC_RELAXED)<200) printf("Mods: %s -> %s\n",buffer,layered);
++            }
++            if ((size_t)snprintf(out,size,"%s",layered)>=size) result=ENAMETOOLONG;
++            break;
++        }
 +    }
      if (!result && strstr(out,"/dvdroot_ps4/")) {
 -        const char *language=getenv("BB_LANGUAGE");
@@ -19864,17 +19978,12 @@ index c64c0f9..b8d22f8 100644
          if (language && !strcmp(language,"17")) {
              /* Some game paths use the Portuguese or English fallback directory. */
              const char *folders[]={"/msg/porpt/","/menu/porpt/","/msg/engus/","/menu/engus/"};
-@@ -267,6 +296,38 @@ static int game_path(const char *p) {
+@@ -267,6 +340,115 @@ static int game_path(const char *p) {
      return (!strncmp(p,"/app0",5) && (!p[5] || p[5]=='/')) ||
             (!strncmp(p,"/hostapp",8) && (!p[8] || p[8]=='/'));
  }
-+/* A game directory lists the update's entries and the game's (each name once). */
-+static Listing *list_game_directory(const char *guest,const char *path) {
-+    Listing *l=list_directory(path);
-+    char other[1024];
-+    if (!l || !game_path(guest) || !other_root(path,other,sizeof(other))) return l;
-+    Listing *extra=list_directory(other);
-+    if (!extra) return l;
++/* A game directory lists every layer's entries (each name once). */
++static void merge_listing(Listing *l,const Listing *extra) {
 +    size_t bytes=l->count ? l->offsets[l->count-1]+strlen(l->names+l->offsets[l->count-1])+1 : 0;
 +    for (size_t i=0;i<extra->count;++i) {
 +        const char *name=extra->names+extra->offsets[i];
@@ -19890,7 +19999,89 @@ index c64c0f9..b8d22f8 100644
 +        l->offsets[l->count]=bytes; l->types[l->count]=extra->types[i];
 +        ++l->count; bytes+=n;
 +    }
-+    free_listing(extra);
++}
++static char patch_root[512];
++static Patch *patches[16];
++static int patch_count;
++static pthread_mutex_t patch_lock=PTHREAD_MUTEX_INITIALIZER;
++void runtime_file_set_patch_dir(const char *dir) { snprintf(patch_root,sizeof(patch_root),"%s",dir ? dir : ""); }
++static uint64_t le64(const unsigned char *p) { uint64_t v=0; for (int i=7;i>=0;--i) v=v<<8|p[i]; return v; }
++/* The patch for a game file at `path` (host) of `size` bytes, or NULL. */
++static const Patch *patch_for(const char *guest,const char *path,uint64_t size) {
++    if (!patch_root[0] || !game_path(guest)) return NULL;
++    const char *relative=game_relative(path);
++    if (!relative) return NULL;
++    char file[1024];
++    if ((size_t)snprintf(file,sizeof(file),"%s%s.grpo",patch_root,relative)>=sizeof(file)) return NULL;
++    pthread_mutex_lock(&patch_lock);
++    for (int i=0;i<patch_count;++i)
++        if (!strcmp(patches[i]->path,file)) {
++            const Patch *p=patches[i]->base_size==size ? patches[i] : NULL;
++            pthread_mutex_unlock(&patch_lock);
++            return p;
++        }
++    Patch *p=NULL;
++    FILE *in=fopen(file,"rb");
++    unsigned char h[40];
++    if (in && fread(h,1,40,in)==40 && !memcmp(h,"GRPOVL01",8) && patch_count<16) {
++        p=calloc(1,sizeof(*p));
++        if (p) {
++            snprintf(p->path,sizeof(p->path),"%s",file);
++            p->base_size=le64(h+8); p->skip=le64(h+16); p->head_len=le64(h+24); p->tail_len=le64(h+32);
++            p->head=malloc(p->head_len ? p->head_len : 1); p->tail=malloc(p->tail_len ? p->tail_len : 1);
++            if (p->skip>p->base_size || !p->head || !p->tail || fread(p->head,1,p->head_len,in)!=p->head_len ||
++                fread(p->tail,1,p->tail_len,in)!=p->tail_len) {
++                printf("Runtime: archive patch %s is damaged, not used\n",file);
++                free(p->head); free(p->tail); free(p); p=NULL;
++            } else {
++                p->size=p->head_len+(p->base_size-p->skip)+p->tail_len;
++                patches[patch_count++]=p;
++                printf("Runtime: archive patch %s%s\n",file,p->base_size==size ? "" : " (made for another copy of the game, not used)");
++            }
++        }
++    }
++    if (in) fclose(in);
++    pthread_mutex_unlock(&patch_lock);
++    return p && p->base_size==size ? p : NULL;
++}
++/* Reads the patched file at `offset`: head, then the game's file from `skip`, then tail. */
++static int64_t patch_read(const Patch *p,int host,void *buffer,uint64_t size,uint64_t offset) {
++    unsigned char *out=buffer;
++    uint64_t done=0;
++    const uint64_t body_end=p->head_len+(p->base_size-p->skip);
++    while (done<size && offset<p->size) {
++        uint64_t n;
++        if (offset<p->head_len) {
++            n=p->head_len-offset; if (n>size-done) n=size-done;
++            memcpy(out+done,p->head+offset,n);
++        } else if (offset<body_end) {
++            n=body_end-offset; if (n>size-done) n=size-done;
++            if (n>0x7ffff000) n=0x7ffff000;
++            ssize_t r=pread(host,out+done,n,(int64_t)(offset-p->head_len+p->skip));
++            if (r<0) return done ? (int64_t)done : -errno;
++            if (r==0) break;
++            n=(uint64_t)r;
++        } else {
++            n=p->size-offset; if (n>size-done) n=size-done;
++            memcpy(out+done,p->tail+(offset-body_end),n);
++        }
++        done+=n; offset+=n;
++    }
++    return (int64_t)done;
++}
++static Listing *list_game_directory(const char *guest,const char *path) {
++    Listing *l=list_directory(path);
++    const char *relative=layer_count && game_path(guest) ? game_relative(path) : NULL;
++    if (!l || !relative) return l;
++    char other[1024];
++    for (int i=0;i<=layer_count;++i) {
++        if ((size_t)snprintf(other,sizeof(other),"%s%s",layer_root(i),relative)>=sizeof(other) ||
++            !strcmp(other,path)) continue;
++        Listing *extra=list_directory(other);
++        if (!extra) continue;
++        merge_listing(l,extra);
++        free_listing(extra);
++    }
 +    return l;
 +}
 +/* BB_FILE_TRACE=1: every open of a missing file. DriveClub probes thousands of loose overrides
@@ -19903,7 +20094,7 @@ index c64c0f9..b8d22f8 100644
  /* BB_SAVE_TRACE=1: every operation on save files (/savedataN). */
  static int save_trace(void) { static int v=-1; if (v<0) { const char *e=getenv("BB_SAVE_TRACE"); v=e && e[0]=='1'; } return v; }
  /* Saves (/savedataN): see File. The copy starts as the old file unless the open truncates. */
-@@ -380,10 +441,10 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -380,10 +562,10 @@ static int64_t do_open(const char *guest,int flags,int mode) {
      int host=-1;
      if (!host_stat(path,&s) && S_ISDIR(s.st_mode)) {
          if (flags&3) return -EISDIR;
@@ -19916,7 +20107,7 @@ index c64c0f9..b8d22f8 100644
          return -e;
      } else {
          if (save_path(guest) && (flags&3)) {
-@@ -400,7 +461,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -400,7 +582,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
              printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
          if (host<0) {
              e=errno;
@@ -19925,7 +20116,7 @@ index c64c0f9..b8d22f8 100644
              return -e;
          }
          if (host_fstat(host,&s)) memset(&s,0,sizeof(s));
-@@ -421,12 +482,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+@@ -421,12 +603,12 @@ static int64_t do_open(const char *guest,int flags,int mode) {
          printf("Save trace: open(%s, flags 0x%x) -> host %d%s%s\n",guest,flags,host,temp ? ", copy " : "",temp ? temp : "");
      if (host<0) {
          e=errno;
@@ -19940,6 +20131,85 @@ index c64c0f9..b8d22f8 100644
  #endif
      pthread_mutex_lock(&lock);
      int fd=-1;
+@@ -436,7 +618,8 @@ static int64_t do_open(const char *guest,int flags,int mode) {
+         if (temp) unlink(temp);
+         free(commit); free(temp); return -EMFILE;
+     }
+-    files[fd]=(File){.used=1,.host=host,.dir=dir,.commit=commit,.temp=temp};
++    files[fd]=(File){.used=1,.host=host,.dir=dir,.commit=commit,.temp=temp,
++                     .patch=!dir && host>=0 ? patch_for(guest,path,(uint64_t)s.st_size) : NULL};
+     snprintf(files[fd].path,sizeof(files[fd].path),"%s",guest);
+     ++opens;
+     pthread_mutex_unlock(&lock);
+@@ -507,6 +690,12 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
+     int h=host_fd(fd);
+     if (h<0) return -EBADF;
+     touch_for_write(buffer,size);
++    File *pf=get(fd);
++    if (pf && pf->patch) {
++        int64_t n=patch_read(pf->patch,h,buffer,size,pf->patch_position);
++        if (n>0) pf->patch_position+=(uint64_t)n;
++        return n;
++    }
+     ssize_t n=host_read(h,buffer,size);
+     if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
+     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
+@@ -516,6 +705,8 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
+     int h=host_fd(fd);
+     if (h<0) return -EBADF;
+     touch_for_write(buffer,size);
++    File *pf=get(fd);
++    if (pf && pf->patch) return offset<0 ? -EINVAL : patch_read(pf->patch,h,buffer,size,(uint64_t)offset);
+     ssize_t n=pread(h,buffer,size,offset);
+     if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
+     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
+@@ -524,6 +715,7 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
+ static int64_t do_write(int fd,const void *buffer,uint64_t size) {
+     int h=host_fd_written(fd);
+     if (h<0) return -EBADF;
++    if (fd==1 || fd==2) runtime_quit_on_output(buffer,size);
+     ssize_t n=host_write(h,buffer,size);
+     if (n<0) return -errno;
+     __atomic_add_fetch(&writes,1,__ATOMIC_RELAXED);
+@@ -544,6 +736,12 @@ static int64_t do_lseek(int fd,int64_t offset,int whence) {
+         if (whence==0 && offset>=0) { f->position=(size_t)offset; return offset; }
+         return -EINVAL;
+     }
++    if (f->patch) {
++        const int64_t base=whence==0 ? 0 : whence==1 ? (int64_t)f->patch_position : (int64_t)f->patch->size;
++        if (base+offset<0) return -EINVAL;
++        f->patch_position=(uint64_t)(base+offset);
++        return (int64_t)f->patch_position;
++    }
+     int64_t r=host_lseek(f->host,offset,whence);
+     return r<0 ? -errno : r;
+ }
+@@ -563,7 +761,10 @@ static int64_t do_fstat(int fd,GuestStat *out) {
+ #endif
+     if (!out) return -EFAULT;
+     if (host_fstat(h,&s)) return -errno;
+-    convert_stat(&s,out); return 0;
++    convert_stat(&s,out);
++    const File *pf=get(fd);
++    if (pf && pf->patch) { out->size=(int64_t)pf->patch->size; out->blocks=(out->size+511)/512; }
++    return 0;
+ }
+ static int64_t do_stat(const char *guest,GuestStat *out) {
+     char path[1024]; HostStat s;
+@@ -572,7 +773,12 @@ static int64_t do_stat(const char *guest,GuestStat *out) {
+     if (save_path(guest)) current_copy(path,sizeof(path),0);
+     if (!out) return -EFAULT;
+     if (host_stat(path,&s)) return -errno;
+-    convert_stat(&s,out); return 0;
++    convert_stat(&s,out);
++    if (S_ISREG(s.st_mode)) {
++        const Patch *p=patch_for(guest,path,(uint64_t)s.st_size);
++        if (p) { out->size=(int64_t)p->size; out->blocks=(out->size+511)/512; }
++    }
++    return 0;
+ }
+ static int64_t do_getdents(int fd,char *buffer,uint64_t size,int64_t *basep) {
+     pthread_mutex_lock(&lock);
 diff --git a/src/runtime_font.c b/src/runtime_font.c
 new file mode 100644
 index 0000000..377e88b
@@ -22054,10 +22324,10 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..d408ad0 100644
+index 687bfb5..fc12bf2 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
-@@ -64,7 +64,132 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
+@@ -64,7 +64,134 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
  
  static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
  static int initialized, opened, sdl_ready;
@@ -22066,6 +22336,8 @@ index 687bfb5..d408ad0 100644
 +static uint64_t next_motion_scan_ms;
 +static int speaker_wanted;
 +static void enable_dualsense_speakers(void);
++static void enable_ds4_speakers(void);
++static int exit_desktop_hold_on(void);
 +static int motion_enabled;
 +static float motion_orientation[4]={0,0,0,1};
 +static uint64_t motion_sample_us;
@@ -22191,7 +22463,7 @@ index 687bfb5..d408ad0 100644
  static size_t reads;
  static uint8_t connected_count;
  static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
-@@ -85,18 +210,52 @@ static void touch_click(PadData *d, int right) {
+@@ -85,18 +212,81 @@ static void touch_click(PadData *d, int right) {
  static SDL_Gamepad *current_gamepad(void) {
      if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
      if (sdl_ready<0) return NULL;
@@ -22203,7 +22475,7 @@ index 687bfb5..d408ad0 100644
          if (ids && count>0) {
              gamepad=SDL_OpenGamepad(ids[0]);
 -            if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
-+            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); if (speaker_wanted) enable_dualsense_speakers(); }
++            if (gamepad) { ++connected_count; reset_motion(); configure_motion(gamepad); printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); report_motion_capabilities(gamepad,"sensor status at connection"); if (speaker_wanted) { enable_dualsense_speakers(); enable_ds4_speakers(); } }
          }
          SDL_free(ids);
      }
@@ -22214,8 +22486,7 @@ index 687bfb5..d408ad0 100644
 + * through: [0] valid flags 0 (0x20 speaker volume, 0x80 audio control), [1] valid flags 1 (0x80
 + * audio control 2), [5] speaker volume (console range 0x3d-0x64), [7] audio control (bits 4-5
 + * output path, 3 = speaker plays the right channel, headset silent), [37] speaker preamp gain (bits 0-2).
-+ * A DualShock 4's speaker could not be switched on this way (#45); its sounds play on the PC
-+ * (runtime_audio.c). Called under lock. */
++ * Called under lock. */
 +static void enable_dualsense_speakers(void) {
 +    int count=0, sent=0;
 +    SDL_JoystickID *ids=SDL_GetGamepads(&count);
@@ -22236,17 +22507,47 @@ index 687bfb5..d408ad0 100644
 +    SDL_free(ids);
 +    if (!sent) puts("Runtime: no USB DualSense found to switch its speaker on");
 +}
++/* DualShock 4 v2 (054C:09CC) over USB: feature report E0 00 03 sends the USB audio endpoint's
++ * right channel to the speaker instead of the headphone jack (psdevwiki DS4-USB; verified on a
++ * CUH-ZCT2 here, #45). Output report 0x05 with only the volume flags (0x10/0x20/0x40/0x80) sets
++ * the jack and speaker volumes (values as Chromium's driver uses), leaving rumble and the light
++ * bar to SDL. The v1 (054C:05C4) has no USB audio. Called under lock. */
++static void enable_ds4_speakers(void) {
++    SDL_hid_device_info *list=SDL_hid_enumerate(0x054C,0x09CC), *d;
++    int sent=0;
++    for (d=list; d; d=d->next) {
++        SDL_hid_device *h=SDL_hid_open_path(d->path);
++        if (!h) continue;
++        const unsigned char route[3]={0xE0,0x00,0x03};
++        unsigned char volume[32]={0x05,0xF0,0x04};
++        volume[19]=volume[20]=0x43; volume[22]=0x4D; volume[23]=0x85;
++        if (SDL_hid_send_feature_report(h,route,sizeof(route))>0) {
++            SDL_hid_write(h,volume,sizeof(volume));
++            ++sent;
++        } else printf("Runtime: DualShock 4 speaker route failed: %s\n",SDL_GetError());
++        SDL_hid_close(h);
++    }
++    SDL_hid_free_enumeration(list);
++    if (sent) puts("Runtime: DualShock 4 speaker output enabled");
++}
++int runtime_pad_wired_ds4(void) {
++    SDL_hid_device_info *list=SDL_hid_enumerate(0x054C,0x09CC);
++    const int found=list!=NULL;
++    SDL_hid_free_enumeration(list);
++    return found;
++}
 +void runtime_pad_route_speaker(void) {
 +    pthread_mutex_lock(&lock);
 +    if (!sdl_ready) current_gamepad(); /* initializes SDL's gamepad subsystem */
 +    speaker_wanted=1;
 +    enable_dualsense_speakers();
++    enable_ds4_speakers();
 +    pthread_mutex_unlock(&lock);
 +}
  /* Button-like outputs (not the stick/axis ones): the bit each sets in d->buttons, or 0 for
   * l2/r2 (handled separately, since they also carry an analog value) and for outputs that are
   * not plain buttons (touchpad sides, half-axes, halfmode, hotkeys). */
-@@ -369,6 +528,33 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -369,6 +559,33 @@ static int apply_deadzone(int value, int inner, int outer) {
      return value<0 ? -(int)scaled : (int)scaled;
  }
  
@@ -22280,7 +22581,7 @@ index 687bfb5..d408ad0 100644
  /* MOU-009: converts raw mouse motion straight into shadPS4's linear response (magnitude*speed +
   * speed_offset*128, over a 33 ms window -- shadPS4's fixed poll interval, kept as the unit
   * mouse_movement_params' defaults are tuned for), with no filtering of the raw delta itself, and
-@@ -407,10 +593,7 @@ static int apply_deadzone(int value, int inner, int outer) {
+@@ -407,10 +624,7 @@ static int apply_deadzone(int value, int inner, int outer) {
   * under 100 ms (imperceptible as lag) while still visibly damping single-pixel-level jitter at
   * high poll rates (tried 15 ms first; 25 ms cut the residual jitter spread by about a fifth for
   * under 35 ms of extra settle time, found by sweeping the constant and comparing both).
@@ -22292,7 +22593,7 @@ index 687bfb5..d408ad0 100644
  static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *mouse, int *out_x, int *out_y) {
      const double tau_ms=25.0;
      double alpha=1.0-exp(-dt_ms/tau_ms);
-@@ -436,6 +619,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
+@@ -436,6 +650,14 @@ static void mouse_to_axis(float dx, float dy, double dt_ms, const MouseParams *m
          double offset_fade=magnitude<ramp_mag ? magnitude/ramp_mag : 1.0;
          double speed=magnitude*mouse->speed+mouse->speed_offset*128.0*offset_fade;
          if (speed>128.0) speed=128.0;
@@ -22307,7 +22608,7 @@ index 687bfb5..d408ad0 100644
          double angle=atan2(sdy,sdx);
          target_x=cos(angle)*speed;
          target_y=sin(angle)*speed;
-@@ -502,6 +693,7 @@ static void ensure_config_loaded(void) {
+@@ -502,6 +724,7 @@ static void ensure_config_loaded(void) {
          loaded_config=fresh;
          if (fresh->warnings) printf("Input config: %s loaded, %u line(s) ignored (see above)\n",path,fresh->warnings);
          else printf("Input config: %s loaded\n",path);
@@ -22315,7 +22616,7 @@ index 687bfb5..d408ad0 100644
      } else {
          free(fresh);
          puts("Input config: using built-in defaults");
-@@ -511,7 +703,7 @@ static void ensure_config_loaded(void) {
+@@ -511,7 +734,7 @@ static void ensure_config_loaded(void) {
                            loaded_config ? loaded_config->reload_scancode : default_config.reload_scancode);
      const MouseParams *mouse=loaded_config ? &loaded_config->mouse : &default_config.mouse;
      configure_prompts(loaded_config ? loaded_config : &default_config);
@@ -22324,7 +22625,7 @@ index 687bfb5..d408ad0 100644
                                   input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
  }
  /* CFG-008: called once per sample() (under `lock`), reloads if the window thread set the F8
-@@ -533,7 +725,7 @@ static void reload_config_if_requested(void) {
+@@ -533,7 +756,7 @@ static void reload_config_if_requested(void) {
          bbgpu_input_configure(loaded_config->mouse.stick!=0,loaded_config->toggle_scancode,loaded_config->reload_scancode);
          const MouseParams *mouse=&loaded_config->mouse;
          configure_prompts(loaded_config);
@@ -22333,7 +22634,7 @@ index 687bfb5..d408ad0 100644
                                       input_mouse_scale_x(mouse),input_mouse_scale_y(mouse),mouse->camera_sync);
      } else {
          free(fresh);
-@@ -554,7 +746,8 @@ static void sample_host(PadData *d) {
+@@ -554,7 +777,8 @@ static void sample_host(PadData *d) {
      d->connected=1; d->connected_count=connected_count ? connected_count : 1;
      d->timestamp=now_us();
      SDL_Gamepad *g=current_gamepad();
@@ -22343,7 +22644,7 @@ index 687bfb5..d408ad0 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,12 +810,27 @@ static void sample_host(PadData *d) {
+@@ -617,12 +841,27 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -22372,7 +22673,7 @@ index 687bfb5..d408ad0 100644
          uint64_t now=now_us();
          double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
          if (dt_ms<1.0) dt_ms=1.0;
-@@ -639,6 +847,7 @@ static void sample_host(PadData *d) {
+@@ -639,6 +878,7 @@ static void sample_host(PadData *d) {
           * next capture must start the EMA fresh, not carry over speed from before the gap. */
          last_mouse_sample_us=0;
          smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
@@ -22380,7 +22681,7 @@ index 687bfb5..d408ad0 100644
      }
  
      if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
-@@ -838,7 +1047,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +1078,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -22397,7 +22698,7 @@ index 687bfb5..d408ad0 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,7 +1063,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,14 +1094,80 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -22411,10 +22712,75 @@ index 687bfb5..d408ad0 100644
 +    reset_motion();
 +    pthread_mutex_unlock(&lock);
 +    return 0;
++}
++/* Exit to Desktop (GRport's Gravity Rush Remastered menu script): R3 on its own leaves a request
++ * in /temp0 that the open settings menu takes up (it clears older ones when it opens). L3+R3 is
++ * the GRport menu's combo, so not with L3. */
++static void exit_desktop_request(uint32_t buttons) {
++    static uint32_t previous;
++    const uint32_t pressed=buttons & ~previous;
++    previous=buttons;
++    if (!(pressed & BTN_R3) || (buttons & BTN_L3)) return;
++    char path[1024];
++    if (runtime_file_translate("/temp0/grport_exit_desktop",path,sizeof(path))) return;
++    FILE *f=fopen(path,"wb");
++    if (f) fclose(f);
++}
++/* Exit to Desktop where the game's menus have no entry for it (BB_EXIT_DESKTOP_HOLD=1, Gravity
++ * Rush 2): R3 on its own held 0.8 s asks with GRport's list; the game gets no input meanwhile.
++ * Held, not pressed: the game uses R3 itself. */
++static int exit_desktop_hold_on(void) {
++    static int on=-1;
++    if (on<0) { const char *e=getenv("BB_EXIT_DESKTOP_HOLD"); on=e && e[0]=='1'; }
++    return on;
++}
++static void exit_desktop_hold(uint32_t buttons) {
++    static uint64_t since;
++    static int asking, fired;
++    if (!exit_desktop_hold_on()) return;
++    if (asking) {
++        int picked=-1;
++        const int state=bbgpu_save_list_poll(&picked);
++        if (state) {
++            asking=0;
++            if (state==1 && picked==0) runtime_quit_to_desktop();
++        }
++        return;
++    }
++    const uint64_t now=now_us();
++    /* The hint when the game's pause menu opens (Options), at most every 10 minutes. */
++    static uint32_t previous;
++    static uint64_t hinted;
++    if ((buttons & ~previous & BTN_OPTIONS) && (!hinted || now-hinted>600000000u)) {
++        hinted=now;
++        bbgpu_notify("Exit to Desktop: hold R3 (keyboard: Q)");
++    }
++    previous=buttons;
++    if (!(buttons & BTN_R3) || (buttons & BTN_L3)) { since=0; fired=0; return; }
++    if (!since) since=now;
++    if (fired || now-since<800000) return;
++    fired=1;
++    BbSaveEntry entries[2];
++    memset(entries,0,sizeof(entries));
++    snprintf(entries[0].dir,sizeof(entries[0].dir),"exit"); /* an empty dir reads as "New save" (+) */
++    snprintf(entries[1].dir,sizeof(entries[1].dir),"back");
++    snprintf(entries[0].title,sizeof(entries[0].title),"Exit to Desktop");
++    snprintf(entries[1].title,sizeof(entries[1].title),"Back to the game");
++    asking=bbgpu_save_list_begin("Exit to the desktop? Any unsaved progress will be lost.",entries,2,1,1);
  }
  static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-@@ -885,6 +1110,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
+     if (!data) return ERR_INVALID_ARG;
+     pthread_mutex_lock(&lock);
+     sample(data); ++reads;
++    const uint32_t buttons=data->buttons;
+     pthread_mutex_unlock(&lock);
++    exit_desktop_request(buttons);
++    exit_desktop_hold(buttons);
+     return 0;
+ }
+ /* Buffered read: the port samples once per call, so one entry is returned. */
+@@ -885,6 +1199,29 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      pthread_mutex_unlock(&lock);
      return 0;
  }
@@ -22444,7 +22810,7 @@ index 687bfb5..d408ad0 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1140,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1229,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -22943,7 +23309,7 @@ index 9a16a9a..9f6cbc3 100644
  void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
  
 diff --git a/src/runtime_services.c b/src/runtime_services.c
-index e75ed89..2b2b160 100644
+index e75ed89..a187617 100644
 --- a/src/runtime_services.c
 +++ b/src/runtime_services.c
 @@ -40,6 +40,8 @@
@@ -22978,7 +23344,30 @@ index e75ed89..2b2b160 100644
  static ABI int32_t system_param(int32_t id,int32_t *value) {
      if (!value) return SYSTEM_PARAMETER;
      switch (id) {
-@@ -218,6 +225,43 @@ static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
+@@ -129,6 +136,22 @@ void runtime_quit_on_save_done(void) {
+     if (quit_waiting && !runtime_savedata_mounted()) { quit_waiting=0; quit_game(); }
+     pthread_mutex_unlock(&quit_lock);
+ }
++void runtime_quit_to_desktop(void) {
++    pthread_mutex_lock(&quit_lock);
++    if (runtime_savedata_mounted()) quit_waiting=1; else quit_game();
++    pthread_mutex_unlock(&quit_lock);
++}
++void runtime_quit_on_output(const void *text,uint64_t size) {
++    static const char token[]="GRPORT_QUIT_TO_DESKTOP";
++    const size_t n=sizeof(token)-1;
++    if (!text || size<n) return;
++    const char *p=text;
++    for (uint64_t i=0;i+n<=size;++i) {
++        if (p[i]!='G' || memcmp(p+i,token,n)) continue;
++        runtime_quit_to_desktop();
++        return;
++    }
++}
+ static ABI int32_t launch_browser(const char *url) {
+     if (url && !strcmp(url,"bb:q")) { quit_game(); return 0; }
+     if (url && !strcmp(url,"bb:p")) { quit_pending=1; return 0; }
+@@ -218,6 +241,43 @@ static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
  static ABI int32_t np_request(const void *param) { (void)param; return new_id(); }
  static ABI int32_t np_request_ctx(int32_t ctx,const void *param) { (void)ctx; (void)param; return new_id(); }
  static ABI int32_t np_poll(int32_t request,int32_t *result) { (void)request; if (result) *result=NP_SIGNED_OUT; return 0; }
@@ -23022,7 +23411,7 @@ index e75ed89..2b2b160 100644
  static ABI int32_t np_compare(const void *a,const void *b) {
      if (!a || !b) return NP_INVALID_ARGUMENT;
      return memcmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
-@@ -259,7 +303,167 @@ static int32_t dialog_term(int i) {
+@@ -259,7 +319,167 @@ static int32_t dialog_term(int i) {
      static ABI int32_t tag##_open(const void *p) { (void)p; return dialog_open(i); } \
      static ABI int32_t tag##_status(void) { return dialog_status(i); } \
      static ABI int32_t tag##_term(void) { return dialog_term(i); }
@@ -23191,7 +23580,7 @@ index e75ed89..2b2b160 100644
  static ABI int32_t profile_result(void *result) { if (result) memset(result,0,4); return 0; }
  /* ImeDialog: text typed on the keyboard into the game window (title bar shows it).
   * OrbisImeDialogParam: user, type, languages(8), enter label, method, filter,
-@@ -311,10 +515,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
+@@ -311,10 +531,10 @@ static ABI int32_t ime_init(const ImeParam *param, const void *extended) {
      utf16_to_utf8(param->title,128,prompt,sizeof(prompt));
      const char *preset=getenv("BB_IME_TEXT");
      if (preset) { ime_complete(0,preset); return 0; }
@@ -23204,7 +23593,7 @@ index e75ed89..2b2b160 100644
      if (!bbgpu_text_input_begin(start,prompt[0] ? prompt : "Text")) ime_complete(0,start);
      else printf("Runtime: ImeDialog opened: shown on screen; keyboard Enter or Cross accepts, Esc or Circle cancels\n");
      return 0;
-@@ -334,19 +538,92 @@ static ABI int32_t ime_result(uint32_t *result) {
+@@ -334,19 +554,92 @@ static ABI int32_t ime_result(uint32_t *result) {
  }
  static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
  
@@ -23302,7 +23691,7 @@ index e75ed89..2b2b160 100644
          char path[600];
          snprintf(path,sizeof(path),"%s/trophies.log",runtime_file_user_dir());
          pthread_mutex_lock(&lock);
-@@ -355,7 +632,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
+@@ -355,7 +648,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
          pthread_mutex_unlock(&lock);
      }
      printf("Runtime: trophy %d unlocked\n",id);
@@ -23311,7 +23700,7 @@ index e75ed89..2b2b160 100644
      return 0;
  }
  static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
-@@ -364,8 +641,24 @@ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,voi
+@@ -364,8 +657,24 @@ static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,voi
      if (data) { uint64_t size; memcpy(&size,data,8); memset((char *)data+8,0,size>8 && size<4096 ? size-8 : 0); }
      return 0;
  }
@@ -23337,7 +23726,7 @@ index e75ed89..2b2b160 100644
  }
  
  /* ---- PlayGo: fully installed package ---- */
-@@ -513,6 +806,58 @@ static const RuntimeExport exports[]={
+@@ -513,6 +822,58 @@ static const RuntimeExport exports[]={
      {"sceNpScoreGetRankingByNpIdPcId",np_signed_out}, {"sceNpScoreGetRankingByRange",np_signed_out},
      {"sceNpScoreRecordGameData",np_signed_out}, {"sceNpScoreRecordScore",np_signed_out},
      {"sceNpScoreSetPlayerCharacterId",ok_void},
@@ -23396,7 +23785,7 @@ index e75ed89..2b2b160 100644
      {"sceVoiceCreatePort",voice_port}, {"sceVoiceDeletePort",ok_void},
      {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
      {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
-@@ -527,6 +872,8 @@ static const RuntimeExport exports[]={
+@@ -527,6 +888,8 @@ static const RuntimeExport exports[]={
      {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
      {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
      {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},
