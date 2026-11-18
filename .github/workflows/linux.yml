@@ -75,6 +75,21 @@ jobs:
           cat smoke/launcher.txt
           grep -q 'running after 20 s' smoke/launcher.txt
 
+      # The AppImage itself, as on a player's PC: no /nix on the host (tmpfs over it; nothing after
+      # this step uses Nix). Extract-and-run, since the runner has no FUSE.
+      - name: AppImage smoke test (host without Nix)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo mount -t tmpfs none /nix
+          export GRPORT_HOME=$PWD/smoke/appimage-home APPIMAGE_EXTRACT_AND_RUN=1
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c "
+            dist/GRport-x86_64.AppImage > smoke/appimage.txt 2>&1 & pid=\$!
+            sleep 90
+            kill -0 \$pid && echo 'AppImage: running after 90 s' >> smoke/appimage.txt
+            kill \$pid || true"
+          cat smoke/appimage.txt
+          grep -q 'running after 90 s' smoke/appimage.txt
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -18,6 +18,9 @@ install -m755 "$runtime/out/gpu/libbbgpu.so" "$here/build/gpu/libbbgpu.so"
 } > "$here/runtime-paths.nix"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-(cd "$work" && nix bundle --impure --bundler github:ralismark/nix-appimage --expr "import $here {}")
+# Pinned: nix-appimage after 7946addb (2026-11-16) bind-mounts the bundle's nix/ onto /nix/store when the
+# host has no /nix/store, so every store path inside the AppImage is missing ("cannot exec ...", #48).
+bundler=github:ralismark/nix-appimage/7946addbc0d97e358a6d7aefe5e82310f0fe6b18
+(cd "$work" && nix bundle --impure --bundler "$bundler" --expr "import $here {}")
 install -m755 "$work"/*.AppImage "$dist/GRport-x86_64.AppImage"
 ls -lh "$dist/GRport-x86_64.AppImage"
