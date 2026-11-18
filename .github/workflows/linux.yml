@@ -86,8 +86,8 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" bash -c "
             dist/GRport-x86_64.AppImage > smoke/appimage.txt 2>&1 &
             sleep 90
-            pgrep -f -- '-m grport' >/dev/null && echo 'AppImage: running after 90 s' >> smoke/appimage.txt
-            pkill -f -- '-m grport' || true"
+            pgrep -f '[-]m grport' >/dev/null && echo 'AppImage: running after 90 s' >> smoke/appimage.txt
+            pkill -f '[-]m grport' || true"
           cat smoke/appimage.txt
           grep -q 'running after 90 s' smoke/appimage.txt
 
