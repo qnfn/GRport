@@ -81,6 +81,35 @@ def test_controls_rebind_writes_that_games_input_ini(app):
     assert "cross = circle" in ini.read_text(encoding="utf-8")
 
 
+def test_mouse_buttons_can_be_rebound(app):
+    """#50: mouse buttons bind from CONTROLS like keys; a button moves off its old action."""
+    from types import SimpleNamespace
+    page = app.pages["controls"]
+    page.select_game("gr2")
+    ini = app.paths.root / "user" / "gr2" / "input.ini"
+    assert page.binding_text("r1", "keyboard") == "3 / LMB"  # the defaults
+    page.start_rebind("square")
+    page._chip_clicked("square")  # the waiting chip clicked with the left button
+    text = ini.read_text(encoding="utf-8")
+    assert "square = leftbutton" in text and "r1 = leftbutton" not in text
+    assert "square = sidebuttonforward" not in text and "r1 = 3" in text
+    assert "moved from R1" in page.note_text()
+    assert page.binding_text("square", "keyboard") == "E / LMB"
+    assert page.binding_text("r1", "keyboard") == "3"
+    page.start_rebind("r1")
+    num = {"win32": 3, "x11": 3, "aqua": 2}[page.tk.call("tk", "windowingsystem")]
+    assert page._on_mouse_button("r1", SimpleNamespace(num=num)) == "break"
+    assert "r1 = rightbutton" in ini.read_text(encoding="utf-8")
+    page.start_rebind("l1")
+    page._on_mouse_wheel("l1", SimpleNamespace(delta=-120))
+    assert "l1 = mousewheeldown" in ini.read_text(encoding="utf-8")
+    page.start_rebind("l1")
+    assert page.press_mouse("mousewheeldown")  # the same one again removes it
+    text = ini.read_text(encoding="utf-8")
+    assert "mousewheeldown" not in text and "l1 = 1" in text
+    assert page._on_mouse_wheel(None, SimpleNamespace(delta=120)) is None  # not waiting
+
+
 def test_render_resolution_choice_is_saved_and_patched(app):
     from grport import patches
     app.settings.selected = "gr2"

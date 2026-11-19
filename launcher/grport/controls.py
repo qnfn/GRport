@@ -42,6 +42,7 @@ CONTROLLER_INPUTS = frozenset({
 
 MOUSE_INPUTS = frozenset({
     "leftbutton", "rightbutton", "middlebutton", "sidebuttonback", "sidebuttonforward",
+    "mousewheelup", "mousewheeldown", "mousewheelleft", "mousewheelright",
 })
 
 _KB, _CTRL, _MOUSE = "keyboard", "controller", "mouse"
@@ -92,6 +93,9 @@ class InputConfig:
     def controller(self, output: str) -> list[str]:
         return self._values(output, _CTRL)
 
+    def mouse(self, output: str) -> list[str]:
+        return self._values(output, _MOUSE)
+
     def _set(self, output: str, value: str, kind: str) -> None:
         new = f"{output} = {value}"
         mine = []
@@ -116,6 +120,18 @@ class InputConfig:
 
     def set_controller(self, output: str, button: str) -> None:
         self._set(output, button, _CTRL)
+
+    def set_mouse(self, output: str, button: str) -> list[str]:
+        """Binds a mouse button or wheel direction to output, moving it off the other actions
+        (a mouse has few buttons; one doing two actions is never wanted). Returns those actions."""
+        moved = [p[0] for p in map(_parse, self.lines) if p and p[0] != output and p[1] == button]
+        self._set(output, button, _MOUSE)
+        self.lines = [l for l in self.lines
+                      if not ((p := _parse(l)) and p[0] != output and p[1] == button)]
+        return moved
+
+    def remove_mouse(self, output: str, button: str) -> None:
+        self.lines = [l for l in self.lines if _parse(l) != (output, button)]
 
     def save(self, path: Path) -> None:
         path = Path(path)

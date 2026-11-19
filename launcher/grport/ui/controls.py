@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""CONTROLS page: keyboard and controller bindings, read from and written to input.ini."""
+"""CONTROLS page: keyboard, mouse and controller bindings, read from and written to input.ini."""
 
 import tkinter as tk
 from tkinter import messagebox
@@ -25,8 +25,8 @@ HINT = "Each game has its own controls. Click a binding to change it; changes sa
 KEY_NAMES = {
     "space": "Space", "enter": "Enter", "backspace": "Backspace", "tab": "Tab",
     "escape": "Esc", "up": "↑", "down": "↓", "left": "←", "right": "→",
-    "lshift": "Left Shift", "rshift": "Right Shift", "lctrl": "Left Ctrl",
-    "rctrl": "Right Ctrl", "lalt": "Left Alt", "ralt": "Right Alt", "home": "Home",
+    "lshift": "L Shift", "rshift": "R Shift", "lctrl": "L Ctrl",
+    "rctrl": "R Ctrl", "lalt": "L Alt", "ralt": "R Alt", "home": "Home",
     "end": "End", "pageup": "Page Up", "pagedown": "Page Down", "delete": "Delete",
     "insert": "Insert", "capslock": "Caps Lock",
 }
@@ -37,6 +37,20 @@ BUTTONS = (
     ("pad_down", "D-pad down"), ("pad_left", "D-pad left"), ("pad_right", "D-pad right"),
 )
 BUTTON_NAMES = dict(BUTTONS)
+MOUSE_NAMES = {
+    "leftbutton": "LMB", "rightbutton": "RMB", "middlebutton": "MMB",
+    "sidebuttonback": "M4", "sidebuttonforward": "M5",
+    "mousewheelup": "Wheel ↑", "mousewheeldown": "Wheel ↓",
+    "mousewheelleft": "Wheel ←", "mousewheelright": "Wheel →",
+}
+# Tk's button numbers (event.num) per windowing system; 1 is the chip's own click (left).
+TK_MOUSE_BUTTONS = {
+    "win32": {2: "middlebutton", 3: "rightbutton", 4: "sidebuttonback", 5: "sidebuttonforward",
+              8: "sidebuttonback", 9: "sidebuttonforward"},
+    "x11": {2: "middlebutton", 3: "rightbutton", 4: "mousewheelup", 5: "mousewheeldown",
+            6: "mousewheelleft", 7: "mousewheelright", 8: "sidebuttonback", 9: "sidebuttonforward"},
+    "aqua": {2: "rightbutton", 3: "middlebutton"},
+}
 STICKS = {"axis_left_x": "Left stick", "axis_left_y": "Left stick",
           "axis_right_x": "Right stick", "axis_right_y": "Right stick"}
 ARROWS = {("x", "minus"): "←", ("x", "plus"): "→", ("y", "minus"): "↑", ("y", "plus"): "↓"}
@@ -69,6 +83,8 @@ class ControlsPage(tk.Frame):
         for col, (title, outputs) in enumerate(GROUPS):
             self._build_group(self.board.add(0, col), title, outputs)
         self.bind("<KeyPress>", self._on_key)
+        # the wheel reaches the focused page instead of the chip where Tk follows the focus
+        self.bind("<MouseWheel>", lambda e: self._on_mouse_wheel(self._pending, e))
         app.on_theme(lambda pal: self._note.configure(fg=pal[self._note_role]))
 
     # ------------------------------------------------------------ building
@@ -81,7 +97,7 @@ class ControlsPage(tk.Frame):
         grid.columnconfigure(0, weight=1)
         theme.text_label(grid, app, title, font="card_title").grid(
             row=0, column=0, sticky="sw", pady=(0, app.px(8)))
-        for col, text in ((1, "KEYBOARD"), (2, "CONTROLLER")):
+        for col, text in ((1, "KEY / MOUSE"), (2, "CONTROLLER")):
             theme.text_label(grid, app, " ".join(text), font="caps", fg="muted").grid(
                 row=0, column=col, sticky="s", pady=(0, app.px(10)))
         for i, output in enumerate(outputs, start=1):
@@ -90,6 +106,9 @@ class ControlsPage(tk.Frame):
             key = theme.Chip(grid, app, lambda o=output: self._chip_clicked(o),
                              width=app.px(92), height=app.px(24))
             key.grid(row=i, column=1, padx=(app.px(10), 0), pady=app.px(3))
+            # left click on the waiting chip arrives through its command (_chip_clicked)
+            key.bind("<ButtonRelease>", lambda e, o=output: self._on_mouse_button(o, e))
+            key.bind("<MouseWheel>", lambda e, o=output: self._on_mouse_wheel(o, e))
             if _is_axis(output):
                 pad = theme.Chip(grid, app, None, width=app.px(108), height=app.px(24))
             else:
@@ -167,10 +186,11 @@ class ControlsPage(tk.Frame):
                 self._show_binding(output)
 
     def _show_binding(self, output: str) -> None:
-        keys = self.cfg.keyboard(output)
+        names = ([key_label(k) for k in self.cfg.keyboard(output)]
+                 + [MOUSE_NAMES[b] for b in self.cfg.mouse(output)])
         waiting = output == self._pending
         self._keys[output].set(
-            "Press a key" if waiting else (" / ".join(key_label(k) for k in keys) or "—"),
+            "Key or click" if waiting else (" / ".join(names) or "—"),
             state="waiting" if waiting else "normal")
         if _is_axis(output) and not self.cfg.controller(output):
             self._pads[output].set(self._stick_text(output), state="static")
@@ -221,7 +241,7 @@ class ControlsPage(tk.Frame):
 
     def _chip_clicked(self, output: str) -> None:
         if self._pending == output:
-            self.cancel_rebind()
+            self.press_mouse("leftbutton")  # the waiting chip clicked with the left button
         else:
             self.start_rebind(output)
 
@@ -230,7 +250,7 @@ class ControlsPage(tk.Frame):
         if previous is not None:
             self._show_binding(previous)
         self._show_binding(output)
-        self._say(f"Press a key for {LABELS[output]}  (Esc cancels)", "text")
+        self._say(f"Key, click or wheel on the box for {LABELS[output]}  (Esc cancels)", "text")
         self.focus_set()
 
     def cancel_rebind(self) -> None:
@@ -271,6 +291,46 @@ class ControlsPage(tk.Frame):
                           f"{', '.join(others)})", "warn")
             else:
                 self._say(f"{LABELS[output]}: {key_label(name)}", "ok")
+        return saved
+
+    # ------------------------------------------------------------ mouse
+
+    def _on_mouse_button(self, output: str, event) -> "str | None":
+        if self._pending != output:
+            return None
+        button = TK_MOUSE_BUTTONS.get(self.tk.call("tk", "windowingsystem"), {}).get(event.num)
+        if button is not None:
+            self.press_mouse(button)
+        return "break"
+
+    def _on_mouse_wheel(self, output: str, event) -> "str | None":
+        if output is None or self._pending != output or not event.delta:
+            return None
+        self.press_mouse("mousewheelup" if event.delta > 0 else "mousewheeldown")
+        return "break"
+
+    def press_mouse(self, button: str) -> bool:
+        """The mouse button or wheel direction used while a binding waits; True when saved.
+        It moves off any other action; using the one the action already has removes it."""
+        output = self._pending
+        if output is None:
+            return False
+        removed = button in self.cfg.mouse(output)
+        moved = [] if removed else self.cfg.set_mouse(output, button)
+        if removed:
+            self.cfg.remove_mouse(output, button)
+        self._pending = None
+        saved = self._save()
+        self.reload()
+        if saved:
+            name = MOUSE_NAMES[button]
+            if removed:
+                self._say(f"{LABELS[output]}: {name} removed", "ok")
+            elif moved:
+                self._say(f"{LABELS[output]}: {name} (moved from "
+                          f"{', '.join(LABELS[o] for o in moved)})", "ok")
+            else:
+                self._say(f"{LABELS[output]}: {name}", "ok")
         return saved
 
     # ------------------------------------------------------------ controller
