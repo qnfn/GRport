@@ -151,17 +151,33 @@ _TK_SPECIAL = {
     "Tab": "tab", "Escape": "escape", "Up": "up", "Down": "down", "Left": "left",
     "Right": "right", "Shift_L": "lshift", "Shift_R": "rshift", "Control_L": "lctrl",
     "Control_R": "rctrl", "Alt_L": "lalt", "Alt_R": "ralt", "Home": "home", "End": "end",
-    "Prior": "pageup", "Next": "pagedown", "Delete": "delete", "Insert": "insert",
+    "Prior": "pgup", "Next": "pgdown", "Delete": "delete", "Insert": "insert",
     "Caps_Lock": "capslock",
 }
 
 
-def tk_key_name(keysym: str) -> str | None:
-    """Tk keysym -> input.ini key name, None when unsupported."""
+def _number_row_digit(keycode: int, windowing: str) -> str | None:
+    """Digit of a number-row key from its key code, whatever character the layout gives it.
+    Windows sends the virtual key ('0'-'9' on every layout), X11 the physical key (10-19)."""
+    if windowing == "win32" and 0x30 <= keycode <= 0x39:
+        return chr(keycode)
+    if windowing == "x11" and 10 <= keycode <= 19:
+        return str((keycode - 9) % 10)
+    return None
+
+
+def tk_key_name(keysym: str, keycode: int | None = None, windowing: str = "") -> str | None:
+    """Tk keysym -> input.ini key name, None when unsupported.
+
+    Names follow what the key types (the runtime resolves them through the active layout),
+    except the number row: on AZERTY it types & é " ... unshifted, yet the runtime (SDL)
+    still calls it 1 2 3, so those keys are named by keycode (tk windowingsystem)."""
     if keysym in _TK_SPECIAL:
         return _TK_SPECIAL[keysym]
     if len(keysym) == 1 and keysym.isascii() and keysym.isalnum():
         return keysym.lower()
     if keysym.startswith("F") and keysym[1:].isdigit() and 1 <= int(keysym[1:]) <= 12:
         return keysym.lower()
+    if keycode is not None:
+        return _number_row_digit(keycode, windowing)
     return None

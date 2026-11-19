@@ -313,3 +313,12 @@ def test_hdr_output_is_opt_in_per_game_and_has_sdr_mapping_parameters(app):
     assert env["BB_HDR"] == "1" and env["BB_SDR_HDR"] == "1"
     assert env["BB_HDR_PAPER_WHITE"] == "300"
     assert not saved.games["gr1"].hdr_output
+
+
+def test_azerty_number_row_binds_digits(app):
+    page = app.pages["controls"]
+    page.select_game("gr2")
+    page.start_rebind("square")
+    keycode = 0x31 if page.tk.call("tk", "windowingsystem") == "win32" else 10
+    assert page.press_key("ampersand", keycode)  # AZERTY "1" key (#50)
+    assert "square = 1" in (app.paths.root / "user/gr2/input.ini").read_text()

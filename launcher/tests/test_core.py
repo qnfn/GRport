@@ -445,3 +445,22 @@ def test_damaged_archives_are_named(tmp_path):
     _psarc(tmp_path / "Gravite2_Chunk0.psarc", [[1000, 0, 7], [300]])
     (tmp_path / "arc" / "arc_0.psarc").write_bytes(b"\0" * 4096)
     assert games.damaged_archives(tmp_path).startswith("arc/arc_0.psarc is damaged")
+
+
+def test_tk_key_names_match_the_runtime():
+    from grport.controls import tk_key_name
+    assert tk_key_name("Prior") == "pgup"  # the runtime's names (runtime_input_config.c)
+    assert tk_key_name("Next") == "pgdown"
+    assert tk_key_name("a") == "a"
+
+
+def test_number_row_works_on_layouts_where_it_types_symbols():
+    """AZERTY's number row types & é " ... unshifted; the runtime still reads it as 1 2 3 (#50)."""
+    from grport.controls import tk_key_name
+    assert tk_key_name("ampersand", 0x31, "win32") == "1"
+    assert tk_key_name("eacute", 0x32, "win32") == "2"
+    assert tk_key_name("agrave", 0x30, "win32") == "0"
+    assert tk_key_name("ampersand", 10, "x11") == "1"
+    assert tk_key_name("agrave", 19, "x11") == "0"
+    assert tk_key_name("ampersand") is None  # no key code: still refused
+    assert tk_key_name("ugrave", 0xC0, "win32") is None

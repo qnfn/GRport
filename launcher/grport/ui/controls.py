@@ -27,7 +27,7 @@ KEY_NAMES = {
     "escape": "Esc", "up": "↑", "down": "↓", "left": "←", "right": "→",
     "lshift": "L Shift", "rshift": "R Shift", "lctrl": "L Ctrl",
     "rctrl": "R Ctrl", "lalt": "L Alt", "ralt": "R Alt", "home": "Home",
-    "end": "End", "pageup": "Page Up", "pagedown": "Page Down", "delete": "Delete",
+    "end": "End", "pgup": "Page Up", "pgdown": "Page Down", "delete": "Delete",
     "insert": "Insert", "capslock": "Caps Lock",
 }
 BUTTONS = (
@@ -262,10 +262,10 @@ class ControlsPage(tk.Frame):
     def _on_key(self, event) -> "str | None":
         if self._pending is None:
             return None
-        self.press_key(event.keysym)
+        self.press_key(event.keysym, event.keycode)
         return "break"  # the key was for the binding: Tab, Alt and F10 do nothing else
 
-    def press_key(self, keysym: str) -> bool:
+    def press_key(self, keysym: str, keycode: "int | None" = None) -> bool:
         """The key pressed while a binding waits; True when it was saved."""
         output = self._pending
         if output is None:
@@ -273,7 +273,7 @@ class ControlsPage(tk.Frame):
         if keysym == "Escape":
             self.cancel_rebind()
             return False
-        name = tk_key_name(keysym)
+        name = tk_key_name(keysym, keycode, self.tk.call("tk", "windowingsystem"))
         if name in RESERVED:
             self._say(RESERVED_NOTE, "bad")
             return False
