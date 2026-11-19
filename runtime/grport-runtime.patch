@@ -18444,14 +18444,14 @@ index 25865ae..0929387 100644
  /* Same symbol name means same contract whether imported from libkernel or
   * libScePosix, so newer modules resolve by name through runtime_symbol. */
 diff --git a/src/runtime.h b/src/runtime.h
-index 773ee79..5a39fed 100644
+index 773ee79..1764140 100644
 --- a/src/runtime.h
 +++ b/src/runtime.h
 @@ -15,10 +15,18 @@ typedef bb_jmp_buf sigjmp_buf;
  extern __thread sigjmp_buf *runtime_fault_recover;
  /* Restarts the game (in-game settings menu, render resolution change). */
  void runtime_restart(void);
-+/* runtime_gr_camera.c: Gravity Rush 2 direct mouse camera (#38). */
++/* runtime_gr_camera.c: direct mouse camera (#38); active() = installed and the hooked camera is in use (#50). */
 +int runtime_gr_camera_install(unsigned char *image, uint64_t span);
 +int runtime_gr_camera_active(void);
 +void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity);
@@ -20599,10 +20599,10 @@ index 0000000..377e88b
 +uintptr_t runtime_font_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 diff --git a/src/runtime_gr_camera.c b/src/runtime_gr_camera.c
 new file mode 100644
-index 0000000..9ba2d0e
+index 0000000..86d19ce
 --- /dev/null
 +++ b/src/runtime_gr_camera.c
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,230 @@
 +/*
 + * GRport: direct mouse camera for Gravity Rush 2 (v01.11, #38) and Gravity Rush Remastered
 + * (01.00; see the second half of this comment).
@@ -20636,6 +20636,13 @@ index 0000000..9ba2d0e
 + * for this frame first: the mouse turns the camera by its distance, the stick as before.
 + * xmm3/xmm5 are rewritten right after. Without a patch file the runtime maps one page after
 + * the image for this cave (camera_cave_span).
++ *
++ * Both hooks sit in the camera the game uses on foot. Gravity shift (R1) turns a camera of its
++ * own that never reaches them (#50), so each cave also counts its runs (a 32-bit counter at
++ * 120): when the count has not moved for CAMERA_IDLE_US, runtime_gr_camera_active() says no and
++ * the pad turns the mouse into the right stick again until the hooked camera runs once more.
++ * The turn the hook had not taken yet is dropped then, so leaving gravity shift does not snap
++ * the camera.
 + */
 +#include "runtime.h"
 +#include "gpu/bbgpu.h"
@@ -20644,11 +20651,14 @@ index 0000000..9ba2d0e
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
++#include <time.h>
 +
 +/* Gravity Rush 2 */
 +#define LOAD_OFFSET UINT64_C(0x1167e5e)  /* vmovapd xmm2, [rip+0x9c769a] (stick vector) */
 +#define STICK_OFFSET UINT64_C(0x1b2f500) /* the camera object's stick vector */
-+#define CAVE_SIZE 128                    /* code at 0, mouse vector at 96, constant at 112 */
++#define CAVE_SIZE 128                    /* code at 0, mouse vector at 96, constant at 112, run count at 120 */
++#define RUNS_AT 120
++#define CAMERA_IDLE_US 150000            /* the hooked camera has not run for this long: not in use */
 +#define YAW_RATE 2.494                   /* rad/s per stick unit */
 +#define PITCH_RATE (1.111 * 1.92)        /* rad/s per stick unit past the dead zone */
 +#define PITCH_DEAD_ZONE 0.1
@@ -20680,7 +20690,8 @@ index 0000000..9ba2d0e
 +    0xc5, 0xd2, 0x58, 0xe8,                         /* 52 vaddss xmm5, xmm5, xmm0         */
 +    0xc5, 0xfa, 0x11, 0x6d, 0xc0,                   /* 56 vmovss [rbp-0x40], xmm5         */
 +    0xc5, 0xfa, 0x11, 0x5d, 0x9c,                   /* 61 vmovss [rbp-0x64], xmm3         */
-+    0xc3,                                           /* 66 ret                             */
++    0xff, 0x05, 0x30, 0x00, 0x00, 0x00,             /* 66 inc dword [rip+runs] (120)      */
++    0xc3,                                           /* 72 ret                             */
 +};
 +_Static_assert(sizeof(gr1_cave_code) <= 96, "the cave's code overlaps its data");
 +
@@ -20697,6 +20708,7 @@ index 0000000..9ba2d0e
 +    0xc4, 0xc1, 0x7a, 0x10, 0xa5, 0x18, 0x01, 0x00, 0x00, /* vmovss xmm4, [r13+0x118]       */
 +    0xc4, 0xc1, 0x5a, 0x5f, 0xa5, 0x1c, 0x01, 0x00, 0x00, /* vmaxss xmm4, xmm4, [r13+0x11c] */
 +    0xc4, 0xc1, 0x7a, 0x11, 0xa5, 0x18, 0x01, 0x00, 0x00, /* vmovss [r13+0x118], xmm4       */
++    0xff, 0x05, 0x22, 0x00, 0x00, 0x00,                   /* 80 (jz lands here) inc dword [rip+runs] (120) */
 +    0xc3,                                                 /* ret                            */
 +};
 +_Static_assert(sizeof(cave_code) <= 96, "the cave's code overlaps its data");
@@ -20704,6 +20716,7 @@ index 0000000..9ba2d0e
 +/* The 16-byte vector the hook adds to the stick: x, 0, y, 0 (written whole by the pad thread,
 + * read whole by the camera; a torn read would only mix two frames' motion). */
 +static float *mouse_vector;
++static _Atomic uint32_t *camera_runs; /* bumped by the cave each time the game's camera reads it */
 +static _Atomic int installed; /* 0 none, 1 Gravity Rush 2, 2 Gravity Rush Remastered */
 +
 +static void put32(unsigned char *at, int32_t v) { memcpy(at, &v, 4); }
@@ -20733,6 +20746,7 @@ index 0000000..9ba2d0e
 +    const float min_frame_time = 0.001f;
 +    memcpy(cave + 104, &min_frame_time, 4);
 +    mouse_vector = (float *)(cave + 96);
++    camera_runs = (_Atomic uint32_t *)(cave + RUNS_AT);
 +    unsigned char hook[10] = {0xe8, 0, 0, 0, 0, 0x0f, 0x1f, 0x44, 0x00, 0x00}; /* call; 5-byte nop */
 +    put32(hook + 1, (int32_t)(cave - (image + GR1_STORE_OFFSET + 5)));
 +    memcpy(image + GR1_STORE_OFFSET, hook, 10);
@@ -20757,6 +20771,7 @@ index 0000000..9ba2d0e
 +    const float ramp_end = 0.35f; /* the yaw ramp's length (the game's constant at 0x14c6064) */
 +    memcpy(cave + 112, &ramp_end, 4);
 +    mouse_vector = (float *)(cave + 96);
++    camera_runs = (_Atomic uint32_t *)(cave + RUNS_AT);
 +    /* call cave; three nops: the 8 bytes of the load. The function calls others, so nothing of
 +     * its own lies below rsp. */
 +    unsigned char hook[8] = {0xe8, 0, 0, 0, 0, 0x90, 0x90, 0x90};
@@ -20768,7 +20783,34 @@ index 0000000..9ba2d0e
 +    return 1;
 +}
 +
-+int runtime_gr_camera_active(void) { return atomic_load(&installed) != 0; }
++static uint64_t monotonic_us(void) {
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
++}
++
++/* Called by the pad thread each sample: whether the hooked camera is the one in use, i.e. it ran
++ * within CAMERA_IDLE_US. Gravity shift, menus and cutscenes stop it (#50). */
++int runtime_gr_camera_active(void) {
++    static uint32_t last_runs;
++    static uint64_t last_run_us;
++    static int reading, switches;
++    if (!atomic_load(&installed)) return 0;
++    const uint64_t now = monotonic_us();
++    const uint32_t runs = atomic_load(camera_runs);
++    if (runs != last_runs) { last_runs = runs; last_run_us = now; }
++    const int now_reading = last_run_us != 0 && now - last_run_us < CAMERA_IDLE_US;
++    if (now_reading != reading) {
++        reading = now_reading;
++        if (!reading) { /* the turn the camera did not take: dropped, not applied later */
++            atomic_store((_Atomic uint32_t *)&mouse_vector[0], 0);
++            atomic_store((_Atomic uint32_t *)&mouse_vector[1], 0);
++            if (atomic_load(&installed) == 1) memset(mouse_vector, 0, 4 * sizeof(float));
++        }
++        if (switches++ < 40) printf("Mouse camera: %s\n", reading ? "direct" : "stick (game camera not hooked)");
++    }
++    return reading;
++}
 +
 +void runtime_gr_camera_feed(double dx, double dy, double dt_ms, double sensitivity) {
 +    const int game = atomic_load(&installed);
