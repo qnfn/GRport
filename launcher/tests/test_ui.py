@@ -285,6 +285,16 @@ def test_controller_speaker_setting_is_per_game_and_reaches_runtime(app):
     assert runtime.env(app.paths, saved, app.infos["gr2"], base={})["BB_PAD_SPEAKER"] == "0"
 
 
+def test_vibration_setting_reaches_runtime(app):
+    from grport import runtime
+    app.settings.selected = "gr2"
+    app.pages["setup"].set_vibration(False)
+    saved = load_settings(app.paths)
+    assert not saved.games["gr2"].vibration and saved.games["gr1"].vibration
+    assert runtime.env(app.paths, saved, app.infos["gr2"], base={})["BB_VIBRATION"] == "0"
+    assert runtime.env(app.paths, saved, app.infos["gr1"], base={})["BB_VIBRATION"] == "1"
+
+
 def test_performance_logging_and_output_are_in_bug_report(app):
     from grport import runtime
     app.settings.selected = "gr2"

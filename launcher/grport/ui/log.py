@@ -229,6 +229,7 @@ class LogPage(tk.Frame):
             f"Stick dead zone: {g.stick_deadzone}%",
             f"Temporal output: {g.temporal_output or 'render size (AA)'}",
             f"Controller speaker: {'on' if g.pad_speaker else 'off'}",
+            f"Vibration: {'on' if g.vibration else 'off'}",
             f"Low-gravity warning: {'on' if g.low_gravity_beep else 'off'}",
             f"Performance log: {'on' if g.performance_log else 'off'}",
         ]

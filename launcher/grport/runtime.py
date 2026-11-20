@@ -176,6 +176,7 @@ def env(paths: AppPaths, s: LauncherSettings, info: GameFolder, base=None) -> di
     # SETUP > Stick dead zone: radial, on both controller sticks; 0 is off.
     out["BB_STICK_DEADZONE"] = str(g.stick_deadzone)
     out["BB_PAD_SPEAKER"] = "1" if g.pad_speaker else "0"
+    out["BB_VIBRATION"] = "1" if g.vibration else "0"
     out["BB_LOW_GRAVITY_BEEP"] = "1" if g.low_gravity_beep else "0"
     out["BB_GPU_PROFILE"] = "1" if g.performance_log else "0"
     out["BB_FRAME_STATS"] = "1" if g.performance_log else "0"

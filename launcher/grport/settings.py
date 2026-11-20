@@ -138,6 +138,7 @@ class GameSettings:
     performance_log: bool = False  # opt-in GPU timestamps and frame pacing diagnostics
     temporal_output: str = ""   # separate temporal reconstruction output
     pad_speaker: bool = True    # audio routed to the controller speaker
+    vibration: bool = True      # the game's controller rumble
     low_gravity_beep: bool = True  # the energy-empty warning sound
     skybox_fix: bool = True     # the runtime's BB_CUBE_SEAMLESS: seamless cube sampling
     ps4_pro: bool = False       # Gravity Rush 2 only: the runtime's BB_NEO (report a PS4 Pro)

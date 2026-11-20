@@ -337,6 +337,9 @@ class SetupPage(tk.Frame):
         self.speaker_choice.pack(side="left")
         self._note(controls, "Off silences sounds routed to the controller speaker. Main game audio is unaffected. "
                              "Restart the game to apply.")
+        row = self._row(controls, "Vibration")
+        self.vibration_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")), self.set_vibration)
+        self.vibration_choice.pack(side="left")
         row = self._row(controls, "Low-gravity warning")
         self.beep_choice = theme.Segmented(row, app, ((True, "On"), (False, "Off")),
                                             self.set_low_gravity_beep)
@@ -471,6 +474,7 @@ class SetupPage(tk.Frame):
             self.pro_choice.set(g.ps4_pro)
         self.deadzone_box.set(f"{g.stick_deadzone}%")
         self.speaker_choice.set(g.pad_speaker)
+        self.vibration_choice.set(g.vibration)
         self.beep_choice.set(g.low_gravity_beep)
         self.output_box.set(g.temporal_output or "Render size (AA)")
         self.profile_choice.set(g.performance_log)
@@ -703,6 +707,10 @@ class SetupPage(tk.Frame):
 
     def set_temporal_output(self, value: str) -> None:
         self.g.temporal_output = value
+        self._saved()
+
+    def set_vibration(self, on: bool) -> None:
+        self.g.vibration = bool(on)
         self._saved()
 
     def set_pad_speaker(self, on: bool) -> None:
