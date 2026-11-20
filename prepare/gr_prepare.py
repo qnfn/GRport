@@ -121,7 +121,7 @@ def validate_gr1_cheats(boot: Path, patch: Path) -> None:
         (0x2D2F44, bytes.fromhex("894f20")): bytes.fromhex("895720"),
         (0x08169A, bytes.fromhex("9090909090909090")): bytes.fromhex("c5fa1183780a0000"),
         (0x104777, bytes.fromhex("0117")): bytes.fromhex("2917"),
-        (0x2E203E, bytes.fromhex("909090")): bytes.fromhex("412b07"),
+        (0x2E203E, bytes.fromhex("31c090")): bytes.fromhex("412b07"),
     }
     raw = boot.read_bytes()
     size = struct.unpack_from("<Q", raw, 8)[0]

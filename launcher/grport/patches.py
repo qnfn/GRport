@@ -35,14 +35,15 @@ GOLDHEN_BASE = 0x400000
 # gem patches are adapted from Talixme's GoldHEN definitions for the European
 # CUSA01113; the health write follows Skal's definition for the US CUSA01130,
 # whose gravity code sits at the same offset with the same bytes. The special
-# timer patch stops its decrement after it has been charged. Any region may
+# patch zeroes the super attack's cooldown ([player+0xa28]) instead of counting
+# it down, so the game ends it at once (#52: NOPs there froze it). Any region may
 # try them: prepare checks each target instruction and, when one differs, the
 # game plays unpatched (#42).
 GR1_CHEATS = {
     "GR1 health": (0x2D2F44, bytes.fromhex("894f20")),
     "GR1 gravity": (0x08169A, bytes.fromhex("9090909090909090")),
     "GR1 gems": (0x104777, bytes.fromhex("0117")),
-    "GR1 special": (0x2E203E, bytes.fromhex("909090")),
+    "GR1 special": (0x2E203E, bytes.fromhex("31c090")),
 }
 
 # The optional patches: (name prefix in the author's file, label, on by default, note).
@@ -51,7 +52,7 @@ OPTIONAL = {
         ("Skip intro", "Skip intro", False, "Skips the logos and the intro movie at boot."),
         ("GR1 health", "Cheat: health stays full", False, "Experimental; v1.00."),
         ("GR1 gravity", "Cheat: infinite gravity", False, "Experimental; v1.00."),
-        ("GR1 special", "Cheat: infinite special", False, "Keeps the special timer once charged; v1.00."),
+        ("GR1 special", "Cheat: infinite special", False, "The special attack recharges at once; v1.00."),
         ("GR1 gems", "Cheat: gems increase when spent", False, "Experimental; v1.00. May affect saved gems."),
     ),
     "gr2": (
