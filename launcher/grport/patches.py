@@ -74,7 +74,27 @@ OPTIONAL = {
         ("Unlock all Dusty Token", "Unlock all Dusty Token rewards", False, ""),
         ("Remove DLC Requirement", "Load saves made with DLC", False,
          "Loads save data that needs DLC you do not have."),
+        ("Performance: RGBA8 HDR render targets", "Performance: lighter render targets", False,
+         "Faster on weaker GPUs; very bright highlights, sky and bloom lose some range."),
+        ("Performance: disable dynamic shadows", "Performance: no moving shadows", False,
+         "Characters and moving objects stop casting shadows; baked shadows stay."),
+        ("Performance: half particle density", "Performance: half particles", False,
+         "Thinner smoke, dust and debris."),
+        ("Performance: halve FX capacity budget", "Performance: smaller effect budget", False, ""),
+        ("Performance: disable transparent particles", "Performance: no smoke and dust", False, ""),
+        ("Performance: disable heat-haze distortion", "Performance: no heat haze", False,
+         "No shimmer on fire, explosions and gravity rifts."),
+        ("Performance: half pedestrian density", "Performance: half crowds", False,
+         "Fewer pedestrians, birds and patrol robots in the open world."),
     ),
+}
+
+# Gravity Rush 2's costume swaps (the author's patch names): each replaces the Shifter 1.0
+# costume, so only one can be on. Kept in GameSettings.extras like the patches above.
+COSTUMES = {
+    "gr2": tuple(f"Shifter 1.0 costume -> {who}" for who in (
+        "Lisa", "Lisa (later outfit)", "Cecie", "Kali", "Yunica", "Yunica (unmasked)", "Permet",
+        "Durga", "Raven", "The Other", "Queen Alua", "Elektricitie")),
 }
 
 
@@ -120,6 +140,7 @@ def wanted(fps: int, key: str = "gr2", extras=(), resolution: str = "") -> list:
     elif key == "gr1" and fps > 60:
         out.append(GR1_KICK_FIX)
     out += [prefix for prefix in known if prefix in extras]
+    out += [name for name in COSTUMES.get(key, ()) if name in extras][:1]
     return out + ([resolution] if resolution else [])
 
 
@@ -157,6 +178,9 @@ def compile_patches(xml: "Path | None", prefixes: list, app_version: str = APP_V
             continue
         metas = [m for m in root.iter("Metadata") if (m.get("Name") or "").startswith(prefix)
                  and m.get("AppVer") == app_version]
+        # A patch named exactly so wins over longer names that start the same ("-> Lisa" and
+        # "-> Lisa (later outfit)").
+        metas = [m for m in metas if m.get("Name") == prefix] or metas
         if not metas:
             raise ValueError(f"the patch file has no '{prefix}' patch for version {app_version}")
         for line in metas[-1].iter("Line"):  # the newest of its versions

@@ -395,6 +395,14 @@ class SetupPage(tk.Frame):
                 theme.text_label(row, app, note, font="small", fg="muted").pack(
                     side="left", padx=(app.px(10), 0))
             self.patch_choices[prefix] = choice
+        self.costume_box = None
+        if patches.COSTUMES.get(self.key):
+            row = self._row(extra, "Shifter 1.0 costume")
+            options = [("", "Kat (game's own)")] + [
+                (name, name.split("-> ", 1)[1]) for name in patches.COSTUMES[self.key]]
+            self.costume_box = theme.Dropdown(row, app, lambda: self._popup(
+                self.costume_box, options, self._costume(), self.set_costume))
+            self.costume_box.pack(side="left")
         self._note(extra, PATCHES_NOTE)
 
         about = self.board.add(1, 0, span=2, title="In the game")
@@ -477,6 +485,9 @@ class SetupPage(tk.Frame):
         chosen = patches.extras(s, self.key)
         for prefix, choice in self.patch_choices.items():
             choice.set(prefix in chosen)
+        if self.costume_box is not None:
+            costume = self._costume()
+            self.costume_box.set(costume.split("-> ", 1)[1] if costume else "Kat (game's own)")
         self.language_box.set(dict((k, n) for k, n, _ in LANGUAGES)[s.language])
         self.board.schedule()
 
@@ -598,6 +609,17 @@ class SetupPage(tk.Frame):
     def set_patch(self, prefix: str, on: bool) -> None:
         chosen = [p for p in patches.extras(self.app.settings, self.key) if p != prefix]
         self.g.extras = chosen + [prefix] if on else chosen
+        self._saved()
+
+    def _costume(self) -> str:
+        chosen = patches.extras(self.app.settings, self.key)
+        return next((n for n in patches.COSTUMES.get(self.key, ()) if n in chosen), "")
+
+    def set_costume(self, name: str) -> None:
+        costumes = patches.COSTUMES.get(self.key, ())
+        chosen = [p for p in patches.extras(self.app.settings, self.key) if p not in costumes]
+        self.g.extras = chosen + ([name] if name else [])
+        self.refresh()
         self._saved()
 
     def set_window_size(self, size: str) -> None:
