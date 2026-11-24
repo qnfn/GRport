@@ -12,18 +12,13 @@ _CMD = (
 
 
 def _gpu_name_linux() -> "str | None":
-    """The first GPU vulkaninfo lists (the AppImage sets BB_VULKANINFO), else lspci's."""
+    """lspci's first display adapter, else the first GPU vulkaninfo lists.
+
+    lspci goes first: vulkaninfo probes every driver, and when one crashes the
+    desktop shows a crash dialog just for the GPU name in the log report (#48).
+    """
     import os
     import re
-    tool = os.environ.get("BB_VULKANINFO") or "vulkaninfo"
-    try:
-        r = subprocess.run([tool, "--summary"], capture_output=True, text=True, timeout=10)
-        names = re.findall(r"deviceName\s*=\s*(.+)", r.stdout)
-        names = [n.strip() for n in names if "llvmpipe" not in n.lower()]
-        if names:
-            return names[0]
-    except (OSError, subprocess.SubprocessError):
-        pass
     try:
         r = subprocess.run(["lspci", "-mm"], capture_output=True, text=True, timeout=10)
         for line in r.stdout.splitlines():
@@ -31,6 +26,15 @@ def _gpu_name_linux() -> "str | None":
                 fields = re.findall(r'"([^"]*)"', line)
                 if len(fields) >= 3:
                     return f"{fields[1]} {fields[2]}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    tool = os.environ.get("BB_VULKANINFO") or "vulkaninfo"
+    try:
+        r = subprocess.run([tool, "--summary"], capture_output=True, text=True, timeout=10)
+        names = re.findall(r"deviceName\s*=\s*(.+)", r.stdout)
+        names = [n.strip() for n in names if "llvmpipe" not in n.lower()]
+        if names:
+            return names[0]
     except (OSError, subprocess.SubprocessError):
         pass
     return None

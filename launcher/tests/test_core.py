@@ -464,3 +464,19 @@ def test_number_row_works_on_layouts_where_it_types_symbols():
     assert tk_key_name("agrave", 19, "x11") == "0"
     assert tk_key_name("ampersand") is None  # no key code: still refused
     assert tk_key_name("ugrave", 0xC0, "win32") is None
+
+
+def test_linux_gpu_name_prefers_lspci(monkeypatch):
+    """#48: don't start vulkaninfo (which can crash) when lspci names the GPU."""
+    import subprocess
+    from grport import sysinfo
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd[0])
+        out = ('00:02.0 "VGA compatible controller" "Intel Corporation" "Arc 140T" -r04 "" ""\n'
+               if cmd[0] == "lspci" else "deviceName = Other\n")
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+    monkeypatch.setattr(subprocess, "run", run)
+    assert sysinfo._gpu_name_linux() == "Intel Corporation Arc 140T"
+    assert calls == ["lspci"]
