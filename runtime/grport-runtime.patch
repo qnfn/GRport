@@ -6156,10 +6156,10 @@ index 6aebb2d..6c38497 100644
      void Create(vk::Device device, vk::Format surface_format);
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp
 new file mode 100644
-index 0000000..8be8a15
+index 0000000..9144f87
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_breadcrumbs.cpp
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,485 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 +
@@ -6197,6 +6197,9 @@ index 0000000..8be8a15
 +constexpr u32 WorkRing = 8192;
 +std::array<WorkItem, WorkRing> work_items;
 +std::atomic<u32> work_number{0};
++// Markers around each game draw/dispatch: AMD only unless BB_GPU_MARKERS=1. Elsewhere a
++// bottom-of-pipe marker can stall the whole GPU (Intel's Mesa driver: half the frame rate, #53).
++bool work_markers = false;
 +
 +void PrintWork(u32 number) {
 +    const WorkItem& w = work_items[number % WorkRing];
@@ -6542,7 +6545,10 @@ index 0000000..8be8a15
 +    for (u32 i = 0; i < SiteCount * 2; ++i) {
 +        slots[i] = 0;
 +    }
-+    std::printf("GPU markers: on (VK_AMD_buffer_marker); a device loss reports where the GPU was\n");
++    work_markers = (env && env[0] == '1') || instance.GetVendorID() == 0x1002;
++    std::printf("GPU markers: on (VK_AMD_buffer_marker)%s; a device loss reports where the GPU "
++                "was\n",
++                work_markers ? "" : ", not per draw");
 +}
 +
 +void Begin(vk::CommandBuffer cmdbuf, u32 site) {
@@ -6565,7 +6571,7 @@ index 0000000..8be8a15
 +}
 +
 +u32 NoteWork(char kind, u64 shader0, u64 shader1, u32 size0, u32 size1) {
-+    if (!slots) {
++    if (!slots || !work_markers) {
 +        return 0;
 +    }
 +    const u32 number = work_number.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -22852,7 +22858,7 @@ index 0000000..2d9f16d
 +    return off && off[0] == '0' ? 0 : RUNTIME_LOOKUP(exports, name);
 +}
 diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 687bfb5..83de36a 100644
+index 687bfb5..fcce747 100644
 --- a/src/runtime_pad.c
 +++ b/src/runtime_pad.c
 @@ -64,7 +64,134 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
@@ -23172,7 +23178,7 @@ index 687bfb5..83de36a 100644
      const InputConfig *cfg=active_config();
      BbMouseInput mouse; bbgpu_mouse_take(&mouse); /* MOU-008: drains dx/dy; buttons/wheel persist */
      static HostState host; /* ~1 KB with the held-combo list: kept off the game thread's stack */
-@@ -617,12 +841,27 @@ static void sample_host(PadData *d) {
+@@ -617,19 +841,40 @@ static void sample_host(PadData *d) {
      ly=apply_deadzone(ly,cfg->deadzone[DEADZONE_LEFT_STICK].inner,cfg->deadzone[DEADZONE_LEFT_STICK].outer);
      rx=apply_deadzone(rx,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
      ry=apply_deadzone(ry,cfg->deadzone[DEADZONE_RIGHT_STICK].inner,cfg->deadzone[DEADZONE_RIGHT_STICK].outer);
@@ -23201,7 +23207,21 @@ index 687bfb5..83de36a 100644
          uint64_t now=now_us();
          double dt_ms=last_mouse_sample_us ? (double)(now-last_mouse_sample_us)/1000.0 : 33.0;
          if (dt_ms<1.0) dt_ms=1.0;
-@@ -639,6 +878,7 @@ static void sample_host(PadData *d) {
+         if (dt_ms>100.0) dt_ms=100.0;
+         last_mouse_sample_us=now;
++        /* #50: when the direct camera is on but the game's camera is not hooked (gravity shift),
++         * the same sensitivity and in-game speed scale the mouse, so the setting still applies
++         * (both default to 1, which leaves the stick mapping as it was). */
++        const double camera_scale=cfg->mouse.camera_direct!=0 ?
++            cfg->mouse.camera_sensitivity*bbgpu_mouse_camera_speed() : 1.0;
+         int mx=0, my=0;
+-        mouse_to_axis(mouse.dx*input_mouse_scale_x(&cfg->mouse),mouse.dy*input_mouse_scale_y(&cfg->mouse),
++        mouse_to_axis((float)(mouse.dx*input_mouse_scale_x(&cfg->mouse)*camera_scale),
++                      (float)(mouse.dy*input_mouse_scale_y(&cfg->mouse)*camera_scale),
+                       dt_ms,&cfg->mouse,&mx,&my);
+         int *tx=cfg->mouse.stick==1 ? &lx : &rx, *ty=cfg->mouse.stick==1 ? &ly : &ry;
+         *tx+=mx; *ty+=my;
+@@ -639,6 +884,7 @@ static void sample_host(PadData *d) {
           * next capture must start the EMA fresh, not carry over speed from before the gap. */
          last_mouse_sample_us=0;
          smoothed_mouse_stick_x=smoothed_mouse_stick_y=0.0;
@@ -23209,7 +23229,7 @@ index 687bfb5..83de36a 100644
      }
  
      if (button_output_held(&host,cfg,OUT_LEFTJOYSTICK_HALFMODE)) { lx/=2; ly/=2; }
-@@ -838,7 +1078,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -838,7 +1084,15 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
      if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
      if (index) return ERR_INVALID_ARG;
      pthread_mutex_lock(&lock);
@@ -23226,7 +23246,7 @@ index 687bfb5..83de36a 100644
      pthread_mutex_unlock(&lock);
      if (already) return ERR_ALREADY_OPENED;
      puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-@@ -846,14 +1094,80 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
+@@ -846,14 +1100,80 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
  }
  static ABI int32_t pad_close(int32_t handle) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
@@ -23308,7 +23328,7 @@ index 687bfb5..83de36a 100644
      return 0;
  }
  /* Buffered read: the port samples once per call, so one entry is returned. */
-@@ -879,12 +1193,39 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
+@@ -879,12 +1199,39 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
  static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
      if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
      if (!param) return ERR_INVALID_ARG;
@@ -23348,7 +23368,7 @@ index 687bfb5..83de36a 100644
  static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
  static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
  
-@@ -892,9 +1233,9 @@ static const RuntimeExport exports[]={
+@@ -892,9 +1239,9 @@ static const RuntimeExport exports[]={
      {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
      {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
      {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
@@ -24872,7 +24892,7 @@ index 20308ee..f858bcb 100644
      variable("BB_VOICE_LANGUAGE","eng");
      assert(!translate("/app0/dvdroot_ps4/sound/sprj_c1020_ptb.fsb",resolved,sizeof(resolved)));
 diff --git a/tests/test_pad.c b/tests/test_pad.c
-index a477ea9..5eec006 100644
+index a477ea9..3e02f28 100644
 --- a/tests/test_pad.c
 +++ b/tests/test_pad.c
 @@ -3,6 +3,13 @@
@@ -24955,7 +24975,7 @@ index a477ea9..5eec006 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -418,6 +460,47 @@ static void test_mouse_end_to_end(void) {
+@@ -418,6 +460,82 @@ static void test_mouse_end_to_end(void) {
      puts("PASS: mouse end to end through pad_read_state (captured gate, right-stick deflection)");
  }
  
@@ -25000,10 +25020,45 @@ index a477ea9..5eec006 100644
 +    puts("PASS: direct mouse camera (camera fed instead of the stick; mouse_camera = stick; release)");
 +}
 +
++/* #50: where the direct camera is on but the game's camera is not hooked (gravity shift), the
++ * stick fallback follows mouse_camera_sensitivity x the menu's speed like the direct camera. */
++static int fallback_right_x(const char *file) {
++    char config_path[]="bbport-pad-test-fallback-XXXXXX";
++    int fd=mkstemp(config_path);
++    assert(fd>=0);
++    FILE *f=fdopen(fd,"w");
++    assert(f);
++    fputs(file,f);
++    fclose(f);
++    setenv("BB_INPUT_CONFIG",config_path,1);
++    free(loaded_config); config_initialized=0; loaded_config=NULL;
++    stub_camera_active=0;
++    PadData data;
++    stub_mouse=(BbMouseInput){.captured=0};
++    assert(pad_read_state(1,&data)==0); /* resets the mouse stick's easing */
++    stub_mouse=(BbMouseInput){.dx=1.0f,.captured=1};
++    assert(pad_read_state(1,&data)==0);
++    assert(stub_camera_dx==0.0); /* not the direct camera */
++    stub_mouse=(BbMouseInput){0};
++    unsetenv("BB_INPUT_CONFIG");
++    unlink(config_path);
++    free(loaded_config); config_initialized=0; loaded_config=NULL;
++    return data.right_x;
++}
++static void test_mouse_camera_fallback_sensitivity(void) {
++    const int stick=fallback_right_x("mouse_to_joystick = right\nmouse_camera = stick\n");
++    const int slow=fallback_right_x("mouse_to_joystick = right\nmouse_camera_sensitivity = 0.25\n");
++    const int fast=fallback_right_x("mouse_to_joystick = right\nmouse_camera_sensitivity = 1.5\n");
++    assert(stick>128 && slow>128);
++    assert(slow<fast); /* 0.5 vs 3 (x speed 2) */
++    assert(fast>stick); /* mouse_camera = stick keeps its own mapping */
++    puts("PASS: direct mouse camera's stick fallback follows its sensitivity (#50)");
++}
++
  /* T2: a custom input.ini end to end through pad_read_state -- proves the file is actually
   * found, parsed and wired into sample_host via BB_INPUT_CONFIG, not just that
   * test_binding_evaluation's lower-level calls work in isolation. Keys cannot be held under the
-@@ -425,7 +508,7 @@ static void test_mouse_end_to_end(void) {
+@@ -425,7 +543,7 @@ static void test_mouse_end_to_end(void) {
   * still a real regression guard: a bug in ensure_config_loaded/active_config that crashed, hung,
   * or left stale bindings from the earlier test would show up here. */
  static void test_custom_binding_config(void) {
@@ -25012,7 +25067,7 @@ index a477ea9..5eec006 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -454,7 +537,7 @@ static void test_custom_binding_config(void) {
+@@ -454,7 +572,7 @@ static void test_custom_binding_config(void) {
   * live binding without restarting the process -- the actual behavior "F8 reloads", not just
   * that the two pieces (input_config_load, reload_config_if_requested) exist in isolation. */
  static void test_reload_on_f8(void) {
@@ -25021,7 +25076,7 @@ index a477ea9..5eec006 100644
      int fd=mkstemp(config_path);
      assert(fd>=0);
      FILE *f=fdopen(fd,"w");
-@@ -493,7 +576,80 @@ static void test_reload_on_f8(void) {
+@@ -493,7 +611,80 @@ static void test_reload_on_f8(void) {
      puts("PASS: F8 reloads input.ini live (AC-018)");
  }
  
@@ -25102,7 +25157,7 @@ index a477ea9..5eec006 100644
      test_binding_evaluation();
      test_combos();
      test_prompt_texts();
-@@ -502,7 +658,7 @@ int main(void) {
+@@ -502,7 +693,7 @@ int main(void) {
      test_mouse_to_axis();
      test_mouse_buttons_and_wheel();
  
@@ -25111,15 +25166,16 @@ index a477ea9..5eec006 100644
      int fd=mkstemp(path);
      assert(fd>=0);
      close(fd);
-@@ -515,6 +671,7 @@ int main(void) {
+@@ -515,6 +706,8 @@ int main(void) {
      test_custom_binding_config();
      test_reload_on_f8();
      test_mouse_end_to_end();
 +    test_mouse_direct_camera();
++    test_mouse_camera_fallback_sensitivity();
      PadData data;
      inject(path,"cross l3 touchpad_left");
      assert(pad_read_state(1,&data)==0);
-@@ -534,18 +691,43 @@ int main(void) {
+@@ -534,18 +727,43 @@ int main(void) {
      desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
      desc.button_mask=(1u<<SDL_GAMEPAD_BUTTON_COUNT)-1;
      desc.axis_mask=(1u<<SDL_GAMEPAD_AXIS_COUNT)-1;
@@ -25168,7 +25224,7 @@ index a477ea9..5eec006 100644
      SDL_UpdateJoysticks();
      SDL_UpdateGamepads();
      assert(pad_read_state(1,&data)==0);
-@@ -555,14 +737,20 @@ int main(void) {
+@@ -555,14 +773,20 @@ int main(void) {
      capture=1;
      assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
      capture=0;
